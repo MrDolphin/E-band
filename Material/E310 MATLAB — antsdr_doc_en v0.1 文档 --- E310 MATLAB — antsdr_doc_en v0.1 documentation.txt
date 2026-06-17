@@ -1,0 +1,162 @@
+E310 MATLAB ��� antsdr_doc_en v0.1 ������ --- E310 MATLAB ��� antsdr_doc_en v0.1 documentation
+antsdr_doc_en
+ANTSDR E Series
+Get Started ������������
+E310
+E310 Hardware Manual E310 ������������
+E310 RF Parameters E310 ������������
+E310 Unboxing and Inspection E310 ���������������
+ANTSDR Standalone (no-OS) ANTSDR ������������������������������
+E310 FMCOMMS
+E310 OpenWiFi
+E310 GNU Radio
+E310 MATLAB
+1. Overview 1. ������
+2. Install the Driver 2. ������������������
+3. Installing Hardware Support Packages 3. ���������������������
+4.Test Connection 4.������������
+���Test Connection Using Simulink Example
+���Connect to MATLAB Using FMCOMMS Mirror
+E310 libiio E310 ���������
+ANTSDR FW Patch ANTSDR ������������
+ANTSDR Clock Calibration ANTSDR ������������
+Set Firmware IP ������������ IP
+Set GPIO ������ GPIO
+E200
+E316
+ANTSDR U Series ANTDR U ������
+Get Started ������������
+U220
+U200
+About Us ������������
+Company Introduction ������������
+Contact Us ������������
+antsdr_doc_en
+Get Started ������������
+E310 MATLAB
+View page source ���������������������
+E310 MATLAB ���
+[������]
+1. Overview 1. ������ ���
+Using ANTSDR, users can easily access various SDR software and experiment with a wide range of radio applications. For example, with GNU Radio and MATLAB & Simulink , users can implement algorithms related to communications and signal processing, and then use ANTSDR to transmit and receive signals. Open-source software can also be used to explore features such as broadcast demodulation, TV signal decoding, aircraft tracking, and more. ������ ANTSDR��������������������������������� SDR ��������������������������������������������������������������������� GNU Radio ��� MATLAB & Simulink ��������������������������������������������������������������� ANTSDR ���������������������������������������������������������������������������������������������������������������������������������������
+This chapter describes the installation of the PlutoSDR hardware support package. All MATLAB-related experiments are conducted on the Windows 10 platform. Therefore, the necessary drivers must be installed to ensure correct functionality of the ANTSDR hardware. To download and install MATLAB & Simulink , please visit the official MATLAB website. ������������ PlutoSDR ������������������������������������ MATLAB ��������������������� Windows 10 ��������������������������������������������������������������������� ANTSDR ��������������������������������������� MATLAB ��� Simulink ������������ MATLAB ���������������
+The installation process under Ubuntu is the same as on Windows . ��� Ubuntu ������ ������������������������ Windows ������ ���������������������������
+If this is your first time using ANTSDR, please refer to the Unpacking Examination . ��������������������������� ANTSDR������������ ������������������ ���
+2. Install the Driver 2. ������������������ ���
+If you haven���t installed the PlutoSDR driver yet, you can download it from the following link: Download Windows Driver ��������������������� PlutoSDR ��������������������������������������������� ������ Windows ������������
+The driver is also included in the provided resources. Double-click the
+.exe
+file and follow the prompts to complete the installation. ���������������������������������������������������
+.exe
+������������������������������������������
+ANTSDR uses a ZYNQ processor with two A9 cores capable of running an operating system. It uses a ported version of the PlutoSDR firmware, which allows users to access ANTSDR hardware via the command line. ANTSDR ������ ZYNQ ������������������������������������ A9 ��������������������������������������������������������� PlutoSDR ��������������������������������������������� ANTSDR ���������
+The PlutoSDR firmware can be downloaded from GitHub . PlutoSDR ��������������� GitHub ���������
+3. Installing Hardware Support Packages 3. ��������������������� ���
+In this guide, MATLAB R2018a is used. Users may choose to install version R2018a or later. The Simulink models provided are based on the R2018a version. ��������������� MATLAB R2018a ��������������������������������� R2018a ��������������������������� Simulink ������������ R2018a ���������
+After installing MATLAB, the PlutoSDR hardware support package must be installed in order to use ANTSDR. From the MATLAB top menu, select Add-Ons > Get Hardware Support Packages . ������ MATLAB ������������������ PlutoSDR ��������������������������� ANTSDR������ MATLAB ������������������������ ��������������� ���>��� ������������������������ ���
+Search for
+Pluto
+and select Communications Toolbox Support Package for Analog Devices PlutoSDR Radio . ������
+Pluto
+��������� Analog Devices PlutoSDR Radio ��������������������������� ���
+During the installation, a MathWorks account is required. Users can register for an account online and log in. ��������������������� MathWorks ���������������������������������������������������
+You can find the official installation guide for ADALM-PLUTO on the MathWorks website . ������������ MathWorks ������ ��������� ADALM-PLUTO ������������������������
+After installation, close all instances of MATLAB, restart it, and proceed to the next steps. ������������������������������ MATLAB ��������������������� MATLAB���������������������������������
+When the ANTSDR system is started, the Ethernet IP address is 192.168.1.10. In order for the host to access ANTSDR normally, the computer���s IP address needs to be set to the same network segment as ANTSDR. You can refer to the network settings in the Unpacking examination . ANTSDR ��������������������������� IP ��������� 192.168.1.10������������������������������������ ANTSDR��������������� IP ������������������������ ANTSDR ������������������������������������ ������������������ ���������������������������
+4.Test Connection 4.������������ ���
+���Test Connection Using Simulink Example ��������� Simulink ������������������ ���
+After setting the IP address of the host computer, use the PlutoSDR sample programs in MATLAB to test the connection status of ANTSDR. ��������������� IP ������������������ MATLAB ������ PlutoSDR ������������������ ANTSDR ������������������
+All MATLAB demos can be found in the provided materials. ������ MATLAB ���������������������������������������������������
+Enter
+pluto
+in the MATLAB search box in the upper-right corner, then open a Simulink model from the results. ��������������� MATLAB ������������������
+pluto
+��������������������������������������� Simulink ���������
+Select Open Model to launch the Simulink diagram.
+Double-click the ADALM-PLUTO Receiver block to configure the settings. In the dialog, set the Radio ID to:
+ip : 192.168.1.10
+Then click Apply , and then click Info to see the information of the current device.
+���Connect to MATLAB Using FMCOMMS Mirror ���
+If you are unfamiliar with using FMCOMMS images on the E310, please refer to the ANTSDR FMCOMMS chapter first.
+In this section, MATLAB R2021a is used and recommended.
+Open MATLAB and download the version-compatible toolkit from this GitHub page . Then, double-click the downloaded
+.mltbx
+file in MATLAB to install the toolbox.
+Set the host computer IP to
+192.168.1.100
+, ensuring it is on the same subnet as the device. Confirm connectivity by pinging the device.
+Create a new script in MATLAB and run the following code to test the connection:
+clear all;
+%% Tx set up
+tx = adi.AD9361.Tx;
+tx.uri = 'ip:192.168.1.10';
+tx.DataSource = 'DDS';
+tx.DDSFrequencies = [0 0; 1e5 1e5];
+tx.DDSPhases = [0 0; 180e3 0];
+tx.DDSScales = [0 0; 1 1];
+tx.CenterFrequency = 2.4e9;
+tx.RFPortSelect = 'B';
+tx();
+pause(1);
+%% Rx set up
+rx = adi.AD9361.Rx('uri','ip:192.168.1.10');
+rx.CenterFrequency = tx.CenterFrequency;
+rx.EnabledChannels = [1,2];
+rx.GainControlModeChannel0 = 'manual';
+rx.GainControlModeChannel1 = 'manual';
+rx.GainChannel0 = 50;
+rx.GainChannel1 = 50;
+rx.SamplingRate = 3e6;
+y = rx();
+tx.release();
+rx.release(); %������������
+%���������������������TX1������������������1���2������rx���
+out=y';
+figure(1);
+plot(real(out(1,1:1000)));
+hold on;
+plot(imag(out(1,1:1000)));
+figure(2)
+plot(real(out(2,1:1000)));
+hold on;
+plot(imag(out(2,1:1002)))
+Previous Next
+�� Copyright 2025, microphase.
+Built with Sphinx using a theme provided by Read the Docs .
+������������
+������
+������
+������
+������������
+������������
+���������
+���������
+PubMed
+������������
+���������������
+������
+���������1���
+���������1-2���
+���������1-3���
+JCR
+������
+JCR���Q1
+JCR���Q1-Q2
+JCR���Q1-Q3
+SCIE
+EI
+������
+������
+������
+������
+������
+������
+������
+������������
+������������
+������������
+���������������������
+������
+������������
+������
+������

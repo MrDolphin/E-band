@@ -1,0 +1,57 @@
+# Large local artifacts
+Ubuntu2204.appx
+target-sysroot/
+tools/
+picture/
+Material/ANTSDR_E200_R1.0/
+Material/videotool 1.1/
+Material/videotool 1.1.rar
+Material/videotool_decompiled/remotevideo/
+Material/videotool_decompiled/remotevideo_usepdb - 副本/
+
+# Build outputs
+**/bin/
+**/obj/
+**/.vs/
+**/.vscode/
+
+# Runtime diagnostics and captures
+**/diagnostics/
+*.iq
+*.raw
+*.pcap
+*.pcapng
+*.log
+*.tmp
+
+# Native / managed build products
+*.exe
+*.dll
+*.pdb
+*.so
+*.a
+*.o
+*.obj
+Material/videotool_decompiled/remotevideo_usepdb/e310_udp_receiver/udp_receiver
+Material/videotool_decompiled/remotevideo_usepdb/e310_udp_receiver/udp_receiver_*
+Material/videotool_decompiled/remotevideo_usepdb/e310_udp_receiver/udp_receiver_fmcw*
+Material/videotool_decompiled/remotevideo_usepdb/e310_udp_receiver/video_modem_bridge
+Material/videotool_decompiled/remotevideo_usepdb/e310_udp_receiver/video_modem_bridge_*
+
+# Media and archive payloads
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.aria2
+~$*
+
+# OS/editor noise
+Thumbs.db
+desktop.ini
+.DS_Store

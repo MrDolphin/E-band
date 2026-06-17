@@ -1,0 +1,83 @@
+===== ANTSDR_E200_开箱检测_R1.3.pdf PAGE 4 =====
+ANTSDR 开箱检测
+1
+第 1 章 开箱检测
+1.1 物品清单
+感谢您购买微相科技有限公司的 ANTSDR 系列软件无线电平台，当您拿到
+ANTSDR E200（标准版）之后，打开配件包，其中应包含如下内容：
+● ANTSDR 软件无线电 ：X1
+● USB 数据线 ：X1
+● 短胶棒天线 ：X2
+● 读卡器 ：X1
+● 网线 ：X1
+● 32GB SD 卡 ：X1
+请购买 ANTSDR E200（标准版）用户确认当前包裹内含有全部物品，若有
+遗漏，还请您及时与客服联系。
+打开包裹之后接下来将进行 SDR 设备的检测。
+1.2 连接到电脑
+将 USB 和 ANTSDR 连接在一起，插上网线，将网线的一端连接在 ANTSDR，
+另一端连接在电脑上，如果电脑上没有网口，建议购买一个质量好的 USB 转以
+太网的转接口，然后将其连接在一起
+1.3 ANTSDR 网口测试
+在主机上，将主机的 IP 地址设备为与 ANTSDR 网口在同一网段内，比如
+192.168.1.100。
+
+===== ANTSDR_E200_开箱检测_R1.3.pdf PAGE 5 =====
+ANTSDR 开箱检测
+2
+打开网络设置
+图 1 设置网络
+接下来选择以太网设置：
+图 2 设置网络
+在相关设置中选择更改适配器选项
+
+===== ANTSDR_E200_开箱检测_R1.3.pdf PAGE 6 =====
+ANTSDR 开箱检测
+3
+图 3 设置网络
+接下来根据用户自己的主机的以太网连接到设备的以太网网口选择连接到
+ANTSDR 的以太网。（将网线的一端连接在 ANTSDR，另一端连接在电脑上，
+如果电脑上没有网口，建议购买一个质量好的 USB 转以太网的转接口，然后将
+其连接在一起）
+图 4 设置网络
+接下里选择属性，对以太网进行配置。
+
+===== ANTSDR_E200_开箱检测_R1.3.pdf PAGE 7 =====
+ANTSDR 开箱检测
+4
+图 5 设置网络
+在以太网属性设置中双击 IPV4 设置，弹出网络 IP 地址设置窗口。
+
+===== ANTSDR_E200_开箱检测_R1.3.pdf PAGE 8 =====
+ANTSDR 开箱检测
+5
+图 6 设置网络
+依次设置本机 IP 地址，子网掩码和网关。设置本机 IP 地址与前面 ANTSDR
+所 在 为 同 一 网 段 ， 比 如 下 图 中 所 示 的 192.168.1.100 。 设 置 子 网 掩 码 为
+255.255.255.0，设置默认网关为 192.168.1.1。
+
+===== ANTSDR_E200_开箱检测_R1.3.pdf PAGE 12 =====
+ANTSDR 开箱检测
+9
+图 11 打开 SDRSharp 软件
+点击左上方的设置按钮。在弹出窗口中，首先显示的是一个 IP 地址上下文，
+我 们 在 这 里 需 要 更 改 为 ANTSDR 网 口 的 IP 地 址 ， 将 其 地 址 更 改 为
+192.168.1.10，
+然后点击 Connect，这样就能通过网口连接到 ANTSDR 上。如图所示
+
+===== ANTSDR_E200_开箱检测_R1.3.pdf PAGE 13 =====
+ANTSDR 开箱检测
+10
+图 12 连接到 ANTSDR
+然后我们就能够通过网口接收到 IQ 数据了，将解调方式设置为 WFM(宽带
+FM)，点击运行软件，就能够看到接收到的频谱信息了。
+在上方可以进行频率的调制，FM 广播频段为 88MHz~108MHz 在此频段内
+能够收听到周围的商用广播电台信息。
+在 ANTADR 上插上天线，如图所示
+在笔者进行测试的时候，使用的是托盘天线连接到 RX1 接口的 SMA 上，
+此时用户寻找上方频率起伏较大的地方，就能接收收听到广播信号了。
+
+ERROR Material\ANTSDR_E200_R1.0\开发手册\ANTSDR开发手册-firmware使用说明.pdf: cryptography>=3.1 is required for AES algorithm
+ERROR Material\ANTSDR_E200_R1.0\开发手册\ANTSDR开发手册-GNU Radio篇.pdf: cryptography>=3.1 is required for AES algorithm
+ERROR Material\ANTSDR_E200_R1.0\开发手册\ANTSDR开发手册-Libiio使用.pdf: cryptography>=3.1 is required for AES algorithm
+ERROR Material\ANTSDR_E200_R1.0\开发手册\ANTSDR开发手册-Matlab篇-V1.1.pdf: cryptography>=3.1 is required for AES algorithm

@@ -1,0 +1,498 @@
+using System.Numerics;
+using remotevideo;
+
+static void Require(bool condition, string message)
+{
+	if (!condition)
+	{
+		throw new InvalidOperationException(message);
+	}
+}
+
+static Complex[] AddChannelEffects(
+	ReadOnlySpan<Complex> source,
+	int prefixSamples,
+	double phaseRadians,
+	double amplitude,
+	double noiseSigma,
+	int seed,
+	double frequencyOffsetRadiansPerSample = 0.0)
+{
+	Random random = new Random(seed);
+	Complex[] result = new Complex[prefixSamples + source.Length + 19];
+	for (int i = 0; i < result.Length; i++)
+	{
+		double noiseI = NextGaussian(random) * noiseSigma;
+		double noiseQ = NextGaussian(random) * noiseSigma;
+		result[i] = new Complex(noiseI, noiseQ);
+	}
+	for (int i = 0; i < source.Length; i++)
+	{
+		Complex rotation = Complex.FromPolarCoordinates(
+			amplitude,
+			phaseRadians + frequencyOffsetRadiansPerSample * i);
+		result[prefixSamples + i] += source[i] * rotation;
+	}
+	return result;
+}
+
+static double NextGaussian(Random random)
+{
+	double u1 = Math.Max(random.NextDouble(), 1e-12);
+	double u2 = random.NextDouble();
+	return Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
+}
+
+static void DecodeCapture(string path)
+{
+	byte[] capture;
+	using (FileStream stream = new FileStream(
+		path,
+		FileMode.Open,
+		FileAccess.Read,
+		FileShare.ReadWrite))
+	{
+		capture = new byte[stream.Length];
+		stream.ReadExactly(capture);
+	}
+	QpskStreamDecoder decoder = new();
+	int decodedFrames = 0;
+	int validWirelessFrames = 0;
+	double bestCorrelation = 0.0;
+	const int samplesPerChunk = 4096;
+	int bytesPerChunk = samplesPerChunk * 4;
+
+	for (int offset = 0; offset < capture.Length; offset += bytesPerChunk)
+	{
+		int count = Math.Min(bytesPerChunk, capture.Length - offset);
+		count -= count % 4;
+		decoder.AppendInt16Iq(capture.AsSpan(offset, count));
+		while (decoder.TryReadFrame(out byte[] frame, out double correlation))
+		{
+			decodedFrames++;
+			bestCorrelation = Math.Max(bestCorrelation, correlation);
+			if (WirelessVideoFrame.TryParse(frame, out WirelessVideoFrame wireless))
+			{
+				validWirelessFrames++;
+				Console.WriteLine(
+					$"Valid wireless frame: video={wireless.FrameId}, " +
+					$"chunk={wireless.ChunkIndex + 1}/{wireless.ChunkCount}, " +
+					$"payload={wireless.Payload.Length}, corr={correlation:F4}");
+			}
+		}
+		bestCorrelation = Math.Max(bestCorrelation, decoder.LastCorrelation);
+	}
+
+	Console.WriteLine($"Capture: {path}");
+	Console.WriteLine($"Samples: {capture.Length / 4}");
+	Console.WriteLine($"Decoded modem frames: {decodedFrames}");
+	Console.WriteLine($"Valid wireless frames: {validWirelessFrames}");
+	Console.WriteLine($"Best preamble correlation: {bestCorrelation:F4}");
+	Console.WriteLine($"Buffered samples: {decoder.BufferedSamples}");
+}
+
+static Complex ReadInt16Iq(byte[] data, int index)
+{
+	int offset = index * 4;
+	short i = (short)(data[offset] | data[offset + 1] << 8);
+	short q = (short)(data[offset + 2] | data[offset + 3] << 8);
+	return new Complex(i / 32768.0, q / 32768.0);
+}
+
+static void WriteInt16Iq(byte[] data, int index, Complex value)
+{
+	int offset = index * 4;
+	short i = (short)Math.Clamp(Math.Round(value.Real * 24000.0), short.MinValue, short.MaxValue);
+	short q = (short)Math.Clamp(Math.Round(value.Imaginary * 24000.0), short.MinValue, short.MaxValue);
+	data[offset] = (byte)(i & 0xFF);
+	data[offset + 1] = (byte)((i >> 8) & 0xFF);
+	data[offset + 2] = (byte)(q & 0xFF);
+	data[offset + 3] = (byte)((q >> 8) & 0xFF);
+}
+
+static IReadOnlyList<byte[]> BuildSyntheticFmcwCpi(int rangeBin, int dopplerBin)
+{
+	const int sampleCount = 6144;
+	byte[] tx = WaveformGenerator.GenerateFmcwChirp(sampleCount);
+	List<byte[]> chirps = new();
+	int activeSamples = WaveformGenerator.GetFmcwChirpSamples(sampleCount);
+	int rangeFftLength = 1;
+	while (rangeFftLength < activeSamples)
+	{
+		rangeFftLength <<= 1;
+	}
+	double beatFrequency = rangeBin * WaveformGenerator.SampleRateHz / rangeFftLength;
+	double prtSeconds = sampleCount / WaveformGenerator.SampleRateHz;
+	double dopplerFrequency = dopplerBin / (FmcwProcessor.DefaultCpiChirpCount * prtSeconds);
+	for (int chirp = 0; chirp < FmcwProcessor.DefaultCpiChirpCount; chirp++)
+	{
+		byte[] rx = new byte[sampleCount * 4];
+		double slowPhase = 2.0 * Math.PI * dopplerFrequency * prtSeconds * chirp;
+		for (int sample = 0; sample < sampleCount; sample++)
+		{
+			double fastPhase = 2.0 * Math.PI * beatFrequency * sample / WaveformGenerator.SampleRateHz;
+			Complex value = ReadInt16Iq(tx, sample) *
+				Complex.FromPolarCoordinates(0.9, slowPhase + fastPhase);
+			WriteInt16Iq(rx, sample, value);
+		}
+		chirps.Add(rx);
+	}
+	return chirps;
+}
+
+if (args.Length > 0)
+{
+	DecodeCapture(args[0]);
+	return;
+}
+
+Console.WriteLine("1. Wireless frame serialize/CRC...");
+byte[] chunkPayload = Enumerable.Range(0, 251).Select(i => (byte)(i * 17)).ToArray();
+WirelessVideoFrame original = new(
+	WirelessPayloadType.Video,
+	42,
+	2,
+	7,
+	123456,
+	chunkPayload);
+byte[] serialized = original.Serialize();
+Require(WirelessVideoFrame.TryParse(serialized, out WirelessVideoFrame parsed), "Valid frame rejected.");
+Require(parsed == original || parsed.Payload.SequenceEqual(original.Payload), "Frame fields changed.");
+byte[] corrupted = serialized.ToArray();
+corrupted[WirelessVideoFrame.HeaderSize + 3] ^= 0x20;
+Require(!WirelessVideoFrame.TryParse(corrupted, out _), "CRC failed to reject corruption.");
+
+Console.WriteLine("2. Video fragmentation/reassembly...");
+byte[] videoPayload = new byte[8193];
+new Random(1001).NextBytes(videoPayload);
+IReadOnlyList<WirelessVideoFrame> fragments =
+	WirelessVideoFrame.Fragment(videoPayload, 77, 5555, 700);
+WirelessVideoReassembler reassembler = new();
+byte[] completed = null;
+foreach (WirelessVideoFrame fragment in fragments.Reverse())
+{
+	reassembler.TryAdd(fragment, out byte[] candidate);
+	completed ??= candidate;
+}
+Require(completed != null && completed.SequenceEqual(videoPayload), "Video reassembly mismatch.");
+
+Console.WriteLine("3. QPSK clean loopback with timing/phase offset...");
+byte[] wirelessBytes = fragments[0].Serialize();
+Complex[] tx = QpskModem.Modulate(wirelessBytes);
+Complex[] cleanChannel = AddChannelEffects(tx, 37, 0.61, 0.72, 0.0, 10);
+Require(
+	QpskModem.TryDemodulate(cleanChannel, out byte[] cleanRx, out double cleanCorrelation),
+	"Clean QPSK frame not detected.");
+Require(cleanRx.SequenceEqual(wirelessBytes), "Clean QPSK payload mismatch.");
+Require(cleanCorrelation > 0.99, "Clean preamble correlation is unexpectedly low.");
+
+Console.WriteLine("4. QPSK AWGN loopback...");
+Complex[] noisyChannel = AddChannelEffects(tx, 23, -0.43, 0.85, 0.10, 20);
+Require(
+	QpskModem.TryDemodulate(noisyChannel, out byte[] noisyRx, out double noisyCorrelation),
+	"Noisy QPSK frame not detected.");
+Require(noisyRx.SequenceEqual(wirelessBytes), "Noisy QPSK payload mismatch.");
+Require(WirelessVideoFrame.TryParse(noisyRx, out WirelessVideoFrame noisyFrame), "Noisy frame CRC failed.");
+
+Console.WriteLine("5. QPSK carrier-frequency offset correction...");
+Complex[] offsetChannel = AddChannelEffects(
+	tx,
+	29,
+	0.31,
+	0.78,
+	0.035,
+	25,
+	0.004);
+Require(
+	QpskModem.TryDemodulate(offsetChannel, out byte[] offsetRx, out double offsetCorrelation),
+	"Frequency-offset QPSK frame not detected.");
+Require(offsetRx.SequenceEqual(wirelessBytes), "Frequency-offset QPSK payload mismatch.");
+
+Console.WriteLine("6. QPSK detection at every sample phase...");
+for (int prefix = 32; prefix < 36; prefix++)
+{
+	Complex[] phaseChannel = AddChannelEffects(
+		tx,
+		prefix,
+		-0.22,
+		0.81,
+		0.025,
+		100 + prefix,
+		0.0035);
+	Require(
+		QpskModem.TryDemodulate(phaseChannel, out byte[] phaseRx, out _),
+		$"QPSK frame not detected at sample phase {prefix % QpskModem.SamplesPerSymbol}.");
+	Require(
+		phaseRx.SequenceEqual(wirelessBytes),
+		$"QPSK payload mismatch at sample phase {prefix % QpskModem.SamplesPerSymbol}.");
+}
+
+Console.WriteLine("7. Streaming decoder with arbitrary RX chunk boundaries...");
+short[] streamIq = QpskModem.ToInterleavedInt16(cleanChannel, 0.8);
+byte[] streamBytes = new byte[streamIq.Length * sizeof(short)];
+Buffer.BlockCopy(streamIq, 0, streamBytes, 0, streamBytes.Length);
+QpskStreamDecoder streamDecoder = new();
+byte[] streamedRx = null;
+int byteOffset = 0;
+Random chunkRandom = new Random(30);
+while (byteOffset < streamBytes.Length)
+{
+	int sampleChunk = chunkRandom.Next(137, 1800);
+	int byteCount = Math.Min(sampleChunk * 4, streamBytes.Length - byteOffset);
+	byteCount -= byteCount % 4;
+	if (byteCount == 0)
+	{
+		break;
+	}
+	streamDecoder.AppendInt16Iq(streamBytes.AsSpan(byteOffset, byteCount));
+	byteOffset += byteCount;
+	if (streamDecoder.TryReadFrame(out byte[] candidate, out _))
+	{
+		streamedRx = candidate;
+		break;
+	}
+}
+Require(streamedRx != null && streamedRx.SequenceEqual(wirelessBytes),
+	"Streaming QPSK decoder failed across RX chunk boundaries.");
+
+Console.WriteLine("8. Streaming decoder with conjugated IQ...");
+short[] conjugateIq = QpskModem.ToInterleavedInt16(
+	cleanChannel.Select(Complex.Conjugate).ToArray(),
+	0.8);
+byte[] conjugateBytes = new byte[conjugateIq.Length * sizeof(short)];
+Buffer.BlockCopy(conjugateIq, 0, conjugateBytes, 0, conjugateBytes.Length);
+QpskStreamDecoder conjugateDecoder = new();
+conjugateDecoder.AppendInt16Iq(conjugateBytes);
+Require(
+	conjugateDecoder.TryReadFrame(out byte[] conjugateRx, out _),
+	"Conjugated IQ frame not detected.");
+Require(conjugateRx.SequenceEqual(wirelessBytes), "Conjugated IQ payload mismatch.");
+Require(conjugateDecoder.LastUsedConjugate, "Conjugated IQ path was not selected.");
+
+Console.WriteLine("9. Scrambled repeat variants...");
+for (byte scramblerId = 0; scramblerId < 5; scramblerId++)
+{
+	Complex[] scrambledTx = QpskModem.Modulate(wirelessBytes, scramblerId);
+	Complex[] nextVariant = QpskModem.Modulate(wirelessBytes, (byte)(scramblerId + 1));
+	Require(
+		!scrambledTx.SequenceEqual(nextVariant),
+		"Scrambler variants produced identical IQ.");
+	Complex[] scrambledChannel = AddChannelEffects(
+		scrambledTx,
+		31 + scramblerId,
+		0.27,
+		0.82,
+		0.04,
+		200 + scramblerId,
+		0.002);
+	Require(
+		QpskModem.TryDemodulate(scrambledChannel, out byte[] scrambledRx, out _),
+		$"Scrambled QPSK variant {scramblerId} was not detected.");
+	Require(
+		scrambledRx.SequenceEqual(wirelessBytes),
+		$"Scrambled QPSK variant {scramblerId} payload mismatch.");
+}
+
+Console.WriteLine("10. Short wireless chunks with redundant scrambled repeats...");
+IReadOnlyList<WirelessVideoFrame> shortFragments =
+	WirelessVideoFrame.Fragment(videoPayload, 88, 7777, 256);
+WirelessVideoReassembler shortReassembler = new();
+byte[] shortCompleted = null;
+foreach (WirelessVideoFrame fragment in shortFragments)
+{
+	for (byte repeat = 0; repeat < 5; repeat++)
+	{
+		byte[] fragmentBytes = fragment.Serialize();
+		byte scramblerId = (byte)(repeat * 53 + fragment.ChunkIndex * 17);
+		Complex[] repeatTx = QpskModem.Modulate(fragmentBytes, scramblerId);
+		Complex[] repeatRx = AddChannelEffects(
+			repeatTx,
+			17 + repeat,
+			-0.18,
+			0.8,
+			0.045,
+			5000 + fragment.ChunkIndex * 10 + repeat,
+			0.0025);
+		if (!QpskModem.TryDemodulate(repeatRx, out byte[] decodedRepeat, out _) ||
+			!WirelessVideoFrame.TryParse(decodedRepeat, out WirelessVideoFrame decodedFragment))
+		{
+			continue;
+		}
+		if (shortReassembler.TryAdd(decodedFragment, out byte[] candidate))
+		{
+			shortCompleted = candidate;
+		}
+	}
+}
+Require(
+	shortCompleted != null && shortCompleted.SequenceEqual(videoPayload),
+	"Short redundant chunks failed to reconstruct the video payload.");
+
+Console.WriteLine("11. FMCW CPI range-Doppler synthetic target...");
+const int syntheticRangeBin = 8;
+const int syntheticDopplerBin = 3;
+IReadOnlyList<byte[]> fmcwCpi = BuildSyntheticFmcwCpi(syntheticRangeBin, syntheticDopplerBin);
+var fmcwResult = FmcwProcessor.ProcessCpi(fmcwCpi, 1);
+double expectedDistance = fmcwResult.RangeMeters[syntheticRangeBin];
+if (fmcwResult.Targets.Count == 0)
+{
+	Console.WriteLine("FMCW diagnostic warning: synthetic target was not detected.");
+}
+else
+{
+	Console.WriteLine(string.Join("; ", fmcwResult.Targets.Select(target =>
+		$"FMCW target R={target.DistanceMeters:F2}, V={target.VelocityMetersPerSecond:F2}, SNR={target.SnrDb:F1}")));
+	if (!fmcwResult.Targets.Any(target =>
+		Math.Abs(target.DistanceMeters - expectedDistance) <=
+			fmcwResult.RangeResolutionMeters * 1.5))
+	{
+		Console.WriteLine($"FMCW diagnostic warning: expected R={expectedDistance:F2} was not the strongest target.");
+	}
+}
+
+Console.WriteLine("12. Rotating/reversing repeat schedule...");
+const int scheduledChunkCount = 48;
+HashSet<int> edgeChunks = new();
+for (int repeat = 0; repeat < 5; repeat++)
+{
+	int[] order = Enumerable.Range(0, scheduledChunkCount)
+		.Select(position => WirelessChunkSchedule.GetIndex(
+			scheduledChunkCount,
+			repeat,
+			position))
+		.ToArray();
+	Require(
+		order.Distinct().Count() == scheduledChunkCount,
+		$"Repeat schedule {repeat} contains duplicate or missing chunks.");
+	edgeChunks.Add(order[0]);
+	edgeChunks.Add(order[^1]);
+}
+Require(
+	edgeChunks.Count >= 8,
+	"Repeat schedule keeps too many chunks at vulnerable first/last positions.");
+
+Console.WriteLine("12. Selective repair query...");
+WirelessVideoReassembler repairReassembler = new();
+IReadOnlyList<WirelessVideoFrame> repairFragments =
+	WirelessVideoFrame.Fragment(videoPayload, 99, 8888, 256);
+foreach (WirelessVideoFrame fragment in repairFragments
+	.Where(fragment => fragment.ChunkIndex != 2 && fragment.ChunkIndex != 5))
+{
+	repairReassembler.TryAdd(fragment, out _);
+}
+Require(
+	repairReassembler.TryGetMissingChunkIndices(
+		99,
+		out ushort[] missingRepairChunks,
+		out bool repairCompleted),
+	"Selective repair state was not available.");
+Require(!repairCompleted, "Incomplete repair frame was marked complete.");
+Require(
+	missingRepairChunks.SequenceEqual(new ushort[] { 2, 5 }),
+	"Selective repair returned the wrong missing chunks.");
+foreach (ushort missingChunk in missingRepairChunks)
+{
+	repairReassembler.TryAdd(repairFragments[missingChunk], out _);
+}
+Require(
+	repairReassembler.TryGetMissingChunkIndices(
+		99,
+		out missingRepairChunks,
+		out repairCompleted) &&
+	repairCompleted &&
+	missingRepairChunks.Length == 0,
+	"Selective repair did not report completion.");
+repairReassembler.Clear();
+Require(
+	!repairReassembler.TryGetMissingChunkIndices(
+		99,
+		out _,
+		out _),
+	"Reassembler clear left stale repair state.");
+
+Console.WriteLine("13. Two-pass delivery with selective repair...");
+WirelessVideoReassembler twoPassReassembler = new();
+IReadOnlyList<WirelessVideoFrame> twoPassFragments =
+	WirelessVideoFrame.Fragment(videoPayload, 100, 9999, 256);
+for (int repeat = 0; repeat < 2; repeat++)
+{
+	for (int position = 0; position < twoPassFragments.Count; position++)
+	{
+		int chunkIndex = WirelessChunkSchedule.GetIndex(
+			twoPassFragments.Count,
+			repeat,
+			position);
+		bool simulatedLoss =
+			chunkIndex == 2 ||
+			(repeat == 0 && chunkIndex % 7 == 0) ||
+			(repeat == 1 && chunkIndex % 11 == 0);
+		if (simulatedLoss)
+		{
+			continue;
+		}
+		twoPassReassembler.TryAdd(twoPassFragments[chunkIndex], out _);
+	}
+}
+Require(
+	twoPassReassembler.TryGetMissingChunkIndices(
+		100,
+		out ushort[] twoPassMissing,
+		out bool twoPassCompleted),
+	"Two-pass delivery did not create repair state.");
+Require(!twoPassCompleted, "Two-pass loss simulation unexpectedly completed.");
+Require(twoPassMissing.Length > 0, "Two-pass loss simulation had no missing chunks.");
+byte[] twoPassCompletedPayload = null;
+foreach (ushort missingChunk in twoPassMissing)
+{
+	if (twoPassReassembler.TryAdd(
+		twoPassFragments[missingChunk],
+		out byte[] candidate))
+	{
+		twoPassCompletedPayload = candidate;
+	}
+}
+Require(
+	twoPassCompletedPayload != null &&
+	twoPassCompletedPayload.SequenceEqual(videoPayload),
+	"Two-pass selective repair failed to reconstruct the video payload.");
+
+Console.WriteLine("14. Still-image payload fragmentation and repair...");
+byte[] photoPayload = new byte[14321];
+new Random(2026).NextBytes(photoPayload);
+IReadOnlyList<WirelessVideoFrame> photoFragments =
+	WirelessVideoFrame.Fragment(photoPayload, 101, 10000, 256);
+WirelessVideoReassembler photoReassembler = new();
+byte[] photoCompletedPayload = null;
+foreach (WirelessVideoFrame fragment in photoFragments
+	.Where(fragment => fragment.ChunkIndex % 9 != 3))
+{
+	photoReassembler.TryAdd(fragment, out _);
+}
+Require(
+	photoReassembler.TryGetMissingChunkIndices(
+		101,
+		out ushort[] photoMissingChunks,
+		out bool photoCompleted),
+	"Still-image repair state was not available.");
+Require(!photoCompleted, "Incomplete still-image payload was marked complete.");
+foreach (ushort missingChunk in photoMissingChunks)
+{
+	if (photoReassembler.TryAdd(
+		photoFragments[missingChunk],
+		out byte[] candidate))
+	{
+		photoCompletedPayload = candidate;
+	}
+}
+Require(
+	photoCompletedPayload != null &&
+	photoCompletedPayload.SequenceEqual(photoPayload),
+	"Still-image payload repair failed to reconstruct the payload.");
+
+Console.WriteLine();
+Console.WriteLine("All video modem self-tests passed.");
+Console.WriteLine($"Fragments: {fragments.Count}");
+Console.WriteLine($"QPSK samples for one {wirelessBytes.Length}-byte wireless frame: {tx.Length}");
+Console.WriteLine($"Clean correlation: {cleanCorrelation:F4}");
+Console.WriteLine($"Noisy correlation: {noisyCorrelation:F4}");
+Console.WriteLine($"Frequency-offset correlation: {offsetCorrelation:F4}");

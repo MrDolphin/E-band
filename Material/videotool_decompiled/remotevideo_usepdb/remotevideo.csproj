@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <AssemblyName>remotevideo</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>True</UseWPF>
+    <TargetFramework>net8.0-windows7.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup>
+    <RootNamespace />
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="video_modem_selftest\**\*.cs" />
+    <EmbeddedResource Remove="video_modem_selftest\**\*" />
+    <None Remove="video_modem_selftest\**\*" />
+    <None Remove="views\settingdialog.baml" />
+    <None Remove="mainwindow.baml" />
+    <None Remove="resources\icons8-radar-100.png" />
+    <None Remove="app.baml" />
+    <Resource Include="views\settingdialog.baml" LogicalName="views/settingdialog.baml" />
+    <Resource Include="mainwindow.baml" LogicalName="mainwindow.baml" />
+    <Resource Include="resources\icons8-radar-100.png" LogicalName="resources/icons8-radar-100.png" />
+    <Resource Include="app.baml" LogicalName="app.baml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="Catel.Core">
+      <HintPath>..\..\videotool 1.1\videotool 1.1\Catel.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="OpenCvSharp">
+      <HintPath>..\..\videotool 1.1\videotool 1.1\OpenCvSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="ChoiByteBuffer">
+      <HintPath>..\..\videotool 1.1\videotool 1.1\ChoiByteBuffer.dll</HintPath>
+    </Reference>
+    <Reference Include="HandyControl">
+      <HintPath>..\..\videotool 1.1\videotool 1.1\HandyControl.dll</HintPath>
+    </Reference>
+    <Reference Include="OpenCvSharp.WpfExtensions">
+      <HintPath>..\..\videotool 1.1\videotool 1.1\OpenCvSharp.WpfExtensions.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Configuration.ConfigurationManager">
+      <HintPath>..\..\videotool 1.1\videotool 1.1\System.Configuration.ConfigurationManager.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Diagnostics.EventLog">
+      <HintPath>..\..\videotool 1.1\videotool 1.1\System.Diagnostics.EventLog.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Drawing.Common">
+      <HintPath>C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App\8.0.27\System.Drawing.Common.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\videotool 1.1\videotool 1.1\runtimes\win-x64\native\OpenCvSharpExtern.dll" Link="OpenCvSharpExtern.dll" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\videotool 1.1\videotool 1.1\runtimes\win-x64\native\opencv_videoio_ffmpeg4100_64.dll" Link="opencv_videoio_ffmpeg4100_64.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\remotevideo\Crc32.cs" Link="Crc32.cs" />
+    <Compile Include="..\remotevideo\WirelessVideoFrame.cs" Link="WirelessVideoFrame.cs" />
+    <Compile Include="..\remotevideo\QpskModem.cs" Link="QpskModem.cs" />
+    <Compile Include="..\remotevideo\QpskStreamDecoder.cs" Link="QpskStreamDecoder.cs" />
+    <Compile Include="..\remotevideo\WaveformGenerator.cs" Link="WaveformGenerator.cs" />
+    <Compile Include="..\remotevideo\RxSignalAnalyzer.cs" Link="RxSignalAnalyzer.cs" />
+    <Compile Include="..\remotevideo\FmcwProcessor.cs" Link="FmcwProcessor.cs" />
+  </ItemGroup>
+</Project>

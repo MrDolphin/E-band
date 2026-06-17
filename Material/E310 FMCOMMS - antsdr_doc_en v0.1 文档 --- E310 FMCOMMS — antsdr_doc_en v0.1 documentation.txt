@@ -1,0 +1,169 @@
+E310 FMCOMMS - antsdr_doc_en v0.1 ������ --- E310 FMCOMMS ��� antsdr_doc_en v0.1 documentation
+antsdr_doc_en
+ANTSDR E Series ANTSDR E ������
+Get Started ������������
+E310
+E310 Hardware Manual E310 ������������
+E310 RF Parameters E310 ������������
+E310 Unboxing and Inspection E310 ���������������
+ANTSDR Standalone (no-OS) ANTSDR ������������������������������
+E310 FMCOMMS
+1. Overview 1. ������
+2. Download Image 2. ������������
+3. FMCOMMS Firmware 3. FMCOMMS ������
+3.1 Writing Images
+3.2 How To Set The IP Address
+E310 OpenWiFi
+E310 GNU Radio
+E310 MATLAB
+E310 libiio E310 ���������
+ANTSDR FW Patch ANTSDR ������������
+ANTSDR Clock Calibration ANTSDR ������������
+Set Firmware IP ������������ IP
+Set GPIO ������ GPIO
+E200
+E316
+ANTSDR U Series ANTDR U ������
+Get Started ������������
+U220
+U200
+About Us ������������
+Company Introduction ������������
+Contact Us ������������
+antsdr_doc_en
+Get Started ������������
+E310 FMCOMMS
+View page source ���������������������
+E310 FMCOMMS ���
+[������]
+You can find the project on GitHub: ANTSDR FMCOMMS . ������������ GitHub ��������������������� ANTSDR FMCOMMS ���
+[!NOTE] [���������]
+Different versions may have varying features and compatibilities. ������������������������������������������������������
+1. Overview 1. ������ ���
+The ANTSDR FMCOMMS2/3/4 image supports 2T2R operation at a 61.44Msps sampling rate. ANTSDR FMCOMMS2/3/4 ������������ 2T2R ��������������������� 61.44Msps���
+2. Download Image ��� 2. ������������ ���
+First, download the FMCOMMS firmware. ��������������� FMCOMMS ���������
+Download image-ADI-Kuiper-full.zip ������ image-ADI-Kuiper-full.zip
+ADI AD-FMCOMMS3-EBZ User Guide ADI AD-FMCOMMS3-EBZ ������������
+3. FMCOMMS Firmware 3. FMCOMMS ������ ���
+3.1 Writing Images 3.1 ������������ ���
+���Windows ���
+It is recommended that users burn the SD card image under Linux. Due to the difference between Windows and Linux file systems, writing the image under Windows may fail.
+After decompressing the image, you can use the image writing tool to flash it to the SD card. ��������������� Linux ��������������� SD ������������������ Windows ��� Linux ��������������������������� Windows ��������������������������������������������������������������������������������������������������� SD ������
+First, you need to prepare a 32GB SD card and format it to FAT32. The capacity of the SD card selected by the user should be larger than the size of the firmware. ������������������������������ 32GB ��� SD ��������������������������� FAT32 ������������������������ SD ������������������������������������
+Download Win32DiskImager ������ Win32DiskImager
+The provided package includes a tool called Win32DiskImager for writing images. Users can install it and use it to flash the firmware onto the SD card. Simply open the writing tool, select the
+.img
+firmware file, choose the corresponding SD card device, and click
+Write
+to begin flashing. ������������������������������������ Win32DiskImager ������������������������������������������������������������������������������������������ SD ������������������������������������������
+.img
+������������������������������ SD ������������������������
+Write
+���������������������������
+Once the image is successfully flashed, copy the startup file located in the
+boot_file
+directory (provided via MicroPhase���s shared cloud storage) to the
+BOOT
+partition of the SD card. ���������������������������������
+boot_file
+��������������� MicroPhase ������������������������������������������������������ SD ������
+BOOT
+���������
+���Linux ���
+sudo dd if = 2021 - 02 - 23 - ADI - Kuiper . img of =/ dev / sdb bs = 1 M
+In this example,
+2021-02-23-ADI-Kuiper.img
+is the name of the image file after extraction, and
+/dev/sdb
+represents the mounted SD card device on Ubuntu. Adjust these according to your system setup. ���������������������
+2021-02-23-ADI-Kuiper.img
+���������������������������������������
+/dev/sdb
+������ Ubuntu ������������������ SD ������������������������������������������������������
+Once the image is successfully flashed, copy the startup file located in the
+boot_file
+directory (provided via MicroPhase���s shared cloud storage) to the
+BOOT
+partition of the SD card. ���������������������������������
+boot_file
+��������������� MicroPhase ������������������������������������������������������ SD ������
+BOOT
+���������
+3.2 How To Set The IP Address 3.2 ������������ IP ������ ���
+After successfully writing the firmware, start ANTSDR and connect to the serial port. To successfully connect to the ANTSDR device running the FMCOMMS firmware, you need to configure its network IP address. ������������������������������ ANTSDR ��������������������������������������������� FMCOMMS ��������� ANTSDR ��������������������������������� IP ���������
+sudo screen / dev / ttyUSB1 115200
+/dev/ttyUSB1
+is the uart serial port. If your serial port does not have any message, please check whether the board is started, check whether the serial port is correct, or whether the startup file is copied to the BOOT partition of the board.
+/dev/ttyUSB1
+��� UART ��������������������������������������������������������������������������������������������������������������������������������������������������������������� BOOT ���������
+In the following steps, we configure ANTSDR���s Ethernet interface to use a static IP address, so that it will get the same IP address every time it is powered on, making it easier to access the device in GNU Radio or libiio on the host computer. ��������������������� ANTSDR ��������������������������������������� IP ��������������������������������������������������� IP ��������������������������������������� GNU Radio ��� libiio ���������������������
+First open the
+/etc/network/interfaces
+file. ������������
+/etc/network/interfaces
+���������
+vi / etc / network / interfaces
+Then, add the following configuration to assign a static IP of
+192.168.1.10
+������������������������������������������ IP ������
+192.168.1.10
+auto eth0 iface eth0 inet static address 192.168.1.10 netmask 255.255.255.0 gateway 192.168.1.1
+After saving the file, restart ANTSDR using the
+reboot
+command. ������������������������
+reboot
+������������ ANTSDR���
+Therefore, when using libiio to access the device, you only need to set the address. Here, the IP address of the network port connected to ANTSDR on the user���s Linux host must be in the same network segment as ANTSDR. For example, if your host computer has the IP address
+192.168.1.100
+then we can use libiio to test the connection. ��������������� libiio ������������������������������������������������������������ Linux ������������������ ANTSDR ������������������ IP ��������������� ANTSDR ������������������������������������������������ IP ���������
+192.168.1.100
+������������������ libiio ���������������
+If libiio is not already installed on your system, please install it first. ��������������������������������� libiio ���������������������
+You can refer to this link to install libiio
+or
+You can find detailed steps for installing libiio in ANTSDR E310 Gnuradio
+If you successfully installed libiio , execute
+iio_info -s
+If you want to use the FMCOMMS firmware with GNU Radio and connect to ANTSDR, have a look at ANTSDR FMCOMMS
+Previous Next
+�� Copyright 2025, microphase.
+Built with Sphinx using a theme provided by Read the Docs .
+������������
+������
+������
+������
+������������
+������������
+���������
+���������
+PubMed
+������������
+���������������
+������
+���������1���
+���������1-2���
+���������1-3���
+JCR
+������
+JCR���Q1
+JCR���Q1-Q2
+JCR���Q1-Q3
+SCIE
+EI
+������
+������
+������
+������
+������
+������
+������
+������������
+������������
+������������
+���������������������
+������
+������������
+������
+������
+latest ��������� Versions latest On Read the Docs Project Home Builds Search Addons documentation ��� Hosted by Read the Docs

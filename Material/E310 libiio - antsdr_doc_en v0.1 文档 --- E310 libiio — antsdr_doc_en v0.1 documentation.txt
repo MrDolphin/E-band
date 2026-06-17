@@ -1,0 +1,126 @@
+E310 libiio - antsdr_doc_en v0.1 ������ --- E310 libiio ��� antsdr_doc_en v0.1 documentation
+antsdr_doc_en
+ANTSDR E Series ANTSDR E ������
+Get Started ������������
+E310
+E310 Hardware Manual E310 ������������
+E310 RF Parameters E310 ������������
+E310 Unboxing and Inspection E310 ���������������
+ANTSDR Standalone (no-OS) ANTSDR ������������������������������
+E310 FMCOMMS
+E310 OpenWiFi
+E310 GNU Radio
+E310 MATLAB
+E310 libiio
+1. Overview 1. ������
+2. Install the libiio 2. ������ libiio
+3. Source Code 3. ���������
+ANTSDR FW Patch ANTSDR ������������
+ANTSDR Clock Calibration ANTSDR ������������
+Set Firmware IP ������������ IP
+Set GPIO ������ GPIO
+E200
+E316
+ANTSDR U Series ANTDR U ������
+Get Started ������������
+U220
+U200
+About Us ������������
+Company Introduction ������������
+Contact Us ������������
+antsdr_doc_en
+Get Started ������������
+E310 libiio
+View page source ���������������������
+E310 libiio ���
+[������]
+1. Overview 1. ������ ���
+Libiio is a library developed by Analog Devices to simplify software development for interfacing with Linux Industrial I/O (IIO) devices. It provides a simple and comprehensive programming interface suitable for advanced projects.
+In this guide, we compile and run a libiio example on both a host and an embedded platform. The example configures the RF front-end using a C/C++ interface and handles IQ data streaming for both transmission and reception.
+This document is intended for readers with basic programming knowledge and involves C/C++, cross-compilation, etc. All instructions are based on the Ubuntu Linux platform. Libiio ������ Analog Devices ������������������������������������ Linux ������ I/O (IIO) ��������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������� libiio ������������������������ C/C++ ������������������������������������ IQ ��������������������������������������������������������������������������������������� C/C++������������������������������������������������ Ubuntu Linux ���������
+2. Install the libiio 2. ������ libiio ���
+If libiio is not already installed, you need to install it first.
+You can refer to the following link to install libiio ������ libiio ������������������������������������������������������������������������ libiio���
+or ������
+You can find detailed steps for installing libiio in ANTSDR E310 GNU Radio ������������������ ANTSDR E310 GNU Radio ��������� libiio ������������������
+If you successfully installed libiio , execute iio_info -s ��������������������� libiio ������������ iio_info -s
+3. Source Code 3. ��������� ���
+MicroPhase provides source code for users. Compile the
+ad9361-iiostream.c
+file and run it.
+First, create a folder named
+libiio_example
+with subfolders
+arm
+and
+host
+, and copy
+ad9361-iiostream.c
+into both. MicroPhase ���������������������������������
+ad9361-iiostream.c
+������������������������������������������������
+libiio_example
+���������������������������������
+arm
+���
+host
+������������������������������
+ad9361-iiostream.c
+������������������������������������������
+You need to download the code . ��������� ������������ ���
+After the download is complete, go to the directory where you downloaded it. ���������������������������������������������������
+To run the program directly on your host computer, execute the following commands: ���������������������������������������������������������������
+mkdir build && cd build cmake .. make ./ ad9361 - iiostream
+Execute
+./ad9361-iiostream
+and you will see the result as shown below ������
+./ad9361-iiostream
+������������������������������������
+If you intend to run the program on the ARM platform, cross-compilation is required. We need arm compilation tools. The 32-bit compiler tool that comes with the Xilinx SDK is used here. The version of the compilation tool and the version of the firmware need to be consistent. ������������ ARM ������������������������������������������������������������������ ARM ��������������������������������� Xilinx SDK ��������� 32 ���������������������������������������������������������������������������
+set ( CMAKE_C_COMPILER "/tools/Xilinx/SDK/2019.1/gnu/aarch32/lin/gcc-arm-linux-gnueabi/bin/arm-linux-gnueabihf-gcc" ) set ( CMAKE_CXX_COMPILER "/tools/Xilinx/SDK/2019.1/gnu/aarch32/lin/gcc-arm-linux-gnueabi/bin/arm-linux-gnueabihf-g++" )
+You can find the relationship between the compilation toolchain and version in ANTSDR-FW-Patch ������������ ANTSDR-FW-Patch ���������������������������������������������������
+Use the scp command to send it to ANTSDR and run. ������ scp ��������������������� ANTSDR ������������
+scp ad9361 - iiostream root @ 192.168.1.10 : ~
+Log in to the board via ssh or serial port ������ SSH ���������������������������
+./ ad9361 - iiostream
+You can find the libiio interface here . ��������� ��������� ������ libiio ���������
+Previous ��������� Next ���������
+�� Copyright 2025, microphase. �� 2025 ���������������������������
+Built with Sphinx using a theme provided by Read the Docs . ������ Sphinx ������ ������ ��� Read the Docs ���������
+������������
+������
+������
+������
+������������
+������������
+���������
+���������
+PubMed
+������������
+���������������
+������
+���������1���
+���������1-2���
+���������1-3���
+JCR
+������
+JCR���Q1
+JCR���Q1-Q2
+JCR���Q1-Q3
+SCIE
+EI
+������
+������
+������
+������
+������
+������
+������
+������������
+������������
+������������
+���������������������
+������
+������������
+������
+������
