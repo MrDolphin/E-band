@@ -93,6 +93,7 @@ Treat hardware/network values as working assumptions. Confirm before risky hardw
 ## Git Checkpoints
 
 - If this workspace is a Git repository, create a commit automatically after each completed code change when build/self-test verification passes.
+- After a successful local commit, push to `origin` automatically when a remote is configured and reachable.
 - Before editing, run `git status --short` and preserve unrelated user changes.
 - Do not commit generated build output, copied stage folders, `bin/`, `obj/`, large archives, or hardware sysroot/toolchain folders.
 - Use concise commit messages that name the feature or fix, for example `Improve FMCW sweep-lock diagnostics`.
