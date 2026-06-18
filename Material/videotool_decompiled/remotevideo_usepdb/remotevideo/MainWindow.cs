@@ -2374,7 +2374,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			new OpenCvSharp.Point(left, 23),
 			HersheyFonts.HersheySimplex, 0.55, text, 1, LineTypes.AntiAlias);
 
-		DrawPanelFrame(canvas, left, beatTop, width - right, beatBottom, grid, text, "Mixed + low-pass beat I/Q");
+		DrawPanelFrame(canvas, left, beatTop, width - right, beatBottom, grid, text, "Dechirped IF beat I/Q after mixer + LPF");
 		DrawPanelFrame(canvas, left, rangeTop, width - right, rangeBottom, grid, text, "Range FFT spectrum");
 		DrawPanelFrame(canvas, left, heatTop, width - right, heatBottom, grid, text, "Range-Doppler radar map");
 		DrawBeatTrace(canvas, result, left, width - right, beatTop, beatBottom);
@@ -2468,16 +2468,26 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	{
 		int dopplerBins = result.RangeDopplerDb.GetLength(0);
 		int rangeBins = GetLoopbackDisplayRangeBinCount(result);
+		int zeroDopplerBin = GetZeroDopplerBin(result);
 		double minDb = double.MaxValue;
 		double maxDb = double.MinValue;
 		for (int y = 0; y < dopplerBins; y++)
 		{
 			for (int x = 1; x < rangeBins; x++)
 			{
+				if (Math.Abs(y - zeroDopplerBin) <= 1)
+				{
+					continue;
+				}
 				double value = result.RangeDopplerDb[y, x];
 				minDb = Math.Min(minDb, value);
 				maxDb = Math.Max(maxDb, value);
 			}
+		}
+		if (minDb == double.MaxValue || maxDb == double.MinValue)
+		{
+			minDb = result.RangeDopplerDb.Cast<double>().Min();
+			maxDb = result.RangeDopplerDb.Cast<double>().Max();
 		}
 		minDb = Math.Max(minDb, maxDb - 42.0);
 		double span = Math.Max(1.0, maxDb - minDb);
@@ -2487,16 +2497,59 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			for (int px = x0; px < x1; px++)
 			{
 				int range = Math.Clamp((px - x0) * rangeBins / (x1 - x0), 0, rangeBins - 1);
-				double normalized = Math.Clamp((result.RangeDopplerDb[doppler, range] - minDb) / span, 0.0, 1.0);
+				double value = result.RangeDopplerDb[doppler, range];
+				if (Math.Abs(doppler - zeroDopplerBin) <= 1)
+				{
+					value = Math.Min(value, maxDb);
+				}
+				double normalized = Math.Clamp((value - minDb) / span, 0.0, 1.0);
 				canvas.Set(py, px, RadarHeatColor(normalized));
 			}
 		}
-		int zeroVelocityY = y0 + dopplerBins / 2 * (y1 - y0) / dopplerBins;
+		int zeroVelocityY = y0 + zeroDopplerBin * (y1 - y0) / dopplerBins;
 		Cv2.Line(canvas, new OpenCvSharp.Point(x0, zeroVelocityY), new OpenCvSharp.Point(x1, zeroVelocityY),
-			new Scalar(85, 110, 125), 1, LineTypes.AntiAlias);
+			new Scalar(155, 170, 190), 1, LineTypes.AntiAlias);
+		DrawRangeDopplerAxes(canvas, result, x0, x1, y0, y1, rangeBins, zeroDopplerBin);
+		Cv2.PutText(canvas, $"RD {dopplerBins} x {rangeBins} bins  color scale excludes V=0 leakage",
+			new OpenCvSharp.Point(x0 + 8, y0 + 16),
+			HersheyFonts.HersheySimplex, 0.38, new Scalar(225, 230, 235), 1, LineTypes.AntiAlias);
 		Cv2.PutText(canvas, $"R max {result.RangeMeters[rangeBins - 1]:F0} m",
 			new OpenCvSharp.Point(x0 + 8, y1 - 10),
 			HersheyFonts.HersheySimplex, 0.42, new Scalar(230, 230, 235), 1, LineTypes.AntiAlias);
+	}
+
+	private static void DrawRangeDopplerAxes(
+		Mat canvas,
+		FmcwProcessor.CpiResult result,
+		int x0,
+		int x1,
+		int y0,
+		int y1,
+		int rangeBins,
+		int zeroDopplerBin)
+	{
+		Scalar axis = new Scalar(150, 160, 175);
+		Scalar text = new Scalar(225, 230, 235);
+		int dopplerBins = result.RangeDopplerDb.GetLength(0);
+		for (int i = 0; i <= 2; i++)
+		{
+			int rangeBin = i == 0 ? 0 : i == 1 ? rangeBins / 2 : rangeBins - 1;
+			int x = x0 + rangeBin * (x1 - x0) / rangeBins;
+			Cv2.Line(canvas, new OpenCvSharp.Point(x, y1 - 5), new OpenCvSharp.Point(x, y1), axis, 1);
+			Cv2.PutText(canvas, $"{result.RangeMeters[rangeBin]:F0}m",
+				new OpenCvSharp.Point(Math.Min(x + 4, x1 - 48), y1 - 27),
+				HersheyFonts.HersheySimplex, 0.34, text, 1, LineTypes.AntiAlias);
+		}
+		int[] dopplerMarks = new[] { 0, zeroDopplerBin, dopplerBins - 1 };
+		foreach (int dopplerBin in dopplerMarks)
+		{
+			int y = y0 + dopplerBin * (y1 - y0) / dopplerBins;
+			double velocity = result.DopplerVelocityMetersPerSecond[dopplerBin];
+			Cv2.Line(canvas, new OpenCvSharp.Point(x0, y), new OpenCvSharp.Point(x0 + 5, y), axis, 1);
+			Cv2.PutText(canvas, $"{velocity:+0;-0;0}m/s",
+				new OpenCvSharp.Point(x0 + 8, Math.Clamp(y - 4, y0 + 32, y1 - 44)),
+				HersheyFonts.HersheySimplex, 0.34, text, 1, LineTypes.AntiAlias);
+		}
 	}
 
 	private static void DrawFmcwTargets(Mat canvas, FmcwProcessor.CpiResult result, int x0, int x1, int y0, int y1)
@@ -2576,6 +2629,22 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			count++;
 		}
 		return Math.Clamp(count, 2, result.RangeMeters.Length);
+	}
+
+	private static int GetZeroDopplerBin(FmcwProcessor.CpiResult result)
+	{
+		int best = 0;
+		double bestAbsVelocity = double.MaxValue;
+		for (int i = 0; i < result.DopplerVelocityMetersPerSecond.Length; i++)
+		{
+			double absVelocity = Math.Abs(result.DopplerVelocityMetersPerSecond[i]);
+			if (absVelocity < bestAbsVelocity)
+			{
+				bestAbsVelocity = absVelocity;
+				best = i;
+			}
+		}
+		return best;
 	}
 
 	private static void DrawTraceSegment(
