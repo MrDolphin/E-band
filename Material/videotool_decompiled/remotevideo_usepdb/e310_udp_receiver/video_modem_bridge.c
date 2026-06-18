@@ -32,6 +32,7 @@
 
 static volatile int stop;
 static volatile int streaming_active;
+static volatile int tx_reset_requested;
 static int udp_socket = -1;
 static pthread_mutex_t peer_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct sockaddr_in pc_peer;
@@ -265,7 +266,7 @@ static struct tx_frame *dequeue_tx(struct tx_queue *queue)
 {
 	struct tx_frame *frame;
 	pthread_mutex_lock(&queue->lock);
-	while (!stop && !queue->head) {
+	while (!stop && !tx_reset_requested && !queue->head) {
 		pthread_cond_wait(&queue->ready, &queue->lock);
 	}
 	frame = queue->head;
@@ -287,8 +288,10 @@ static int push_tx_frame(
 	struct iio_channel *q_channel,
 	struct iio_buffer **active_buffer,
 	size_t *active_sample_count,
+	bool *active_cyclic,
 	const uint8_t *iq,
-	size_t sample_count)
+	size_t sample_count,
+	bool cyclic)
 {
 	struct iio_buffer *buffer = *active_buffer;
 	const struct iio_data_format *format;
@@ -300,23 +303,27 @@ static int push_tx_frame(
 	ssize_t pushed;
 	unsigned int shift;
 
-	if (!buffer || *active_sample_count != sample_count) {
+	if (cyclic || !buffer || *active_sample_count != sample_count ||
+		*active_cyclic != cyclic) {
 		if (buffer) {
 			iio_buffer_destroy(buffer);
 		}
-		buffer = iio_device_create_buffer(device, sample_count, false);
+		buffer = iio_device_create_buffer(device, sample_count, cyclic);
 		if (!buffer) {
 			*active_buffer = NULL;
 			*active_sample_count = 0;
+			*active_cyclic = false;
 			fprintf(stderr, "failed to create TX buffer for %zu samples\n",
 				sample_count);
 			return -1;
 		}
 		*active_buffer = buffer;
 		*active_sample_count = sample_count;
-		printf("TX buffer prepared: samples=%zu duration=%.3f ms\n",
+		*active_cyclic = cyclic;
+		printf("TX buffer prepared: samples=%zu duration=%.3f ms cyclic=%d\n",
 			sample_count,
-			sample_count * 1000.0 / (double)SAMPLE_RATE_HZ);
+			sample_count * 1000.0 / (double)SAMPLE_RATE_HZ,
+			cyclic ? 1 : 0);
 	}
 	format = iio_channel_get_data_format(i_channel);
 	shift = format ? format->shift : 0;
@@ -351,9 +358,20 @@ static void *tx_thread(void *opaque)
 	struct tx_thread_args *args = opaque;
 	struct iio_buffer *buffer = NULL;
 	size_t buffer_sample_count = 0;
+	bool buffer_cyclic = false;
 	uint32_t sent_count = 0;
 	while (!stop) {
 		struct tx_frame *frame = dequeue_tx(args->queue);
+		if (tx_reset_requested) {
+			if (buffer) {
+				iio_buffer_destroy(buffer);
+				buffer = NULL;
+				buffer_sample_count = 0;
+				buffer_cyclic = false;
+				printf("TX buffer stopped\n");
+			}
+			tx_reset_requested = 0;
+		}
 		if (!frame) {
 			continue;
 		}
@@ -364,14 +382,18 @@ static void *tx_thread(void *opaque)
 				args->q_channel,
 				&buffer,
 				&buffer_sample_count,
+				&buffer_cyclic,
 				frame->iq,
-				frame->sample_count) == 0) {
+				frame->sample_count,
+				frame->sample_count == RX_FRAME_SAMPLES) == 0) {
 			sent_count++;
-			if (sent_count % 100 == 0) {
-				printf("video TX sent: frames=%u last=%u samples=%zu\n",
+			if (sent_count % 100 == 0 ||
+				frame->sample_count == RX_FRAME_SAMPLES) {
+				printf("video TX sent: frames=%u last=%u samples=%zu cyclic=%d\n",
 					sent_count,
 					frame->frame_id,
-					frame->sample_count);
+					frame->sample_count,
+					frame->sample_count == RX_FRAME_SAMPLES ? 1 : 0);
 			}
 		}
 		free_tx_frame(frame);
@@ -652,7 +674,9 @@ int main(void)
 		packet_type = packet[4];
 		if (packet_type == STOP_PACKET_TYPE) {
 			streaming_active = 0;
+			tx_reset_requested = 1;
 			clear_tx_queue(&tx_queue);
+			pthread_cond_broadcast(&tx_queue.ready);
 			printf("video streaming stopped by %s:%u\n",
 				inet_ntoa(peer.sin_addr),
 				ntohs(peer.sin_port));

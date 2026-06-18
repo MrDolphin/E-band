@@ -48,6 +48,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private bool m_isReceiving;
 
+	private volatile bool m_acceptRxIq;
+
 	private UdpClient m_udpClient;
 
 	private IPEndPoint m_sendEndPoint;
@@ -142,10 +144,6 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private long m_rxIqDroppedFrameCount;
 
 	private long m_rxIqSampleCount;
-
-	private readonly List<byte[]> m_fmcwCpiChirps = new List<byte[]>();
-
-	private int m_fmcwCpiIndex;
 
 	private long m_videoDecodeQueueDropCount;
 
@@ -343,6 +341,11 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			IsBackground = true
 		};
 		m_videoDecodeThread.Start();
+		Task.Run(delegate
+		{
+			Thread.Sleep(150);
+			SendStopCommand(silent: true);
+		});
 	}
 
 	private void ConfigureInteractiveScaling()
@@ -641,10 +644,13 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	protected override void OnClosed(EventArgs e)
 	{
+		m_isSending = false;
+		m_acceptRxIq = false;
+		SendStopCommand(silent: true);
 		m_isReceiving = false;
 		m_videoDecodeEvent.Set();
 		CloseVideoDiagnostics();
-		m_udpClient.Close();
+		m_udpClient?.Close();
 		base.OnClosed(e);
 	}
 
@@ -665,12 +671,33 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		return true;
 	}
 
+	private bool TryCreateRemoteEndpointSilently()
+	{
+		m_remoteIp = Settings.Default.RemoteEndAddr;
+		m_remotePort = Settings.Default.RemoteEndPort;
+		if (m_remotePort == 0 || string.IsNullOrEmpty(m_remoteIp))
+		{
+			return false;
+		}
+		if (!IPAddress.TryParse(m_remoteIp, out IPAddress remoteAddress))
+		{
+			return false;
+		}
+		if (m_sendEndPoint != null && m_sendEndPoint.Address.Equals(remoteAddress) && m_sendEndPoint.Port == m_remotePort)
+		{
+			return true;
+		}
+		m_sendEndPoint = new IPEndPoint(remoteAddress, m_remotePort);
+		return true;
+	}
+
 	private void OnStartSending_Click(object sender, RoutedEventArgs e)
 	{
 		if (CreateRemoteEndpoint())
 		{
 			SendStopCommand();
 			Thread.Sleep(60);
+			m_acceptRxIq = true;
 			m_commMode = Settings.Default.CommMode;
 			m_filepath = Settings.Default.VideoFilePath;
 			if (m_commMode == 9)
@@ -804,11 +831,12 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 	}
 
-	private bool SendStopCommand()
+	private bool SendStopCommand(bool silent = false)
 	{
 		try
 		{
-			if (!CreateRemoteEndpoint() || m_udpClient == null)
+			bool endpointReady = silent ? TryCreateRemoteEndpointSilently() : CreateRemoteEndpoint();
+			if (!endpointReady || m_udpClient == null)
 			{
 				return false;
 			}
@@ -835,8 +863,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	{
 		bool wasSending = m_isSending;
 		m_isSending = false;
+		m_acceptRxIq = false;
 		bool stopSent = SendStopCommand();
 		m_encodeEvent.Set();
+		m_videoDecodeEvent.Set();
 
 		if (wasSending)
 		{
@@ -861,6 +891,13 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			}
 		}
 		videoDisplay.Source = null;
+		recvVideoDisplay.Source = null;
+		m_rxIqFrameId = -1;
+		m_rxIqExpectedChunks = 0;
+		m_rxIqChunks.Clear();
+		while (m_videoDecodeQueue.TryDequeue(out _))
+		{
+		}
 		btnStartSending.IsEnabled = true;
 		btnStopSending.IsEnabled = false;
 		tbStatus.Text = stopSent
@@ -982,6 +1019,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		finally
 		{
 			m_isSending = false;
+			m_acceptRxIq = false;
 			stopSent = SendStopCommand();
 			photo?.Dispose();
 			resizedPhoto?.Dispose();
@@ -1066,6 +1104,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		{
 			Thread.Sleep(750);
 			m_isSending = false;
+			m_acceptRxIq = false;
 			bool stopSent = SendStopCommand();
 			((DispatcherObject)this).Dispatcher.BeginInvoke((Action)delegate
 			{
@@ -1606,6 +1645,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private void ParseRxIqPacket(byte[] packetData)
 	{
+		if (!m_acceptRxIq)
+		{
+			return;
+		}
 		m_rxIqPacketCount++;
 		ushort contentLength = BitConverter.ToUInt16(packetData, 15);
 		if (contentLength < 12 || packetData.Length < 17 + contentLength)
@@ -1691,24 +1734,33 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		{
 			try
 			{
-				m_fmcwCpiChirps.Add(completeIq);
-				if (m_fmcwCpiChirps.Count < FmcwProcessor.DefaultCpiChirpCount)
-				{
-					return;
-				}
-
-				var result = FmcwProcessor.ProcessCpi(m_fmcwCpiChirps, ++m_fmcwCpiIndex);
-				m_fmcwCpiChirps.Clear();
+				var chirp = RxSignalAnalyzer.AnalyzeChirp(completeIq);
+				var trace = RxSignalAnalyzer.BuildChirpTrace(completeIq);
 				((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
 				{
-					tbRadarData.Text = MainWindow.BuildFmcwCpiText(result, frameId);
-					recvVideoDisplay.Source = MainWindow.RenderFmcwCpiResult(result);
+					tbRadarData.Text =
+						$"RX FMCW 分析（无混频恢复版）\n\n" +
+						$"帧号：{frameId}\n" +
+						$"扫频方向：{chirp.Direction}\n" +
+						$"起始频率：{chirp.StartRfHz / 1e6:F3} MHz\n" +
+						$"终止频率：{chirp.EndRfHz / 1e6:F3} MHz\n" +
+						$"扫频带宽：{chirp.BandwidthHz / 1e6:F3} MHz\n" +
+						$"有效扫频：{chirp.ActiveTimeSeconds * 1e6:F2} us\n" +
+						$"空闲时间：{chirp.IdleTimeSeconds * 1e6:F2} us\n" +
+						$"PRT：{chirp.PrtSeconds * 1e6:F2} us\n" +
+						$"线性误差：{chirp.LinearityRmsHz / 1e3:F1} kHz\n\n" +
+						$"拍频：未启用\n" +
+						$"估算距离：未启用\n\n" +
+						$"说明：当前版本只恢复 TX/RX FMCW 扫频曲线显示，\n" +
+						$"不做 PC 端去斜混频和距离 FFT。";
+					recvVideoDisplay.Source = RenderFmcwTrace(
+						trace,
+						"RX measured FMCW: RF frequency and IQ magnitude");
 				});
 			}
 			catch (Exception ex)
 			{
-				m_fmcwCpiChirps.Clear();
-				Log.Warning("RX FMCW CPI analysis failed: {0}", ex.Message);
+				Log.Warning("RX FMCW no-mixer analysis failed: {0}", ex.Message);
 			}
 			return;
 		}
