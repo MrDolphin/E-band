@@ -39,6 +39,7 @@ internal static class WaveformGenerator
 			5 => GenerateComplexTone(sampleCount, -5000000.0),
 			6 => GenerateComplexTone(sampleCount, 5000000.0),
 			7 => GenerateTriangleFmcwChirp(sampleCount),
+			10 => GenerateFmcwChirp(sampleCount),
 			_ => GenerateQpsk(sampleCount, frameId),
 		};
 	}
@@ -56,6 +57,7 @@ internal static class WaveformGenerator
 			7 => "Triangle FMCW Chirp",
 			8 => "QPSK video software loopback",
 			9 => "QPSK video E310 link",
+			10 => "FMCW RX trace no mixer",
 			_ => "QPSK",
 		};
 	}

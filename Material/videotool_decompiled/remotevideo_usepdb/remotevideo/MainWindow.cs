@@ -197,6 +197,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private readonly QpskStreamDecoder m_qpskStreamDecoder = new QpskStreamDecoder();
 
+	private readonly List<byte[]> m_fmcwCpiChirps = new List<byte[]>();
+
+	private int m_fmcwCpiIndex;
+
 	private uint m_videoModemFrameId;
 
 	private long m_videoModemChunkCount;
@@ -700,6 +704,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			m_acceptRxIq = true;
 			m_commMode = Settings.Default.CommMode;
 			m_filepath = IsVideoTransmissionMode(m_commMode) ? Settings.Default.VideoFilePath : string.Empty;
+			m_fmcwCpiChirps.Clear();
+			m_fmcwCpiIndex = 0;
 			if (m_commMode == 9)
 			{
 				m_qpskStreamDecoder.Clear();
@@ -1434,7 +1440,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
 				{
 					tbStatus.Text = $"已发送波形帧: {m_waveformFrameId}, 调制: {WaveformGenerator.GetModeName(m_commMode)}, IQ字节: {iqPayload.Length}";
-					if (m_commMode == 3 || m_commMode == 7)
+					if (m_commMode == 3 || m_commMode == 7 || m_commMode == 10)
 					{
 						tbRadarData.Text =
 							"【发送波形（TX Waveform）- 上位机发往 E310 TX1 的基带 IQ】\n" +
@@ -1444,7 +1450,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 							iqPayload.Length,
 							iqPayload.Length / 4);
 					}
-					if (m_commMode == 3 || m_commMode == 7)
+					if (m_commMode == 3 || m_commMode == 7 || m_commMode == 10)
 					{
 						var txTrace = RxSignalAnalyzer.BuildChirpTrace(iqPayload);
 						videoDisplay.Source = RenderFmcwTrace(
@@ -1454,7 +1460,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 								: "TX sawtooth FMCW: RF frequency and IQ magnitude");
 					}
 				});
-				if (m_commMode >= 2 && m_commMode <= 7)
+				if ((m_commMode >= 2 && m_commMode <= 7) || m_commMode == 10)
 				{
 					while (m_isSending)
 					{
@@ -1735,7 +1741,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			return;
 		}
 
-		if (m_commMode == 3)
+		if (m_commMode == 10)
 		{
 			try
 			{
@@ -1766,6 +1772,45 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			catch (Exception ex)
 			{
 				Log.Warning("RX FMCW no-mixer analysis failed: {0}", ex.Message);
+			}
+			return;
+		}
+
+		if (m_commMode == 3)
+		{
+			try
+			{
+				m_fmcwCpiChirps.Add(completeIq);
+				if (m_fmcwCpiChirps.Count < 64)
+				{
+					if (m_fmcwCpiChirps.Count == 1 || m_fmcwCpiChirps.Count % 8 == 0)
+					{
+						int collected = m_fmcwCpiChirps.Count;
+						((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
+						{
+							tbRadarData.Text =
+								$"FMCW 混频处理（Mode 3）\n\n" +
+								$"正在累计相干处理批次（CPI）...\n" +
+								$"已累计扫频帧（Chirps）：{collected}/64\n" +
+								$"最后回传帧号（RX Frame）：{frameId}\n\n" +
+								$"累计满 64 帧后显示混频后时序图、距离 FFT、速度二次 FFT 和目标检测结果。";
+						});
+					}
+					return;
+				}
+
+				var result = FmcwProcessor.ProcessCpi(m_fmcwCpiChirps, ++m_fmcwCpiIndex);
+				m_fmcwCpiChirps.Clear();
+				((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
+				{
+					tbRadarData.Text = BuildFmcwCpiText(result, frameId);
+					recvVideoDisplay.Source = RenderFmcwCpiResult(result);
+				});
+			}
+			catch (Exception ex)
+			{
+				m_fmcwCpiChirps.Clear();
+				Log.Warning("RX FMCW CPI processing failed: {0}", ex.Message);
 			}
 			return;
 		}
