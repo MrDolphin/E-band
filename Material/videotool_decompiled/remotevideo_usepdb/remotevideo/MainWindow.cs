@@ -699,7 +699,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			Thread.Sleep(60);
 			m_acceptRxIq = true;
 			m_commMode = Settings.Default.CommMode;
-			m_filepath = Settings.Default.VideoFilePath;
+			m_filepath = IsVideoTransmissionMode(m_commMode) ? Settings.Default.VideoFilePath : string.Empty;
 			if (m_commMode == 9)
 			{
 				m_qpskStreamDecoder.Clear();
@@ -748,7 +748,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			m_isSending = true;
 			m_videoPlaybackCompleted = false;
 			tbStatus.Text = $"正在启动: {WaveformGenerator.GetModeName(m_commMode)} -> {m_sendEndPoint}";
-			if (IsVideoFilePath(m_filepath))
+			if (IsVideoTransmissionMode(m_commMode) && IsVideoFilePath(m_filepath))
 			{
 				m_encodeThread = new Thread(EncodeAndSendProc)
 				{
@@ -760,7 +760,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					IsBackground = true
 				};
 			}
-			else if (IsStillImageFilePath(m_filepath))
+			else if (IsVideoTransmissionMode(m_commMode) && IsStillImageFilePath(m_filepath))
 			{
 				m_senderThread = new Thread(SendPhotoProc)
 				{
@@ -776,6 +776,11 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			}
 			m_senderThread.Start();
 		}
+	}
+
+	private static bool IsVideoTransmissionMode(byte commMode)
+	{
+		return commMode == 8 || commMode == 9;
 	}
 
 	private static bool IsVideoFilePath(string path)
