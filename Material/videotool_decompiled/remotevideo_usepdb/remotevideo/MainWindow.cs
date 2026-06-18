@@ -201,6 +201,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private int m_fmcwCpiIndex;
 
+	private string m_lastFmcwCpiText = "";
+
 	private uint m_videoModemFrameId;
 
 	private long m_videoModemChunkCount;
@@ -706,6 +708,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			m_filepath = IsVideoTransmissionMode(m_commMode) ? Settings.Default.VideoFilePath : string.Empty;
 			m_fmcwCpiChirps.Clear();
 			m_fmcwCpiIndex = 0;
+			m_lastFmcwCpiText = "";
 			if (m_commMode == 9)
 			{
 				m_qpskStreamDecoder.Clear();
@@ -1788,12 +1791,11 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 						int collected = m_fmcwCpiChirps.Count;
 						((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
 						{
-							tbRadarData.Text =
-								$"FMCW 混频处理（Mode 3）\n\n" +
-								$"正在累计相干处理批次（CPI）...\n" +
-								$"已累计扫频帧（Chirps）：{collected}/64\n" +
-								$"最后回传帧号（RX Frame）：{frameId}\n\n" +
-								$"累计满 64 帧后显示混频后时序图、距离 FFT、速度二次 FFT 和目标检测结果。";
+							tbRadarData.Text = BuildFmcwLiveStatusText(
+								m_fmcwCpiIndex,
+								collected,
+								frameId,
+								m_lastFmcwCpiText);
 						});
 					}
 					return;
@@ -1803,7 +1805,12 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_fmcwCpiChirps.Clear();
 				((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
 				{
-					tbRadarData.Text = BuildFmcwCpiText(result, frameId);
+					m_lastFmcwCpiText = BuildFmcwCpiText(result, frameId);
+					tbRadarData.Text = BuildFmcwLiveStatusText(
+						result.CpiIndex,
+						0,
+						frameId,
+						m_lastFmcwCpiText);
 					recvVideoDisplay.Source = RenderFmcwCpiResult(result);
 				});
 			}
@@ -2299,6 +2306,31 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		writer.WriteLine();
 		writer.WriteLine("【状态说明（Note）- 当前算法假设】");
 		writer.WriteLine("当前版本按 E310 回传帧边界作为扫频周期边界，尚未加入硬件帧同步。");
+		return writer.ToString();
+	}
+
+	private static string BuildFmcwLiveStatusText(
+		int completedCpiIndex,
+		int collectingChirps,
+		int lastFrameId,
+		string lastCpiText)
+	{
+		StringWriter writer = new StringWriter();
+		writer.WriteLine("【实时状态（Live Status）- FMCW 混频处理 Mode 3】");
+		writer.WriteLine($"最新完成 CPI（Completed CPI）：{completedCpiIndex}");
+		writer.WriteLine($"当前累计扫频帧（Collecting Chirps）：{collectingChirps}/64");
+		writer.WriteLine($"最后回传帧号（RX Frame）：{lastFrameId}");
+		writer.WriteLine();
+		if (string.IsNullOrEmpty(lastCpiText))
+		{
+			writer.WriteLine("正在等待第一组 64 帧 CPI 完成...");
+			writer.WriteLine("完成后会显示混频后时序图、距离 FFT、速度二次 FFT 和目标检测结果。");
+		}
+		else
+		{
+			writer.WriteLine("【上一组完整 CPI 结果（Last Completed CPI）】");
+			writer.Write(lastCpiText);
+		}
 		return writer.ToString();
 	}
 
