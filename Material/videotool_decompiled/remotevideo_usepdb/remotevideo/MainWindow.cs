@@ -1463,7 +1463,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 								: "TX sawtooth FMCW: RF frequency and IQ magnitude");
 					}
 				});
-				if ((m_commMode >= 2 && m_commMode <= 7) || m_commMode == 10)
+				if ((m_commMode >= 2 && m_commMode <= 7) || (m_commMode >= 10 && m_commMode <= 13))
 				{
 					while (m_isSending)
 					{
@@ -1827,7 +1827,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			return;
 		}
 
-		if (m_commMode == 2 || (m_commMode >= 4 && m_commMode <= 6))
+		if (m_commMode == 2 || (m_commMode >= 4 && m_commMode <= 6) || (m_commMode >= 11 && m_commMode <= 13))
 		{
 			try
 			{

@@ -8,6 +8,8 @@ internal static class WaveformGenerator
 
 	private const short FullScale = 24000;
 
+	private const short LowAmplitudeScale = 6000;
+
 	private const short Qam16Low = 8000;
 
 	private const short Qam16High = 24000;
@@ -40,6 +42,9 @@ internal static class WaveformGenerator
 			6 => GenerateComplexTone(sampleCount, 5000000.0),
 			7 => GenerateTriangleFmcwChirp(sampleCount),
 			10 => GenerateFmcwChirp(sampleCount),
+			11 => GeneratePeriodicTone(sampleCount, LowAmplitudeScale),
+			12 => GenerateComplexTone(sampleCount, -5000000.0, LowAmplitudeScale),
+			13 => GenerateComplexTone(sampleCount, 5000000.0, LowAmplitudeScale),
 			_ => GenerateQpsk(sampleCount, frameId),
 		};
 	}
@@ -58,6 +63,9 @@ internal static class WaveformGenerator
 			8 => "QPSK video software loopback",
 			9 => "QPSK video E310 link",
 			10 => "FMCW RX trace no mixer",
+			11 => "Low amplitude 200.96 MHz tone",
+			12 => "Low amplitude 195 MHz tone",
+			13 => "Low amplitude 205 MHz tone",
 			_ => "QPSK",
 		};
 	}
@@ -158,12 +166,17 @@ internal static class WaveformGenerator
 
 	private static byte[] GeneratePeriodicTone(int sampleCount)
 	{
+		return GeneratePeriodicTone(sampleCount, FullScale);
+	}
+
+	private static byte[] GeneratePeriodicTone(int sampleCount, short amplitude)
+	{
 		byte[] result = new byte[sampleCount * 4];
 		for (int i = 0; i < sampleCount; i++)
 		{
 			double phase = 2.0 * Math.PI * (i % PeriodicToneSamplesPerCycle) / PeriodicToneSamplesPerCycle;
-			short iValue = (short)Math.Round(FullScale * Math.Cos(phase));
-			short qValue = (short)Math.Round(FullScale * Math.Sin(phase));
+			short iValue = (short)Math.Round(amplitude * Math.Cos(phase));
+			short qValue = (short)Math.Round(amplitude * Math.Sin(phase));
 			WriteInt16Iq(result, i, iValue, qValue);
 		}
 		return result;
@@ -181,13 +194,18 @@ internal static class WaveformGenerator
 
 	private static byte[] GenerateComplexTone(int sampleCount, double frequencyHz)
 	{
+		return GenerateComplexTone(sampleCount, frequencyHz, FullScale);
+	}
+
+	private static byte[] GenerateComplexTone(int sampleCount, double frequencyHz, short amplitude)
+	{
 		byte[] result = new byte[sampleCount * 4];
 		double phase = 0.0;
 		double phaseStep = TwoPi * frequencyHz / SampleRateHz;
 		for (int i = 0; i < sampleCount; i++)
 		{
-			short iValue = (short)Math.Round(FullScale * Math.Cos(phase));
-			short qValue = (short)Math.Round(FullScale * Math.Sin(phase));
+			short iValue = (short)Math.Round(amplitude * Math.Cos(phase));
+			short qValue = (short)Math.Round(amplitude * Math.Sin(phase));
 			WriteInt16Iq(result, i, iValue, qValue);
 			phase = Math.IEEERemainder(phase + phaseStep, TwoPi);
 		}
