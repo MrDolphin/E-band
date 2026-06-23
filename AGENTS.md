@@ -82,6 +82,20 @@ The E310 firmware normally does not have native `gcc`; build ARM binaries with t
 
 Treat hardware/network values as working assumptions. Confirm before risky hardware changes.
 
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for `MrDolphin/E-band`; external PRs are not treated as a triage request surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default Matt Pocock skills triage labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use a single-context domain docs layout: root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Editing Rules
 
 - Make narrow edits in the file that owns the behavior.
