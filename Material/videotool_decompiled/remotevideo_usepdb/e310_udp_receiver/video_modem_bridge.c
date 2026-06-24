@@ -24,10 +24,10 @@
 #define VIDEO_IQ_PACKET_TYPE 0x05
 #define STOP_PACKET_TYPE 0x04
 #define RX_PACKET_TYPE 0x03
-#define RX_FRAME_SAMPLES 6144
+#define RX_FRAME_SAMPLES 4096
 #define RX_CHUNK_SAMPLES 350
-#define SAMPLE_RATE_HZ 30720000LL
-#define RF_BANDWIDTH_HZ 28000000LL
+#define SAMPLE_RATE_HZ 3840000LL
+#define RF_BANDWIDTH_HZ 3000000LL
 #define RF_LO_HZ 200000000LL
 
 static volatile int stop;
@@ -79,6 +79,52 @@ static struct tx_queue tx_queue = {
 	.lock = PTHREAD_MUTEX_INITIALIZER,
 	.ready = PTHREAD_COND_INITIALIZER,
 };
+
+static int16_t clamp_i64_to_i16(int64_t value)
+{
+	if (value > INT16_MAX) {
+		return INT16_MAX;
+	}
+	if (value < INT16_MIN) {
+		return INT16_MIN;
+	}
+	return (int16_t)value;
+}
+
+static int16_t pack_tx_iq_sample(
+	int16_t source,
+	const struct iio_data_format *format)
+{
+	unsigned int bits = 16;
+	unsigned int shift = 0;
+	int64_t positive_limit;
+	int64_t negative_limit;
+	int64_t scaled;
+	int64_t packed;
+
+	if (format) {
+		if (format->bits > 0 && format->bits <= 16) {
+			bits = format->bits;
+		}
+		shift = format->shift;
+	}
+
+	positive_limit = bits >= 16 ? INT16_MAX : ((1LL << (bits - 1)) - 1);
+	negative_limit = bits >= 16 ? INT16_MIN : -(1LL << (bits - 1));
+	if (source >= 0) {
+		scaled = (int64_t)source * positive_limit / INT16_MAX;
+	} else {
+		scaled = (int64_t)source * (-negative_limit) / 32768;
+	}
+	if (scaled > positive_limit) {
+		scaled = positive_limit;
+	} else if (scaled < negative_limit) {
+		scaled = negative_limit;
+	}
+
+	packed = shift >= 16 ? INT16_MAX : (scaled << shift);
+	return clamp_i64_to_i16(packed);
+}
 
 static void handle_signal(int sig)
 {
@@ -294,14 +340,14 @@ static int push_tx_frame(
 	bool cyclic)
 {
 	struct iio_buffer *buffer = *active_buffer;
-	const struct iio_data_format *format;
+	const struct iio_data_format *i_format;
+	const struct iio_data_format *q_format;
 	ptrdiff_t step;
 	char *i_ptr;
 	char *q_ptr;
 	char *end;
 	size_t index;
 	ssize_t pushed;
-	unsigned int shift;
 
 	if (cyclic || !buffer || *active_sample_count != sample_count ||
 		*active_cyclic != cyclic) {
@@ -325,8 +371,8 @@ static int push_tx_frame(
 			sample_count * 1000.0 / (double)SAMPLE_RATE_HZ,
 			cyclic ? 1 : 0);
 	}
-	format = iio_channel_get_data_format(i_channel);
-	shift = format ? format->shift : 0;
+	i_format = iio_channel_get_data_format(i_channel);
+	q_format = iio_channel_get_data_format(q_channel);
 	step = iio_buffer_step(buffer);
 	i_ptr = iio_buffer_first(buffer, i_channel);
 	q_ptr = iio_buffer_first(buffer, q_channel);
@@ -340,8 +386,8 @@ static int push_tx_frame(
 		int16_t packed_q;
 		memcpy(&source_i, iq + index * IQ_BYTES_PER_SAMPLE, sizeof(source_i));
 		memcpy(&source_q, iq + index * IQ_BYTES_PER_SAMPLE + 2, sizeof(source_q));
-		packed_i = (int16_t)(source_i * (int)(1U << shift));
-		packed_q = (int16_t)(source_q * (int)(1U << shift));
+		packed_i = pack_tx_iq_sample(source_i, i_format);
+		packed_q = pack_tx_iq_sample(source_q, q_format);
 		memcpy(i_ptr, &packed_i, sizeof(packed_i));
 		memcpy(q_ptr, &packed_q, sizeof(packed_q));
 	}
@@ -631,7 +677,7 @@ int main(void)
 	rx_started = pthread_create(&rx_worker, NULL, rx_thread, &rx_args) == 0;
 
 	printf("E310 video modem bridge listening on UDP %d\n", UDP_PORT);
-	printf("LO=200 MHz Fs=30.72 MSPS BW=28 MHz TX1/RX1 FMCW IQ stream RX_FRAME=%d\n",
+	printf("LO=200 MHz Fs=3.84 MSPS BW=3 MHz TX1/RX1 non-cyclic QPSK stream RX_FRAME=%d\n",
 		RX_FRAME_SAMPLES);
 	printf("TX attenuation=-30.5 dB, RX manual gain=0 dB\n");
 
