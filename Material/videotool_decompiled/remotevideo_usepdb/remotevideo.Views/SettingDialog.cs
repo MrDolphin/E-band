@@ -74,7 +74,8 @@ public class SettingDialog : Window, IComponentConnector
 		tbRadarNd.Text = Settings.Default.Nd.ToString();
 		tbRadarNr.Text = Settings.Default.Nr.ToString();
 		tbCommMode.Text = Settings.Default.CommMode.ToString();
-		txtFilePath.Text = string.Empty;
+		UpdateVideoFileInputState();
+		tbCommMode.TextChanged += OnCommModeTextChanged;
 		txtRemoteIP.Text = Settings.Default.RemoteEndAddr;
 		txtRemotePort.Text = Settings.Default.RemoteEndPort.ToString();
 		txtLocalPort.Text = Settings.Default.LocalRecvPort.ToString();
@@ -98,7 +99,10 @@ public class SettingDialog : Window, IComponentConnector
 		Settings.Default.Nr = (byte)int.Parse(tbRadarNr.Text);
 		byte commMode = (byte)int.Parse(tbCommMode.Text);
 		Settings.Default.CommMode = commMode;
-		Settings.Default.VideoFilePath = IsVideoTransmissionMode(commMode) ? txtFilePath.Text.Trim() : string.Empty;
+		if (IsVideoTransmissionMode(commMode))
+		{
+			Settings.Default.VideoFilePath = txtFilePath.Text.Trim();
+		}
 		Settings.Default.RemoteEndAddr = txtRemoteIP.Text;
 		Settings.Default.RemoteEndPort = int.Parse(txtRemotePort.Text);
 		Settings.Default.LocalRecvPort = int.Parse(txtLocalPort.Text);
@@ -109,6 +113,19 @@ public class SettingDialog : Window, IComponentConnector
 	private static bool IsVideoTransmissionMode(byte commMode)
 	{
 		return commMode == 8 || commMode == 9;
+	}
+
+	private void OnCommModeTextChanged(object sender, TextChangedEventArgs e)
+	{
+		UpdateVideoFileInputState();
+	}
+
+	private void UpdateVideoFileInputState()
+	{
+		bool isVideoMode = byte.TryParse(tbCommMode.Text.Trim(), out byte commMode) && IsVideoTransmissionMode(commMode);
+		txtFilePath.IsEnabled = isVideoMode;
+		btnBrowse.IsEnabled = isVideoMode;
+		txtFilePath.Text = isVideoMode ? Settings.Default.VideoFilePath : string.Empty;
 	}
 
 	private void OnBrowseFile_Click(object sender, RoutedEventArgs e)
