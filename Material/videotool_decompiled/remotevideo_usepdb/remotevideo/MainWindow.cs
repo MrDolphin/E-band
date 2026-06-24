@@ -1935,8 +1935,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					$"CRC/解调失败：{m_videoModemFailureCount}\n" +
 					$"分片重组：{reassemblyStatus}\n\n" +
 					$"采样率：3.84 MSPS\n" +
-					$"符号率：960 ksym/s\n" +
-					$"调制：QPSK，4 samples/symbol";
+					$"符号率：{3840 / QpskModem.SamplesPerSymbol} ksym/s\n" +
+					$"调制：QPSK，{QpskModem.SamplesPerSymbol} samples/symbol";
 			});
 		}
 
@@ -2224,8 +2224,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"恢复视频帧：{m_videoModemRecoveredFrameCount}\n" +
 				$"CRC/格式失败：{m_videoModemFailureCount}\n\n" +
 				$"采样率：3.84 MSPS\n" +
-				$"符号率：960 ksym/s\n" +
-				$"调制：QPSK，4 samples/symbol\n\n" +
+				$"符号率：{3840 / QpskModem.SamplesPerSymbol} ksym/s\n" +
+				$"调制：QPSK，{QpskModem.SamplesPerSymbol} samples/symbol\n\n" +
 				$"CSV：diagnostics\\{metricsFile}\n" +
 				$"原始IQ：diagnostics\\{iqCaptureFile}";
 			tbRadarData.Text += $"\n\n分片重组：{reassemblyStatus}";
