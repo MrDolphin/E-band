@@ -151,6 +151,18 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private const int VideoDecodeBatchFrames = 32;
 
+	private const int VideoActiveRxPeakThreshold = 2000;
+
+	private const int VideoActiveRxHangoverFrames = 3;
+
+	private byte[] m_videoDecodePrerollIq;
+
+	private int m_videoDecodePrerollFrameId = -1;
+
+	private int m_videoActiveRxHangover;
+
+	private int m_lastQueuedVideoRxFrameId = -1;
+
 	private int m_lastDecodedRxFrameId = -1;
 
 	private double m_videoRxRms;
@@ -728,6 +740,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_rxIqSampleCount = 0;
 				m_videoDecodeQueueDropCount = 0;
 				m_lastDecodedRxFrameId = -1;
+				m_videoDecodePrerollIq = null;
+				m_videoDecodePrerollFrameId = -1;
+				m_videoActiveRxHangover = 0;
+				m_lastQueuedVideoRxFrameId = -1;
 				m_videoRxRms = 0.0;
 				m_videoRxPeak = 0.0;
 				m_videoRxMeanI = 0.0;
@@ -1729,13 +1745,31 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		if (m_commMode == 9)
 		{
 			CaptureVideoIq(completeIq);
-			while (m_videoDecodeQueue.Count >= VideoDecodeQueueLimit &&
-				m_videoDecodeQueue.TryDequeue(out _))
+			bool active = IsLikelyVideoIqActive(completeIq);
+			if (active)
 			{
-				m_videoDecodeQueueDropCount++;
+				if (m_videoDecodePrerollIq != null &&
+					m_videoDecodePrerollFrameId != m_lastQueuedVideoRxFrameId)
+				{
+					QueueVideoDecodeFrame(
+						m_videoDecodePrerollIq,
+						m_videoDecodePrerollFrameId);
+				}
+				m_videoActiveRxHangover = VideoActiveRxHangoverFrames;
 			}
-			m_videoDecodeQueue.Enqueue((completeIq, frameId));
-			m_videoDecodeEvent.Set();
+			if (active || m_videoActiveRxHangover > 0)
+			{
+				QueueVideoDecodeFrame(completeIq, frameId);
+				if (!active)
+				{
+					m_videoActiveRxHangover--;
+				}
+			}
+			else
+			{
+				m_videoDecodePrerollIq = completeIq;
+				m_videoDecodePrerollFrameId = frameId;
+			}
 			return;
 		}
 
@@ -2155,6 +2189,37 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_videoIqCaptureStream.Flush();
 			}
 		}
+	}
+
+	private static bool IsLikelyVideoIqActive(byte[] iq)
+	{
+		for (int offset = 0; offset + 3 < iq.Length; offset += 4)
+		{
+			short i = BitConverter.ToInt16(iq, offset);
+			short q = BitConverter.ToInt16(iq, offset + 2);
+			if (Math.Abs((int)i) >= VideoActiveRxPeakThreshold ||
+				Math.Abs((int)q) >= VideoActiveRxPeakThreshold)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private void QueueVideoDecodeFrame(byte[] iq, int frameId)
+	{
+		if (frameId == m_lastQueuedVideoRxFrameId)
+		{
+			return;
+		}
+		while (m_videoDecodeQueue.Count >= VideoDecodeQueueLimit &&
+			m_videoDecodeQueue.TryDequeue(out _))
+		{
+			m_videoDecodeQueueDropCount++;
+		}
+		m_videoDecodeQueue.Enqueue((iq, frameId));
+		m_lastQueuedVideoRxFrameId = frameId;
+		m_videoDecodeEvent.Set();
 	}
 
 	private void UpdateVideoModemWaitingStatus(int rxFrameId, double correlation)
