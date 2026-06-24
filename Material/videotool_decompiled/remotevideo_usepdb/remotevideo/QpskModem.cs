@@ -8,7 +8,7 @@ namespace remotevideo;
 
 internal static class QpskModem
 {
-	public const int SamplesPerSymbol = 8;
+	public const int SamplesPerSymbol = 4;
 	public const int MaxFrameBytes = 4096;
 	private const double SymbolScale = 0.7071067811865476;
 	private static readonly byte[] PreambleBytes =
