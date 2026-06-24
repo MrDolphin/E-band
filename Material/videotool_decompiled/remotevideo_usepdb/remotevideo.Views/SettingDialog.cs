@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Markup;
+using System.Windows.Media;
 using Microsoft.Win32;
 using remotevideo.Properties;
 
@@ -54,6 +55,20 @@ public class SettingDialog : Window, IComponentConnector
 
 	internal TextBox txtLocalPort;
 
+	private TextBox tbVideoRxPeakThreshold;
+
+	private TextBox tbVideoActiveRxHangoverFrames;
+
+	private TextBox tbVideoDecodeBatchFrames;
+
+	private TextBox tbVideoDecodeQueueLimit;
+
+	private TextBox tbVideoRepairRoundCount;
+
+	private TextBox tbVideoRepairWaitMs;
+
+	private TextBox tbQpskTxScalePercent;
+
 	private bool _contentLoaded;
 
 	public SettingDialog()
@@ -79,6 +94,7 @@ public class SettingDialog : Window, IComponentConnector
 		txtRemoteIP.Text = Settings.Default.RemoteEndAddr;
 		txtRemotePort.Text = Settings.Default.RemoteEndPort.ToString();
 		txtLocalPort.Text = Settings.Default.LocalRecvPort.ToString();
+		AddVideoDebugSettingsPanel();
 	}
 
 	private void BtnDialogOk_Click(object sender, RoutedEventArgs e)
@@ -106,8 +122,52 @@ public class SettingDialog : Window, IComponentConnector
 		Settings.Default.RemoteEndAddr = txtRemoteIP.Text;
 		Settings.Default.RemoteEndPort = int.Parse(txtRemotePort.Text);
 		Settings.Default.LocalRecvPort = int.Parse(txtLocalPort.Text);
+		Settings.Default.VideoRxPeakThreshold = ParseBoundedInt(
+			tbVideoRxPeakThreshold,
+			600,
+			1,
+			32767);
+		Settings.Default.VideoActiveRxHangoverFrames = ParseBoundedInt(
+			tbVideoActiveRxHangoverFrames,
+			3,
+			0,
+			64);
+		Settings.Default.VideoDecodeBatchFrames = ParseBoundedInt(
+			tbVideoDecodeBatchFrames,
+			32,
+			1,
+			256);
+		Settings.Default.VideoDecodeQueueLimit = ParseBoundedInt(
+			tbVideoDecodeQueueLimit,
+			4096,
+			256,
+			32768);
+		Settings.Default.VideoRepairRoundCount = ParseBoundedInt(
+			tbVideoRepairRoundCount,
+			4,
+			0,
+			20);
+		Settings.Default.VideoRepairWaitMs = ParseBoundedInt(
+			tbVideoRepairWaitMs,
+			100,
+			0,
+			2000);
+		Settings.Default.QpskTxScalePercent = ParseBoundedInt(
+			tbQpskTxScalePercent,
+			65,
+			5,
+			100);
 		Settings.Default.Save();
 		base.DialogResult = true;
+	}
+
+	private static int ParseBoundedInt(TextBox textBox, int fallback, int min, int max)
+	{
+		if (textBox == null || !int.TryParse(textBox.Text.Trim(), out int value))
+		{
+			return fallback;
+		}
+		return Math.Max(min, Math.Min(max, value));
 	}
 
 	private static bool IsVideoTransmissionMode(byte commMode)
@@ -138,6 +198,120 @@ public class SettingDialog : Window, IComponentConnector
 		{
 			txtFilePath.Text = openFileDialog.FileName;
 		}
+	}
+
+	private void AddVideoDebugSettingsPanel()
+	{
+		tbVideoRxPeakThreshold = CreateTuningTextBox(
+			Settings.Default.VideoRxPeakThreshold);
+		tbVideoActiveRxHangoverFrames = CreateTuningTextBox(
+			Settings.Default.VideoActiveRxHangoverFrames);
+		tbVideoDecodeBatchFrames = CreateTuningTextBox(
+			Settings.Default.VideoDecodeBatchFrames);
+		tbVideoDecodeQueueLimit = CreateTuningTextBox(
+			Settings.Default.VideoDecodeQueueLimit);
+		tbVideoRepairRoundCount = CreateTuningTextBox(
+			Settings.Default.VideoRepairRoundCount);
+		tbVideoRepairWaitMs = CreateTuningTextBox(
+			Settings.Default.VideoRepairWaitMs);
+		tbQpskTxScalePercent = CreateTuningTextBox(
+			Settings.Default.QpskTxScalePercent);
+
+		Grid tuningGrid = new Grid
+		{
+			Margin = new Thickness(8),
+		};
+		tuningGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+		tuningGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		AddTuningRow(tuningGrid, "RX峰值门限", tbVideoRxPeakThreshold, "ADC 计数，低于此值的 RX IQ 不进入解调队列");
+		AddTuningRow(tuningGrid, "门控拖尾帧", tbVideoActiveRxHangoverFrames, "检测到有效 burst 后额外保留的 RX 帧数");
+		AddTuningRow(tuningGrid, "解调批帧数", tbVideoDecodeBatchFrames, "每次送入 QPSK 流解码器的 RX IQ 帧数");
+		AddTuningRow(tuningGrid, "解调队列上限", tbVideoDecodeQueueLimit, "RX IQ 等待解调的最大队列长度");
+		AddTuningRow(tuningGrid, "补发轮数", tbVideoRepairRoundCount, "每个视频/图片帧缺片后的选择性补发轮数");
+		AddTuningRow(tuningGrid, "补发等待ms", tbVideoRepairWaitMs, "每轮补发前等待 RX 确认的时间");
+		AddTuningRow(tuningGrid, "QPSK发送幅度%", tbQpskTxScalePercent, "发送 IQ 幅度百分比，过强或截断时调低");
+
+		GroupBox groupBox = new GroupBox
+		{
+			Header = "模式9调试参数（QPSK Video Tuning）",
+			Content = tuningGrid,
+			Margin = new Thickness(0, 10, 0, 0),
+		};
+
+		if (TryAppendBelowLocalPort(groupBox))
+		{
+			return;
+		}
+		if (Content is Panel panel)
+		{
+			panel.Children.Add(groupBox);
+		}
+	}
+
+	private static TextBox CreateTuningTextBox(int value)
+	{
+		return new TextBox
+		{
+			Text = value.ToString(),
+			MinWidth = 120,
+			Margin = new Thickness(8, 3, 0, 3),
+		};
+	}
+
+	private static void AddTuningRow(
+		Grid grid,
+		string label,
+		TextBox textBox,
+		string tooltip)
+	{
+		int row = grid.RowDefinitions.Count;
+		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		Label labelControl = new Label
+		{
+			Content = label,
+			ToolTip = tooltip,
+			VerticalAlignment = VerticalAlignment.Center,
+			Margin = new Thickness(0, 2, 8, 2),
+		};
+		textBox.ToolTip = tooltip;
+		Grid.SetRow(labelControl, row);
+		Grid.SetColumn(labelControl, 0);
+		Grid.SetRow(textBox, row);
+		Grid.SetColumn(textBox, 1);
+		grid.Children.Add(labelControl);
+		grid.Children.Add(textBox);
+	}
+
+	private bool TryAppendBelowLocalPort(GroupBox groupBox)
+	{
+		Grid grid = FindVisualParent<Grid>(txtLocalPort);
+		if (grid == null)
+		{
+			return false;
+		}
+
+		int row = grid.RowDefinitions.Count;
+		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		Grid.SetRow(groupBox, row);
+		Grid.SetColumn(groupBox, 0);
+		Grid.SetColumnSpan(groupBox, Math.Max(1, grid.ColumnDefinitions.Count));
+		grid.Children.Add(groupBox);
+		return true;
+	}
+
+	private static T FindVisualParent<T>(DependencyObject child)
+		where T : DependencyObject
+	{
+		DependencyObject current = child;
+		while (current != null)
+		{
+			current = VisualTreeHelper.GetParent(current);
+			if (current is T match)
+			{
+				return match;
+			}
+		}
+		return null;
 	}
 
 	[DebuggerNonUserCode]

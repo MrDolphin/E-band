@@ -147,13 +147,25 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private long m_videoDecodeQueueDropCount;
 
-	private const int VideoDecodeQueueLimit = 4096;
+	private static int VideoDecodeQueueLimit => ClampSetting(
+		Settings.Default.VideoDecodeQueueLimit,
+		256,
+		32768);
 
-	private const int VideoDecodeBatchFrames = 32;
+	private static int VideoDecodeBatchFrames => ClampSetting(
+		Settings.Default.VideoDecodeBatchFrames,
+		1,
+		256);
 
-	private const int VideoActiveRxPeakThreshold = 2000;
+	private static int VideoActiveRxPeakThreshold => ClampSetting(
+		Settings.Default.VideoRxPeakThreshold,
+		1,
+		32767);
 
-	private const int VideoActiveRxHangoverFrames = 3;
+	private static int VideoActiveRxHangoverFrames => ClampSetting(
+		Settings.Default.VideoActiveRxHangoverFrames,
+		0,
+		64);
 
 	private byte[] m_videoDecodePrerollIq;
 
@@ -162,6 +174,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private int m_videoActiveRxHangover;
 
 	private int m_lastQueuedVideoRxFrameId = -1;
+
+	private long m_videoGateQueuedFrameCount;
+
+	private long m_videoGateSkippedFrameCount;
 
 	private int m_lastDecodedRxFrameId = -1;
 
@@ -227,8 +243,20 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private const int VideoChunkRepeatCount = 2;
 	private const int VideoWirelessChunkPayloadBytes = 256;
-	private const int VideoRepairRoundCount = 4;
-	private const int VideoRepairWaitMs = 100;
+	private static int VideoRepairRoundCount => ClampSetting(
+		Settings.Default.VideoRepairRoundCount,
+		0,
+		20);
+
+	private static int VideoRepairWaitMs => ClampSetting(
+		Settings.Default.VideoRepairWaitMs,
+		0,
+		2000);
+
+	private static double QpskTxScale => ClampSetting(
+		Settings.Default.QpskTxScalePercent,
+		5,
+		100) / 100.0;
 	private const int PhotoMaxLongEdge = 800;
 	private const int PhotoWebPQuality = 40;
 	private long m_videoModemRepairChunkCount;
@@ -324,6 +352,11 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		{
 			Settings.Default.Save();
 		}
+	}
+
+	private static int ClampSetting(int value, int min, int max)
+	{
+		return Math.Max(min, Math.Min(max, value));
 	}
 
 	private void InitUdpSocket()
@@ -744,6 +777,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_videoDecodePrerollFrameId = -1;
 				m_videoActiveRxHangover = 0;
 				m_lastQueuedVideoRxFrameId = -1;
+				m_videoGateQueuedFrameCount = 0;
+				m_videoGateSkippedFrameCount = 0;
 				m_videoRxRms = 0.0;
 				m_videoRxPeak = 0.0;
 				m_videoRxMeanI = 0.0;
@@ -1374,7 +1409,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		byte scramblerId = (byte)(
 			(variant * 53 + chunk.ChunkIndex * 17 + frameId) & 0xFF);
 		Complex[] samples = QpskModem.Modulate(wirelessBytes, scramblerId);
-		short[] interleaved = QpskModem.ToInterleavedInt16(samples, 0.65);
+		short[] interleaved = QpskModem.ToInterleavedInt16(samples, QpskTxScale);
 		byte[] iqBytes = new byte[interleaved.Length * sizeof(short)];
 		Buffer.BlockCopy(interleaved, 0, iqBytes, 0, iqBytes.Length);
 		SendWaveformFrame(iqBytes, m_videoIqFrameId++, 0x05);
@@ -1745,6 +1780,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		if (m_commMode == 9)
 		{
 			CaptureVideoIq(completeIq);
+			MeasureVideoIq(completeIq, frameId);
 			bool active = IsLikelyVideoIqActive(completeIq);
 			if (active)
 			{
@@ -1769,6 +1805,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			{
 				m_videoDecodePrerollIq = completeIq;
 				m_videoDecodePrerollFrameId = frameId;
+				m_videoGateSkippedFrameCount++;
 			}
 			return;
 		}
@@ -1921,7 +1958,6 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private void ProcessVideoModemRxIq(byte[] iq, int rxFrameId)
 	{
-		MeasureVideoIq(iq, rxFrameId);
 		m_qpskStreamDecoder.AppendInt16Iq(iq);
 		bool decodedAny = false;
 		while (m_qpskStreamDecoder.TryReadFrame(
@@ -2042,7 +2078,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				"time,rx_frame,samples,mean_i,mean_q,rms_i,rms_q,rms_total," +
 				"peak,iq_imbalance_db,iq_correlation,coarse_frequency_hz," +
 				"clipping_percent,zero_percent,normal_correlation," +
-				"conjugate_correlation,decode_queue,decode_queue_drops");
+				"conjugate_correlation,decode_queue,decode_queue_drops," +
+				"gate_queued_frames,gate_skipped_frames");
 			m_videoMetricsWriter.Flush();
 			m_videoIqCaptureStream = new FileStream(
 				m_videoIqCapturePath,
@@ -2164,7 +2201,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"{m_videoRxClippingPercent:F6},{m_videoRxZeroPercent:F6}," +
 				$"{m_qpskStreamDecoder.LastNormalCorrelation:F6}," +
 				$"{m_qpskStreamDecoder.LastConjugateCorrelation:F6}," +
-				$"{m_videoDecodeQueue.Count},{m_videoDecodeQueueDropCount}");
+				$"{m_videoDecodeQueue.Count},{m_videoDecodeQueueDropCount}," +
+				$"{m_videoGateQueuedFrameCount},{m_videoGateSkippedFrameCount}");
 			m_videoMetricsWriter.Flush();
 
 		}
@@ -2219,6 +2257,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 		m_videoDecodeQueue.Enqueue((iq, frameId));
 		m_lastQueuedVideoRxFrameId = frameId;
+		m_videoGateQueuedFrameCount++;
 		m_videoDecodeEvent.Set();
 	}
 
@@ -2236,6 +2275,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		long droppedFrameCount = m_rxIqDroppedFrameCount;
 		long sampleCount = m_rxIqSampleCount;
 		long decodeQueueDropCount = m_videoDecodeQueueDropCount;
+		long gateQueuedFrameCount = m_videoGateQueuedFrameCount;
+		long gateSkippedFrameCount = m_videoGateSkippedFrameCount;
 		int decodeQueueDepth = m_videoDecodeQueue.Count;
 		int bufferedSamples = m_qpskStreamDecoder.BufferedSamples;
 		double normalCorrelation = m_qpskStreamDecoder.LastNormalCorrelation;
@@ -2267,6 +2308,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"累计 RX 样点：{sampleCount}\n" +
 				$"解调队列：{decodeQueueDepth}/{VideoDecodeQueueLimit}\n" +
 				$"解调队列丢帧：{decodeQueueDropCount}\n" +
+				$"RX门控入队帧：{gateQueuedFrameCount}\n" +
+				$"RX门控跳过帧：{gateSkippedFrameCount}\n" +
+				$"RX门控峰值阈值：{VideoActiveRxPeakThreshold} ADC\n" +
 				$"QPSK 流缓冲：{bufferedSamples} 样点\n" +
 				$"正常 IQ 相关：{normalCorrelation:F4}\n" +
 				$"共轭 IQ 相关：{conjugateCorrelation:F4}\n" +

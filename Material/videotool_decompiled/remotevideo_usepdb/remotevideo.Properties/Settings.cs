@@ -360,6 +360,111 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
+	[DefaultSettingValue("600")]
+	public int VideoRxPeakThreshold
+	{
+		get
+		{
+			return (int)this["VideoRxPeakThreshold"];
+		}
+		set
+		{
+			this["VideoRxPeakThreshold"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
+	[DefaultSettingValue("3")]
+	public int VideoActiveRxHangoverFrames
+	{
+		get
+		{
+			return (int)this["VideoActiveRxHangoverFrames"];
+		}
+		set
+		{
+			this["VideoActiveRxHangoverFrames"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
+	[DefaultSettingValue("32")]
+	public int VideoDecodeBatchFrames
+	{
+		get
+		{
+			return (int)this["VideoDecodeBatchFrames"];
+		}
+		set
+		{
+			this["VideoDecodeBatchFrames"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
+	[DefaultSettingValue("4096")]
+	public int VideoDecodeQueueLimit
+	{
+		get
+		{
+			return (int)this["VideoDecodeQueueLimit"];
+		}
+		set
+		{
+			this["VideoDecodeQueueLimit"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
+	[DefaultSettingValue("4")]
+	public int VideoRepairRoundCount
+	{
+		get
+		{
+			return (int)this["VideoRepairRoundCount"];
+		}
+		set
+		{
+			this["VideoRepairRoundCount"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
+	[DefaultSettingValue("100")]
+	public int VideoRepairWaitMs
+	{
+		get
+		{
+			return (int)this["VideoRepairWaitMs"];
+		}
+		set
+		{
+			this["VideoRepairWaitMs"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
+	[DefaultSettingValue("65")]
+	public int QpskTxScalePercent
+	{
+		get
+		{
+			return (int)this["QpskTxScalePercent"];
+		}
+		set
+		{
+			this["QpskTxScalePercent"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
 	[DefaultSettingValue("1.1")]
 	public string Version
 	{
