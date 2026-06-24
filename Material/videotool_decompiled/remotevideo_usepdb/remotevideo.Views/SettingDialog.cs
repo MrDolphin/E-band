@@ -219,17 +219,19 @@ public class SettingDialog : Window, IComponentConnector
 
 		Grid tuningGrid = new Grid
 		{
-			Margin = new Thickness(8),
+			Margin = new Thickness(8, 4, 8, 4),
 		};
 		tuningGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 		tuningGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-		AddTuningRow(tuningGrid, "RX峰值门限", tbVideoRxPeakThreshold, "ADC 计数，低于此值的 RX IQ 不进入解调队列");
-		AddTuningRow(tuningGrid, "门控拖尾帧", tbVideoActiveRxHangoverFrames, "检测到有效 burst 后额外保留的 RX 帧数");
-		AddTuningRow(tuningGrid, "解调批帧数", tbVideoDecodeBatchFrames, "每次送入 QPSK 流解码器的 RX IQ 帧数");
-		AddTuningRow(tuningGrid, "解调队列上限", tbVideoDecodeQueueLimit, "RX IQ 等待解调的最大队列长度");
-		AddTuningRow(tuningGrid, "补发轮数", tbVideoRepairRoundCount, "每个视频/图片帧缺片后的选择性补发轮数");
-		AddTuningRow(tuningGrid, "补发等待ms", tbVideoRepairWaitMs, "每轮补发前等待 RX 确认的时间");
-		AddTuningRow(tuningGrid, "QPSK发送幅度%", tbQpskTxScalePercent, "发送 IQ 幅度百分比，过强或截断时调低");
+		tuningGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+		tuningGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+		AddTuningCell(tuningGrid, 0, 0, "RX峰值门限", tbVideoRxPeakThreshold, "ADC 计数，低于此值的 RX IQ 不进入解调队列");
+		AddTuningCell(tuningGrid, 0, 2, "门控拖尾帧", tbVideoActiveRxHangoverFrames, "检测到有效 burst 后额外保留的 RX 帧数");
+		AddTuningCell(tuningGrid, 1, 0, "解调批帧数", tbVideoDecodeBatchFrames, "每次送入 QPSK 流解码器的 RX IQ 帧数");
+		AddTuningCell(tuningGrid, 1, 2, "解调队列上限", tbVideoDecodeQueueLimit, "RX IQ 等待解调的最大队列长度");
+		AddTuningCell(tuningGrid, 2, 0, "补发轮数", tbVideoRepairRoundCount, "每个视频/图片帧缺片后的选择性补发轮数");
+		AddTuningCell(tuningGrid, 2, 2, "补发等待ms", tbVideoRepairWaitMs, "每轮补发前等待 RX 确认的时间");
+		AddTuningCell(tuningGrid, 3, 0, "QPSK发送幅度%", tbQpskTxScalePercent, "发送 IQ 幅度百分比，过强或截断时调低");
 
 		GroupBox groupBox = new GroupBox
 		{
@@ -253,31 +255,35 @@ public class SettingDialog : Window, IComponentConnector
 		return new TextBox
 		{
 			Text = value.ToString(),
-			MinWidth = 120,
-			Margin = new Thickness(8, 3, 0, 3),
+			MinWidth = 90,
+			Margin = new Thickness(6, 2, 10, 2),
 		};
 	}
 
-	private static void AddTuningRow(
+	private static void AddTuningCell(
 		Grid grid,
+		int row,
+		int column,
 		string label,
 		TextBox textBox,
 		string tooltip)
 	{
-		int row = grid.RowDefinitions.Count;
-		grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		while (grid.RowDefinitions.Count <= row)
+		{
+			grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		}
 		Label labelControl = new Label
 		{
 			Content = label,
 			ToolTip = tooltip,
 			VerticalAlignment = VerticalAlignment.Center,
-			Margin = new Thickness(0, 2, 8, 2),
+			Margin = new Thickness(0, 1, 4, 1),
 		};
 		textBox.ToolTip = tooltip;
 		Grid.SetRow(labelControl, row);
-		Grid.SetColumn(labelControl, 0);
+		Grid.SetColumn(labelControl, column);
 		Grid.SetRow(textBox, row);
-		Grid.SetColumn(textBox, 1);
+		Grid.SetColumn(textBox, column + 1);
 		grid.Children.Add(labelControl);
 		grid.Children.Add(textBox);
 	}
