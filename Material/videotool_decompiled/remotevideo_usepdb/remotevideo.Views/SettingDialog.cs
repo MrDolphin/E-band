@@ -263,10 +263,18 @@ public class SettingDialog : Window, IComponentConnector
 		AddTuningCell(tuningGrid, 4, 0, "快速筛选门限%", tbQpskQuickThresholdPercent, "粗搜索快速前导筛选门限，53 表示 0.53");
 		AddTuningCell(tuningGrid, 4, 2, "前导搜索步进", tbQpskPreambleSearchStep, "粗搜索采样步进，1 最细但更慢，4 为默认");
 
+		ScrollViewer tuningScrollViewer = new ScrollViewer
+		{
+			Content = tuningGrid,
+			MaxHeight = 175,
+			VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
+			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+		};
+
 		GroupBox groupBox = new GroupBox
 		{
 			Header = "模式9调试参数（QPSK Video Tuning）",
-			Content = tuningGrid,
+			Content = tuningScrollViewer,
 			Margin = new Thickness(0, 10, 0, 0),
 		};
 
