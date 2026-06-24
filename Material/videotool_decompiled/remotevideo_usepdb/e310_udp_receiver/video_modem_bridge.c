@@ -29,6 +29,8 @@
 #define SAMPLE_RATE_HZ 3840000LL
 #define RF_BANDWIDTH_HZ 3000000LL
 #define RF_LO_HZ 200000000LL
+#define TX_HARDWAREGAIN_DB -30.5
+#define RX_HARDWAREGAIN_DB 20.0
 
 static volatile int stop;
 static volatile int streaming_active;
@@ -214,11 +216,11 @@ static int setup_ad9361(struct iio_context *ctx)
 		write_attr(tx0, "sampling_frequency", SAMPLE_RATE_HZ) < 0 ||
 		write_attr(rx0, "rf_bandwidth", RF_BANDWIDTH_HZ) < 0 ||
 		write_attr(tx0, "rf_bandwidth", RF_BANDWIDTH_HZ) < 0 ||
-		write_attr_double(tx0, "hardwaregain", -30.5) < 0) {
+		write_attr_double(tx0, "hardwaregain", TX_HARDWAREGAIN_DB) < 0) {
 		return -1;
 	}
 	if (iio_channel_attr_write(rx0, "gain_control_mode", "manual") < 0 ||
-		write_attr_double(rx0, "hardwaregain", 0.0) < 0) {
+		write_attr_double(rx0, "hardwaregain", RX_HARDWAREGAIN_DB) < 0) {
 		fprintf(stderr, "failed to set deterministic RX gain\n");
 		return -1;
 	}
@@ -679,7 +681,9 @@ int main(void)
 	printf("E310 video modem bridge listening on UDP %d\n", UDP_PORT);
 	printf("LO=200 MHz Fs=3.84 MSPS BW=3 MHz TX1/RX1 non-cyclic QPSK stream RX_FRAME=%d\n",
 		RX_FRAME_SAMPLES);
-	printf("TX attenuation=-30.5 dB, RX manual gain=0 dB\n");
+	printf("TX attenuation=%.1f dB, RX manual gain=%.1f dB\n",
+		TX_HARDWAREGAIN_DB,
+		RX_HARDWAREGAIN_DB);
 
 	while (!stop) {
 		struct sockaddr_in peer;
