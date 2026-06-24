@@ -242,7 +242,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private long m_videoModemRecoveredFrameCount;
 
 	private const int VideoChunkRepeatCount = 2;
-	private const int VideoWirelessChunkPayloadBytes = 256;
+	private static int VideoWirelessChunkPayloadBytes => ClampSetting(
+		Settings.Default.VideoWirelessChunkPayloadBytes,
+		32,
+		WirelessVideoFrame.MaxPayloadSize);
 	private static int VideoRepairRoundCount => ClampSetting(
 		Settings.Default.VideoRepairRoundCount,
 		0,
@@ -2344,6 +2347,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"CRC/格式失败：{m_videoModemFailureCount}\n\n" +
 				$"采样率：3.84 MSPS\n" +
 				$"符号率：{3840 / QpskModem.SamplesPerSymbol} ksym/s\n" +
+				$"分片负载：{VideoWirelessChunkPayloadBytes} bytes\n" +
 				$"快速筛选门限：{QpskModem.QuickThreshold:F2}\n" +
 				$"前导搜索步进：{QpskModem.PreambleSearchStep} samples\n" +
 				$"调制：QPSK，{QpskModem.SamplesPerSymbol} samples/symbol\n\n" +

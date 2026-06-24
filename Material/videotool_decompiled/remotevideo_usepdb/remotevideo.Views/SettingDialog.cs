@@ -67,6 +67,8 @@ public class SettingDialog : Window, IComponentConnector
 
 	private TextBox tbVideoRepairWaitMs;
 
+	private TextBox tbVideoWirelessChunkPayloadBytes;
+
 	private TextBox tbQpskTxScalePercent;
 
 	private TextBox tbQpskPreambleThresholdPercent;
@@ -158,6 +160,11 @@ public class SettingDialog : Window, IComponentConnector
 			100,
 			0,
 			2000);
+		Settings.Default.VideoWirelessChunkPayloadBytes = ParseBoundedInt(
+			tbVideoWirelessChunkPayloadBytes,
+			256,
+			32,
+			WirelessVideoFrame.MaxPayloadSize);
 		Settings.Default.QpskTxScalePercent = ParseBoundedInt(
 			tbQpskTxScalePercent,
 			65,
@@ -235,6 +242,8 @@ public class SettingDialog : Window, IComponentConnector
 			Settings.Default.VideoRepairRoundCount);
 		tbVideoRepairWaitMs = CreateTuningTextBox(
 			Settings.Default.VideoRepairWaitMs);
+		tbVideoWirelessChunkPayloadBytes = CreateTuningTextBox(
+			Settings.Default.VideoWirelessChunkPayloadBytes);
 		tbQpskTxScalePercent = CreateTuningTextBox(
 			Settings.Default.QpskTxScalePercent);
 		tbQpskPreambleThresholdPercent = CreateTuningTextBox(
@@ -262,6 +271,7 @@ public class SettingDialog : Window, IComponentConnector
 		AddTuningCell(tuningGrid, 3, 2, "前导解调门限%", tbQpskPreambleThresholdPercent, "最终 QPSK 前导相关门限，65 表示 0.65");
 		AddTuningCell(tuningGrid, 4, 0, "快速筛选门限%", tbQpskQuickThresholdPercent, "粗搜索快速前导筛选门限，53 表示 0.53");
 		AddTuningCell(tuningGrid, 4, 2, "前导搜索步进", tbQpskPreambleSearchStep, "粗搜索采样步进，1 最细但更慢，4 为默认");
+		AddTuningCell(tuningGrid, 5, 0, "分片负载字节", tbVideoWirelessChunkPayloadBytes, "每个无线视频分片的 payload 字节数；误码多时先试 64/96/128");
 
 		ScrollViewer tuningScrollViewer = new ScrollViewer
 		{

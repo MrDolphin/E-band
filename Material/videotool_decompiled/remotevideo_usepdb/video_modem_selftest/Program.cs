@@ -58,6 +58,7 @@ static void DecodeCapture(string path)
 	QpskStreamDecoder decoder = new();
 	int decodedFrames = 0;
 	int validWirelessFrames = 0;
+	int invalidWirelessFrames = 0;
 	double bestCorrelation = 0.0;
 	const int samplesPerChunk = 4096;
 	int bytesPerChunk = samplesPerChunk * 4;
@@ -79,6 +80,15 @@ static void DecodeCapture(string path)
 					$"chunk={wireless.ChunkIndex + 1}/{wireless.ChunkCount}, " +
 					$"payload={wireless.Payload.Length}, corr={correlation:F4}");
 			}
+			else
+			{
+				invalidWirelessFrames++;
+				Console.WriteLine(
+					$"Invalid wireless frame: bytes={frame.Length}, " +
+					$"corr={correlation:F4}, reason={DescribeWirelessParseFailure(frame)}");
+				Console.WriteLine(
+					$"  Head: {BitConverter.ToString(frame.Take(Math.Min(32, frame.Length)).ToArray())}");
+			}
 		}
 		bestCorrelation = Math.Max(bestCorrelation, decoder.LastCorrelation);
 	}
@@ -87,8 +97,39 @@ static void DecodeCapture(string path)
 	Console.WriteLine($"Samples: {capture.Length / 4}");
 	Console.WriteLine($"Decoded modem frames: {decodedFrames}");
 	Console.WriteLine($"Valid wireless frames: {validWirelessFrames}");
+	Console.WriteLine($"Invalid wireless frames: {invalidWirelessFrames}");
 	Console.WriteLine($"Best preamble correlation: {bestCorrelation:F4}");
 	Console.WriteLine($"Buffered samples: {decoder.BufferedSamples}");
+}
+
+static string DescribeWirelessParseFailure(byte[] data)
+{
+	if (data.Length < WirelessVideoFrame.HeaderSize + WirelessVideoFrame.CrcSize)
+	{
+		return "too short for wireless header";
+	}
+	uint sync = BitConverter.ToUInt32(data, 0);
+	if (sync != WirelessVideoFrame.SyncWord)
+	{
+		return $"sync mismatch 0x{sync:X8}";
+	}
+	if (data[4] != WirelessVideoFrame.Version)
+	{
+		return $"version mismatch {data[4]}";
+	}
+	ushort payloadLength = BitConverter.ToUInt16(data, 14);
+	int expectedLength = WirelessVideoFrame.HeaderSize +
+		payloadLength +
+		WirelessVideoFrame.CrcSize;
+	if (payloadLength > WirelessVideoFrame.MaxPayloadSize)
+	{
+		return $"payload too large {payloadLength}";
+	}
+	if (data.Length != expectedLength)
+	{
+		return $"length mismatch actual={data.Length}, expected={expectedLength}";
+	}
+	return "CRC or chunk index/count mismatch";
 }
 
 static Complex ReadInt16Iq(byte[] data, int index)

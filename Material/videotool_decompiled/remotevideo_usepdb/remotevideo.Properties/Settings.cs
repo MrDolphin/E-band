@@ -450,6 +450,21 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
+	[DefaultSettingValue("256")]
+	public int VideoWirelessChunkPayloadBytes
+	{
+		get
+		{
+			return (int)this["VideoWirelessChunkPayloadBytes"];
+		}
+		set
+		{
+			this["VideoWirelessChunkPayloadBytes"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
 	[DefaultSettingValue("65")]
 	public int QpskTxScalePercent
 	{
