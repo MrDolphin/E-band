@@ -69,6 +69,12 @@ public class SettingDialog : Window, IComponentConnector
 
 	private TextBox tbQpskTxScalePercent;
 
+	private TextBox tbQpskPreambleThresholdPercent;
+
+	private TextBox tbQpskQuickThresholdPercent;
+
+	private TextBox tbQpskPreambleSearchStep;
+
 	private bool _contentLoaded;
 
 	public SettingDialog()
@@ -157,6 +163,21 @@ public class SettingDialog : Window, IComponentConnector
 			65,
 			5,
 			100);
+		Settings.Default.QpskPreambleThresholdPercent = ParseBoundedInt(
+			tbQpskPreambleThresholdPercent,
+			65,
+			25,
+			95);
+		Settings.Default.QpskQuickThresholdPercent = ParseBoundedInt(
+			tbQpskQuickThresholdPercent,
+			53,
+			10,
+			90);
+		Settings.Default.QpskPreambleSearchStep = ParseBoundedInt(
+			tbQpskPreambleSearchStep,
+			4,
+			1,
+			4);
 		Settings.Default.Save();
 		base.DialogResult = true;
 	}
@@ -216,6 +237,12 @@ public class SettingDialog : Window, IComponentConnector
 			Settings.Default.VideoRepairWaitMs);
 		tbQpskTxScalePercent = CreateTuningTextBox(
 			Settings.Default.QpskTxScalePercent);
+		tbQpskPreambleThresholdPercent = CreateTuningTextBox(
+			Settings.Default.QpskPreambleThresholdPercent);
+		tbQpskQuickThresholdPercent = CreateTuningTextBox(
+			Settings.Default.QpskQuickThresholdPercent);
+		tbQpskPreambleSearchStep = CreateTuningTextBox(
+			Settings.Default.QpskPreambleSearchStep);
 
 		Grid tuningGrid = new Grid
 		{
@@ -232,6 +259,9 @@ public class SettingDialog : Window, IComponentConnector
 		AddTuningCell(tuningGrid, 2, 0, "补发轮数", tbVideoRepairRoundCount, "每个视频/图片帧缺片后的选择性补发轮数");
 		AddTuningCell(tuningGrid, 2, 2, "补发等待ms", tbVideoRepairWaitMs, "每轮补发前等待 RX 确认的时间");
 		AddTuningCell(tuningGrid, 3, 0, "QPSK发送幅度%", tbQpskTxScalePercent, "发送 IQ 幅度百分比，过强或截断时调低");
+		AddTuningCell(tuningGrid, 3, 2, "前导解调门限%", tbQpskPreambleThresholdPercent, "最终 QPSK 前导相关门限，65 表示 0.65");
+		AddTuningCell(tuningGrid, 4, 0, "快速筛选门限%", tbQpskQuickThresholdPercent, "粗搜索快速前导筛选门限，53 表示 0.53");
+		AddTuningCell(tuningGrid, 4, 2, "前导搜索步进", tbQpskPreambleSearchStep, "粗搜索采样步进，1 最细但更慢，4 为默认");
 
 		GroupBox groupBox = new GroupBox
 		{

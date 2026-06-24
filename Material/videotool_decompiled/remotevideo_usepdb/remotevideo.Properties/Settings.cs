@@ -465,6 +465,51 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
+	[DefaultSettingValue("65")]
+	public int QpskPreambleThresholdPercent
+	{
+		get
+		{
+			return (int)this["QpskPreambleThresholdPercent"];
+		}
+		set
+		{
+			this["QpskPreambleThresholdPercent"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
+	[DefaultSettingValue("53")]
+	public int QpskQuickThresholdPercent
+	{
+		get
+		{
+			return (int)this["QpskQuickThresholdPercent"];
+		}
+		set
+		{
+			this["QpskQuickThresholdPercent"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
+	[DefaultSettingValue("4")]
+	public int QpskPreambleSearchStep
+	{
+		get
+		{
+			return (int)this["QpskPreambleSearchStep"];
+		}
+		set
+		{
+			this["QpskPreambleSearchStep"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
 	[DefaultSettingValue("1.1")]
 	public string Version
 	{

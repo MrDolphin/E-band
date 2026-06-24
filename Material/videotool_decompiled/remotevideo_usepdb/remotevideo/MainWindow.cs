@@ -301,6 +301,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		LogManager.AddDebugListener();
 		LogManager.IsDebugEnabled = false;
 		UpgradeLegacyCommunicationDefaults();
+		ApplyQpskTuningSettings();
 		m_protocolVersion = Settings.Default.ProtocolVersion;
 		m_mode = Settings.Default.Mode;
 		m_commMode = Settings.Default.CommMode;
@@ -357,6 +358,14 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private static int ClampSetting(int value, int min, int max)
 	{
 		return Math.Max(min, Math.Min(max, value));
+	}
+
+	private static void ApplyQpskTuningSettings()
+	{
+		QpskModem.ConfigureTuning(
+			Settings.Default.QpskPreambleThresholdPercent,
+			Settings.Default.QpskQuickThresholdPercent,
+			Settings.Default.QpskPreambleSearchStep);
 	}
 
 	private void InitUdpSocket()
@@ -746,6 +755,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	{
 		if (CreateRemoteEndpoint())
 		{
+			ApplyQpskTuningSettings();
 			SendStopCommand();
 			Thread.Sleep(60);
 			m_acceptRxIq = true;
@@ -2314,7 +2324,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"QPSK 流缓冲：{bufferedSamples} 样点\n" +
 				$"正常 IQ 相关：{normalCorrelation:F4}\n" +
 				$"共轭 IQ 相关：{conjugateCorrelation:F4}\n" +
-				$"最佳前导相关：{correlation:F4}（解调门限 0.65）\n" +
+				$"最佳前导相关：{correlation:F4}（解调门限 {QpskModem.PreambleThreshold:F2}）\n" +
 				$"RX RMS（12位FS）：{rms:F5}\n" +
 				$"RX 峰值（12位FS）：{peak:F5}\n" +
 				$"I/Q 均值：{meanI:+0.000000;-0.000000;0.000000} / " +
@@ -2334,6 +2344,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"CRC/格式失败：{m_videoModemFailureCount}\n\n" +
 				$"采样率：3.84 MSPS\n" +
 				$"符号率：{3840 / QpskModem.SamplesPerSymbol} ksym/s\n" +
+				$"快速筛选门限：{QpskModem.QuickThreshold:F2}\n" +
+				$"前导搜索步进：{QpskModem.PreambleSearchStep} samples\n" +
 				$"调制：QPSK，{QpskModem.SamplesPerSymbol} samples/symbol\n\n" +
 				$"CSV：diagnostics\\{metricsFile}\n" +
 				$"原始IQ：diagnostics\\{iqCaptureFile}";
@@ -2997,6 +3009,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		SettingDialog settingDialog = new SettingDialog();
 		settingDialog.Owner = this;
 		settingDialog.ShowDialog();
+		ApplyQpskTuningSettings();
 
 		byte selectedCommMode = Settings.Default.CommMode;
 		if (!restartWaveform || selectedCommMode == previousCommMode)

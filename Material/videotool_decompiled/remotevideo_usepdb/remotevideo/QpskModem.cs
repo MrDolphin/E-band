@@ -18,6 +18,33 @@ internal static class QpskModem
 	};
 	private static readonly Complex[] PreambleSymbols = BytesToSymbols(PreambleBytes);
 	private const byte ScrambledPacketMarker = 0xA7;
+	private static int preambleThresholdPercent = 65;
+	private static int quickThresholdPercent = 53;
+	private static int preambleSearchStep = SamplesPerSymbol;
+
+	public static double PreambleThreshold => ClampPercent(
+		preambleThresholdPercent,
+		25,
+		95);
+
+	public static double QuickThreshold => ClampPercent(
+		quickThresholdPercent,
+		10,
+		90);
+
+	public static int PreambleSearchStep => Math.Max(
+		1,
+		Math.Min(SamplesPerSymbol, preambleSearchStep));
+
+	public static void ConfigureTuning(
+		int preambleThreshold,
+		int quickThreshold,
+		int searchStep)
+	{
+		preambleThresholdPercent = preambleThreshold;
+		quickThresholdPercent = quickThreshold;
+		preambleSearchStep = searchStep;
+	}
 
 	public static Complex[] Modulate(ReadOnlySpan<byte> frame)
 	{
@@ -92,10 +119,13 @@ internal static class QpskModem
 		double bestScore = 0.0;
 		double bestPhaseStep = 0.0;
 		int searchLimit = samples.Length - minimumSamples;
-		for (int start = 0; start <= searchLimit; start += SamplesPerSymbol)
+		int searchStep = PreambleSearchStep;
+		double quickThreshold = QuickThreshold;
+		double preambleThreshold = PreambleThreshold;
+		for (int start = 0; start <= searchLimit; start += searchStep)
 		{
 			double quickScore = EvaluatePreambleQuick(samples, start);
-			if (quickScore < 0.53)
+			if (quickScore < quickThreshold)
 			{
 				if (quickScore > bestScore)
 				{
@@ -147,7 +177,7 @@ internal static class QpskModem
 
 		correlation = bestScore;
 		frameStart = bestStart;
-		if (bestStart < 0 || bestScore < 0.65)
+		if (bestStart < 0 || bestScore < preambleThreshold)
 		{
 			return false;
 		}
@@ -203,6 +233,11 @@ internal static class QpskModem
 		consumedSamples = bestStart +
 			(PreambleSymbols.Length + 24 + frameSymbols) * SamplesPerSymbol;
 		return true;
+	}
+
+	private static double ClampPercent(int value, int min, int max)
+	{
+		return Math.Max(min, Math.Min(max, value)) / 100.0;
 	}
 
 	private static bool TryDemodulateLegacyPacket(

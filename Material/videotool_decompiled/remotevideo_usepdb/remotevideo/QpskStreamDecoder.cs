@@ -81,7 +81,7 @@ internal sealed class QpskStreamDecoder
 			int frameStart = normalCorrelation >= conjugateCorrelation
 				? normalFrameStart
 				: conjugateFrameStart;
-			if (correlation < 0.65 && samples.Count > 4096)
+			if (correlation < QpskModem.PreambleThreshold && samples.Count > 4096)
 			{
 				samples.RemoveRange(0, samples.Count - 4096);
 			}
