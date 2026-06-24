@@ -266,16 +266,18 @@ public class SettingDialog : Window, IComponentConnector
 		ScrollViewer tuningScrollViewer = new ScrollViewer
 		{
 			Content = tuningGrid,
-			MaxHeight = 175,
+			Height = 118,
 			VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+			CanContentScroll = false,
+			PanningMode = PanningMode.VerticalOnly,
 		};
 
 		GroupBox groupBox = new GroupBox
 		{
 			Header = "模式9调试参数（QPSK Video Tuning）",
 			Content = tuningScrollViewer,
-			Margin = new Thickness(0, 10, 0, 0),
+			Margin = new Thickness(0, 8, 0, 0),
 		};
 
 		if (TryAppendBelowLocalPort(groupBox))
@@ -294,7 +296,7 @@ public class SettingDialog : Window, IComponentConnector
 		{
 			Text = value.ToString(),
 			MinWidth = 90,
-			Margin = new Thickness(6, 2, 10, 2),
+			Margin = new Thickness(6, 1, 10, 1),
 		};
 	}
 
