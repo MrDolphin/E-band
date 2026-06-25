@@ -21,6 +21,8 @@ internal static class QpskModem
 	private static int preambleThresholdPercent = 65;
 	private static int quickThresholdPercent = 53;
 	private static int preambleSearchStep = SamplesPerSymbol;
+	private static double phaseErrorGain = 0.05;
+	private static double phaseStepGain = 0.0002;
 
 	public static double PreambleThreshold => ClampPercent(
 		preambleThresholdPercent,
@@ -36,6 +38,10 @@ internal static class QpskModem
 		1,
 		Math.Min(SamplesPerSymbol, preambleSearchStep));
 
+	public static double PhaseErrorGain => phaseErrorGain;
+
+	public static double PhaseStepGain => phaseStepGain;
+
 	public static void ConfigureTuning(
 		int preambleThreshold,
 		int quickThreshold,
@@ -44,6 +50,14 @@ internal static class QpskModem
 		preambleThresholdPercent = preambleThreshold;
 		quickThresholdPercent = quickThreshold;
 		preambleSearchStep = searchStep;
+	}
+
+	public static void ConfigurePhaseTracking(
+		double errorGain,
+		double stepGain)
+	{
+		phaseErrorGain = Math.Clamp(errorGain, 0.0, 0.5);
+		phaseStepGain = Math.Clamp(stepGain, 0.0, 0.02);
 	}
 
 	public static Complex[] Modulate(ReadOnlySpan<byte> frame)
@@ -357,8 +371,8 @@ internal static class QpskModem
 			Complex decision = MapDibit(dibit);
 			double phaseError =
 				(value * Complex.Conjugate(decision)).Phase;
-			trackedPhaseStep += 0.0002 * phaseError;
-			trackedPhase += trackedPhaseStep + 0.05 * phaseError;
+			trackedPhaseStep += phaseStepGain * phaseError;
+			trackedPhase += trackedPhaseStep + phaseErrorGain * phaseError;
 		}
 		return bytes;
 	}

@@ -235,6 +235,7 @@ static string CompareWithTxManifest(byte[] rxFrame, IReadOnlyList<TxPacket> txPa
 		return $"no TX match for frame={frameId}, chunk={chunkIndex + 1}/{chunkCount}, payload={payloadLength}";
 	}
 	List<int> firstMismatches = new();
+	List<int> payloadSegmentBits = new();
 	int headerBitErrors = 0;
 	int payloadBitErrors = 0;
 	int crcBitErrors = 0;
@@ -261,13 +262,24 @@ static string CompareWithTxManifest(byte[] rxFrame, IReadOnlyList<TxPacket> txPa
 		else
 		{
 			payloadBitErrors += bits;
+			int segment = (index - WirelessVideoFrame.HeaderSize) / 16;
+			while (payloadSegmentBits.Count <= segment)
+			{
+				payloadSegmentBits.Add(0);
+			}
+			payloadSegmentBits[segment] += bits;
 		}
 	}
+	string segmentSummary = string.Join(
+		";",
+		payloadSegmentBits.Select((bits, index) =>
+			$"{index * 16}-{index * 16 + 15}:{bits}"));
 	return
 		$"bit_errors={bestBitErrors}, byte_errors={bestByteErrors}, " +
 		$"compared={bestComparedBytes}/{best.Bytes.Length}, " +
 		$"header_bits={headerBitErrors}, payload_bits={payloadBitErrors}, " +
-		$"crc_bits={crcBitErrors}, first_mismatch=[{string.Join(",", firstMismatches)}]";
+		$"crc_bits={crcBitErrors}, first_mismatch=[{string.Join(",", firstMismatches)}], " +
+		$"payload_segments={segmentSummary}";
 }
 
 static string ClassifyWirelessParseFailure(byte[] data)
@@ -443,6 +455,15 @@ if (args.Length > 0)
 			$"quick={QpskModem.QuickThreshold:F2}, step={QpskModem.PreambleSearchStep}");
 	}
 	string txManifestPath = args.Length >= 5 ? args[4] : null;
+	if (args.Length >= 7 &&
+		double.TryParse(args[5], out double phaseErrorGain) &&
+		double.TryParse(args[6], out double phaseStepGain))
+	{
+		QpskModem.ConfigurePhaseTracking(phaseErrorGain, phaseStepGain);
+	}
+	Console.WriteLine(
+		$"QPSK phase tracking: error_gain={QpskModem.PhaseErrorGain:G4}, " +
+		$"step_gain={QpskModem.PhaseStepGain:G4}");
 	DecodeCapture(args[0], txManifestPath);
 	return;
 }
