@@ -59,6 +59,8 @@ static void DecodeCapture(string path)
 	int decodedFrames = 0;
 	int validWirelessFrames = 0;
 	int invalidWirelessFrames = 0;
+	Dictionary<string, int> invalidReasons = new();
+	Dictionary<string, int> invalidHeaders = new();
 	double bestCorrelation = 0.0;
 	const int samplesPerChunk = 4096;
 	int bytesPerChunk = samplesPerChunk * 4;
@@ -83,9 +85,18 @@ static void DecodeCapture(string path)
 			else
 			{
 				invalidWirelessFrames++;
+				string detail = DescribeWirelessParseFailure(frame);
+				string reason = ClassifyWirelessParseFailure(frame);
+				invalidReasons[reason] = invalidReasons.TryGetValue(reason, out int reasonCount)
+					? reasonCount + 1
+					: 1;
+				string key = BuildWirelessHeaderKey(frame);
+				invalidHeaders[key] = invalidHeaders.TryGetValue(key, out int headerCount)
+					? headerCount + 1
+					: 1;
 				Console.WriteLine(
 					$"Invalid wireless frame: bytes={frame.Length}, " +
-					$"corr={correlation:F4}, reason={DescribeWirelessParseFailure(frame)}");
+					$"corr={correlation:F4}, {detail}");
 				Console.WriteLine(
 					$"  Head: {BitConverter.ToString(frame.Take(Math.Min(32, frame.Length)).ToArray())}");
 			}
@@ -98,8 +109,63 @@ static void DecodeCapture(string path)
 	Console.WriteLine($"Decoded modem frames: {decodedFrames}");
 	Console.WriteLine($"Valid wireless frames: {validWirelessFrames}");
 	Console.WriteLine($"Invalid wireless frames: {invalidWirelessFrames}");
+	if (invalidReasons.Count > 0)
+	{
+		Console.WriteLine("Invalid reason summary:");
+		foreach (var pair in invalidReasons.OrderByDescending(pair => pair.Value))
+		{
+			Console.WriteLine($"  {pair.Key}: {pair.Value}");
+		}
+	}
+	if (invalidHeaders.Count > 0)
+	{
+		Console.WriteLine("Invalid header repeat summary:");
+		foreach (var pair in invalidHeaders
+			.OrderByDescending(pair => pair.Value)
+			.ThenBy(pair => pair.Key)
+			.Take(12))
+		{
+			Console.WriteLine($"  {pair.Key}: {pair.Value}");
+		}
+	}
 	Console.WriteLine($"Best preamble correlation: {bestCorrelation:F4}");
 	Console.WriteLine($"Buffered samples: {decoder.BufferedSamples}");
+}
+
+static string ClassifyWirelessParseFailure(byte[] data)
+{
+	if (data.Length < WirelessVideoFrame.HeaderSize + WirelessVideoFrame.CrcSize)
+	{
+		return "too short for wireless header";
+	}
+	uint sync = BitConverter.ToUInt32(data, 0);
+	if (sync != WirelessVideoFrame.SyncWord)
+	{
+		return "sync mismatch";
+	}
+	if (data[4] != WirelessVideoFrame.Version)
+	{
+		return "version mismatch";
+	}
+	ushort chunkIndex = BitConverter.ToUInt16(data, 10);
+	ushort chunkCount = BitConverter.ToUInt16(data, 12);
+	ushort payloadLength = BitConverter.ToUInt16(data, 14);
+	int expectedLength = WirelessVideoFrame.HeaderSize +
+		payloadLength +
+		WirelessVideoFrame.CrcSize;
+	if (payloadLength > WirelessVideoFrame.MaxPayloadSize)
+	{
+		return "payload too large";
+	}
+	if (data.Length != expectedLength)
+	{
+		return "length mismatch";
+	}
+	if (chunkCount == 0 || chunkIndex >= chunkCount)
+	{
+		return "chunk index/count mismatch";
+	}
+	return "CRC mismatch";
 }
 
 static string DescribeWirelessParseFailure(byte[] data)
@@ -117,19 +183,61 @@ static string DescribeWirelessParseFailure(byte[] data)
 	{
 		return $"version mismatch {data[4]}";
 	}
+	byte payloadType = data[5];
+	uint frameId = BitConverter.ToUInt32(data, 6);
+	ushort chunkIndex = BitConverter.ToUInt16(data, 10);
+	ushort chunkCount = BitConverter.ToUInt16(data, 12);
 	ushort payloadLength = BitConverter.ToUInt16(data, 14);
+	uint timestampMs = BitConverter.ToUInt32(data, 16);
 	int expectedLength = WirelessVideoFrame.HeaderSize +
 		payloadLength +
 		WirelessVideoFrame.CrcSize;
+	string header =
+		$"type={payloadType}, frame={frameId}, " +
+		$"chunk={chunkIndex + 1}/{chunkCount}, payload={payloadLength}, " +
+		$"timestamp={timestampMs}";
 	if (payloadLength > WirelessVideoFrame.MaxPayloadSize)
 	{
-		return $"payload too large {payloadLength}";
+		return $"payload too large {payloadLength} | {header}";
 	}
 	if (data.Length != expectedLength)
 	{
-		return $"length mismatch actual={data.Length}, expected={expectedLength}";
+		return $"length mismatch actual={data.Length}, expected={expectedLength} | {header}";
 	}
-	return "CRC or chunk index/count mismatch";
+	if (chunkCount == 0 || chunkIndex >= chunkCount)
+	{
+		return $"chunk index/count mismatch | {header}";
+	}
+	uint receivedCrc = BitConverter.ToUInt32(
+		data,
+		data.Length - WirelessVideoFrame.CrcSize);
+	uint computedCrc = Crc32.Compute(
+		data.AsSpan(0, data.Length - WirelessVideoFrame.CrcSize));
+	if (receivedCrc != computedCrc)
+	{
+		return
+			$"CRC mismatch rx=0x{receivedCrc:X8}, calc=0x{computedCrc:X8}, " +
+			$"xor=0x{receivedCrc ^ computedCrc:X8} | {header}";
+	}
+	return $"unknown parse failure | {header}";
+}
+
+static string BuildWirelessHeaderKey(byte[] data)
+{
+	if (data.Length < WirelessVideoFrame.HeaderSize)
+	{
+		return "short-header";
+	}
+	uint sync = BitConverter.ToUInt32(data, 0);
+	if (sync != WirelessVideoFrame.SyncWord || data[4] != WirelessVideoFrame.Version)
+	{
+		return $"sync=0x{sync:X8}, version={data[4]}";
+	}
+	uint frameId = BitConverter.ToUInt32(data, 6);
+	ushort chunkIndex = BitConverter.ToUInt16(data, 10);
+	ushort chunkCount = BitConverter.ToUInt16(data, 12);
+	ushort payloadLength = BitConverter.ToUInt16(data, 14);
+	return $"frame={frameId}, chunk={chunkIndex + 1}/{chunkCount}, payload={payloadLength}";
 }
 
 static Complex ReadInt16Iq(byte[] data, int index)

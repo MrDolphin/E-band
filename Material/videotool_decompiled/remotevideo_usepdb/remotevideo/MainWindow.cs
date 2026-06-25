@@ -209,9 +209,13 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private FileStream m_videoIqCaptureStream;
 
+	private StreamWriter m_videoTxManifestWriter;
+
 	private string m_videoMetricsPath = "";
 
 	private string m_videoIqCapturePath = "";
+
+	private string m_videoTxManifestPath = "";
 
 	private long m_videoIqCaptureBytes;
 
@@ -267,6 +271,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private long m_videoModemConfirmedFrameCount;
 
 	private int m_videoIqFrameId;
+
+	private long m_videoTxManifestSequence;
 
 	internal TextBlock tbStatus;
 
@@ -1425,6 +1431,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		short[] interleaved = QpskModem.ToInterleavedInt16(samples, QpskTxScale);
 		byte[] iqBytes = new byte[interleaved.Length * sizeof(short)];
 		Buffer.BlockCopy(interleaved, 0, iqBytes, 0, iqBytes.Length);
+		WriteVideoTxManifest(chunk, frameId, variant, isRepair, wirelessBytes);
 		SendWaveformFrame(iqBytes, m_videoIqFrameId++, 0x05);
 		m_videoModemChunkCount++;
 		if (isRepair)
@@ -1436,6 +1443,39 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			1,
 			(int)Math.Ceiling(samples.Length * 1000.0 / 3840000.0));
 		Thread.Sleep(durationMs);
+	}
+
+	private void WriteVideoTxManifest(
+		WirelessVideoFrame chunk,
+		uint frameId,
+		int variant,
+		bool isRepair,
+		byte[] wirelessBytes)
+	{
+		lock (m_videoDiagnosticsLock)
+		{
+			if (m_videoTxManifestWriter == null)
+			{
+				return;
+			}
+			uint crc = BitConverter.ToUInt32(
+				wirelessBytes,
+				wirelessBytes.Length - WirelessVideoFrame.CrcSize);
+			string headHex = BitConverter.ToString(
+					wirelessBytes,
+					0,
+					Math.Min(32, wirelessBytes.Length))
+				.Replace("-", "");
+			string packetHex = BitConverter.ToString(wirelessBytes)
+				.Replace("-", "");
+			m_videoTxManifestWriter.WriteLine(
+				$"{DateTime.Now:O},{m_videoTxManifestSequence++}," +
+				$"{frameId},{variant},{(isRepair ? 1 : 0)}," +
+				$"{chunk.ChunkIndex},{chunk.ChunkCount}," +
+				$"{chunk.Payload.Length},{wirelessBytes.Length}," +
+				$"0x{crc:X8},{headHex},{packetHex}");
+			m_videoTxManifestWriter.Flush();
+		}
 	}
 
 	private void ProcessVideoModemSoftwareLoopback(byte[] imageBytes)
@@ -2084,6 +2124,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			m_videoIqCapturePath = Path.Combine(
 				directory,
 				$"rx_capture_{timestamp}.iq");
+			m_videoTxManifestPath = Path.Combine(
+				directory,
+				$"tx_wireless_{timestamp}.csv");
 			m_videoMetricsWriter = new StreamWriter(
 				m_videoMetricsPath,
 				append: false);
@@ -2099,7 +2142,15 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				FileMode.Create,
 				FileAccess.Write,
 				FileShare.Read);
+			m_videoTxManifestWriter = new StreamWriter(
+				m_videoTxManifestPath,
+				append: false);
+			m_videoTxManifestWriter.WriteLine(
+				"time,seq,source_frame,variant,is_repair,chunk_index," +
+				"chunk_count,payload_len,wireless_len,crc32,head_hex,packet_hex");
+			m_videoTxManifestWriter.Flush();
 			m_videoIqCaptureBytes = 0;
+			m_videoTxManifestSequence = 0;
 		}
 	}
 
@@ -2117,6 +2168,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		m_videoMetricsWriter = null;
 		m_videoIqCaptureStream?.Dispose();
 		m_videoIqCaptureStream = null;
+		m_videoTxManifestWriter?.Dispose();
+		m_videoTxManifestWriter = null;
 	}
 
 	private void MeasureVideoIq(byte[] iq, int rxFrameId)
@@ -2307,6 +2360,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		double zeroPercent = m_videoRxZeroPercent;
 		string metricsFile = Path.GetFileName(m_videoMetricsPath);
 		string iqCaptureFile = Path.GetFileName(m_videoIqCapturePath);
+		string txManifestFile = Path.GetFileName(m_videoTxManifestPath);
 		string reassemblyStatus = m_videoReassembler.LatestStatus;
 
 		((DispatcherObject)this).Dispatcher.BeginInvoke((Action)delegate
@@ -2352,7 +2406,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"前导搜索步进：{QpskModem.PreambleSearchStep} samples\n" +
 				$"调制：QPSK，{QpskModem.SamplesPerSymbol} samples/symbol\n\n" +
 				$"CSV：diagnostics\\{metricsFile}\n" +
-				$"原始IQ：diagnostics\\{iqCaptureFile}";
+				$"原始IQ：diagnostics\\{iqCaptureFile}\n" +
+				$"TX清单：diagnostics\\{txManifestFile}";
 			tbRadarData.Text += $"\n\n分片重组：{reassemblyStatus}";
 		});
 	}
