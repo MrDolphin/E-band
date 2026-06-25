@@ -43,7 +43,38 @@ static double NextGaussian(Random random)
 	return Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
 }
 
-static void DecodeCapture(string path)
+static IReadOnlyList<TxPacket> LoadTxManifest(string path)
+{
+	List<TxPacket> packets = new();
+	using FileStream stream = new FileStream(
+		path,
+		FileMode.Open,
+		FileAccess.Read,
+		FileShare.ReadWrite);
+	using StreamReader reader = new StreamReader(stream);
+	reader.ReadLine();
+	while (reader.ReadLine() is string line)
+	{
+		if (string.IsNullOrWhiteSpace(line))
+		{
+			continue;
+		}
+		string[] parts = line.Split(',');
+		if (parts.Length < 12)
+		{
+			continue;
+		}
+		packets.Add(new TxPacket(
+			uint.Parse(parts[2]),
+			ushort.Parse(parts[5]),
+			ushort.Parse(parts[6]),
+			ushort.Parse(parts[7]),
+			Convert.FromHexString(parts[11])));
+	}
+	return packets;
+}
+
+static void DecodeCapture(string path, string txManifestPath = null)
 {
 	byte[] capture;
 	using (FileStream stream = new FileStream(
@@ -54,6 +85,13 @@ static void DecodeCapture(string path)
 	{
 		capture = new byte[stream.Length];
 		stream.ReadExactly(capture);
+	}
+	IReadOnlyList<TxPacket> txPackets = string.IsNullOrWhiteSpace(txManifestPath)
+		? Array.Empty<TxPacket>()
+		: LoadTxManifest(txManifestPath);
+	if (txPackets.Count > 0)
+	{
+		Console.WriteLine($"TX manifest packets: {txPackets.Count}");
 	}
 	QpskStreamDecoder decoder = new();
 	int decodedFrames = 0;
@@ -97,6 +135,11 @@ static void DecodeCapture(string path)
 				Console.WriteLine(
 					$"Invalid wireless frame: bytes={frame.Length}, " +
 					$"corr={correlation:F4}, {detail}");
+				string comparison = CompareWithTxManifest(frame, txPackets);
+				if (!string.IsNullOrEmpty(comparison))
+				{
+					Console.WriteLine($"  TX compare: {comparison}");
+				}
 				Console.WriteLine(
 					$"  Head: {BitConverter.ToString(frame.Take(Math.Min(32, frame.Length)).ToArray())}");
 			}
@@ -130,6 +173,101 @@ static void DecodeCapture(string path)
 	}
 	Console.WriteLine($"Best preamble correlation: {bestCorrelation:F4}");
 	Console.WriteLine($"Buffered samples: {decoder.BufferedSamples}");
+}
+
+static string CompareWithTxManifest(byte[] rxFrame, IReadOnlyList<TxPacket> txPackets)
+{
+	if (txPackets.Count == 0 || rxFrame.Length < WirelessVideoFrame.HeaderSize)
+	{
+		return "";
+	}
+	if (BitConverter.ToUInt32(rxFrame, 0) != WirelessVideoFrame.SyncWord ||
+		rxFrame[4] != WirelessVideoFrame.Version)
+	{
+		return "";
+	}
+	uint frameId = BitConverter.ToUInt32(rxFrame, 6);
+	ushort chunkIndex = BitConverter.ToUInt16(rxFrame, 10);
+	ushort chunkCount = BitConverter.ToUInt16(rxFrame, 12);
+	ushort payloadLength = BitConverter.ToUInt16(rxFrame, 14);
+	IEnumerable<TxPacket> candidates = txPackets.Where(packet =>
+		packet.FrameId == frameId &&
+		packet.ChunkIndex == chunkIndex &&
+		packet.ChunkCount == chunkCount);
+	if (payloadLength <= WirelessVideoFrame.MaxPayloadSize)
+	{
+		IEnumerable<TxPacket> exactPayload = candidates.Where(packet =>
+			packet.PayloadLength == payloadLength);
+		if (exactPayload.Any())
+		{
+			candidates = exactPayload;
+		}
+	}
+	TxPacket best = null;
+	int bestBitErrors = int.MaxValue;
+	int bestByteErrors = int.MaxValue;
+	int bestComparedBytes = 0;
+	foreach (TxPacket candidate in candidates)
+	{
+		int comparedBytes = Math.Min(rxFrame.Length, candidate.Bytes.Length);
+		int bitErrors = 0;
+		int byteErrors = Math.Abs(rxFrame.Length - candidate.Bytes.Length);
+		for (int index = 0; index < comparedBytes; index++)
+		{
+			byte delta = (byte)(rxFrame[index] ^ candidate.Bytes[index]);
+			if (delta != 0)
+			{
+				byteErrors++;
+				bitErrors += BitOperations.PopCount(delta);
+			}
+		}
+		bitErrors += Math.Abs(rxFrame.Length - candidate.Bytes.Length) * 8;
+		if (bitErrors < bestBitErrors)
+		{
+			best = candidate;
+			bestBitErrors = bitErrors;
+			bestByteErrors = byteErrors;
+			bestComparedBytes = comparedBytes;
+		}
+	}
+	if (best == null)
+	{
+		return $"no TX match for frame={frameId}, chunk={chunkIndex + 1}/{chunkCount}, payload={payloadLength}";
+	}
+	List<int> firstMismatches = new();
+	int headerBitErrors = 0;
+	int payloadBitErrors = 0;
+	int crcBitErrors = 0;
+	for (int index = 0; index < bestComparedBytes; index++)
+	{
+		byte delta = (byte)(rxFrame[index] ^ best.Bytes[index]);
+		if (delta == 0)
+		{
+			continue;
+		}
+		if (firstMismatches.Count < 8)
+		{
+			firstMismatches.Add(index);
+		}
+		int bits = BitOperations.PopCount(delta);
+		if (index < WirelessVideoFrame.HeaderSize)
+		{
+			headerBitErrors += bits;
+		}
+		else if (index >= best.Bytes.Length - WirelessVideoFrame.CrcSize)
+		{
+			crcBitErrors += bits;
+		}
+		else
+		{
+			payloadBitErrors += bits;
+		}
+	}
+	return
+		$"bit_errors={bestBitErrors}, byte_errors={bestByteErrors}, " +
+		$"compared={bestComparedBytes}/{best.Bytes.Length}, " +
+		$"header_bits={headerBitErrors}, payload_bits={payloadBitErrors}, " +
+		$"crc_bits={crcBitErrors}, first_mismatch=[{string.Join(",", firstMismatches)}]";
 }
 
 static string ClassifyWirelessParseFailure(byte[] data)
@@ -291,7 +429,21 @@ static IReadOnlyList<byte[]> BuildSyntheticFmcwCpi(int rangeBin, int dopplerBin)
 
 if (args.Length > 0)
 {
-	DecodeCapture(args[0]);
+	if (args.Length >= 4 &&
+		int.TryParse(args[1], out int preambleThresholdPercent) &&
+		int.TryParse(args[2], out int quickThresholdPercent) &&
+		int.TryParse(args[3], out int searchStep))
+	{
+		QpskModem.ConfigureTuning(
+			preambleThresholdPercent,
+			quickThresholdPercent,
+			searchStep);
+		Console.WriteLine(
+			$"QPSK tuning: preamble={QpskModem.PreambleThreshold:F2}, " +
+			$"quick={QpskModem.QuickThreshold:F2}, step={QpskModem.PreambleSearchStep}");
+	}
+	string txManifestPath = args.Length >= 5 ? args[4] : null;
+	DecodeCapture(args[0], txManifestPath);
 	return;
 }
 
@@ -645,3 +797,10 @@ Console.WriteLine($"QPSK samples for one {wirelessBytes.Length}-byte wireless fr
 Console.WriteLine($"Clean correlation: {cleanCorrelation:F4}");
 Console.WriteLine($"Noisy correlation: {noisyCorrelation:F4}");
 Console.WriteLine($"Frequency-offset correlation: {offsetCorrelation:F4}");
+
+sealed record TxPacket(
+	uint FrameId,
+	ushort ChunkIndex,
+	ushort ChunkCount,
+	ushort PayloadLength,
+	byte[] Bytes);
