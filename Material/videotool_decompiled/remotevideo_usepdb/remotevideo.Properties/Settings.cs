@@ -420,7 +420,7 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
-	[DefaultSettingValue("4")]
+	[DefaultSettingValue("3")]
 	public int VideoRepairRoundCount
 	{
 		get

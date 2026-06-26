@@ -253,7 +253,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private static int VideoRepairRoundCount => ClampSetting(
 		Settings.Default.VideoRepairRoundCount,
 		0,
-		20);
+		3);
 
 	private static int VideoRepairWaitMs => ClampSetting(
 		Settings.Default.VideoRepairWaitMs,

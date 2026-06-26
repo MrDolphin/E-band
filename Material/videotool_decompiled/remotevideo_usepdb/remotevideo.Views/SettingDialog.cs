@@ -152,9 +152,9 @@ public class SettingDialog : Window, IComponentConnector
 			32768);
 		Settings.Default.VideoRepairRoundCount = ParseBoundedInt(
 			tbVideoRepairRoundCount,
-			4,
+			3,
 			0,
-			20);
+			3);
 		Settings.Default.VideoRepairWaitMs = ParseBoundedInt(
 			tbVideoRepairWaitMs,
 			100,
