@@ -770,6 +770,22 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			m_acceptRxIq = true;
 			m_commMode = Settings.Default.CommMode;
 			m_filepath = IsVideoTransmissionMode(m_commMode) ? Settings.Default.VideoFilePath : string.Empty;
+			bool isVideoMode = IsVideoTransmissionMode(m_commMode);
+			bool hasVideoFile = isVideoMode && IsVideoFilePath(m_filepath);
+			bool hasStillImageFile = isVideoMode && IsStillImageFilePath(m_filepath);
+			if (isVideoMode && !hasVideoFile && !hasStillImageFile)
+			{
+				m_acceptRxIq = false;
+				tbRadarData.Text =
+					"QPSK video mode needs a valid media file.\n\n" +
+					"Please select an existing .mp4, .jpg, .jpeg, .png, .bmp, or .webp file in Settings -> Communication.\n" +
+					"Mode 9 will not fall back to generated waveform data.";
+				tbStatus.Text = "Video mode was not started: media file is missing or unsupported.";
+				btnStartSending.IsEnabled = true;
+				btnStopSending.IsEnabled = false;
+				m_isSending = false;
+				return;
+			}
 			m_fmcwCpiChirps.Clear();
 			m_fmcwCpiIndex = 0;
 			m_lastFmcwCpiText = "";
@@ -827,7 +843,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			m_isSending = true;
 			m_videoPlaybackCompleted = false;
 			tbStatus.Text = $"正在启动: {WaveformGenerator.GetModeName(m_commMode)} -> {m_sendEndPoint}";
-			if (IsVideoTransmissionMode(m_commMode) && IsVideoFilePath(m_filepath))
+			if (hasVideoFile)
 			{
 				m_encodeThread = new Thread(EncodeAndSendProc)
 				{
@@ -839,7 +855,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					IsBackground = true
 				};
 			}
-			else if (IsVideoTransmissionMode(m_commMode) && IsStillImageFilePath(m_filepath))
+			else if (hasStillImageFile)
 			{
 				m_senderThread = new Thread(SendPhotoProc)
 				{
@@ -865,12 +881,13 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private static bool IsVideoFilePath(string path)
 	{
 		return !string.IsNullOrEmpty(path) &&
+			File.Exists(path) &&
 			Path.GetExtension(path).Equals(".mp4", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static bool IsStillImageFilePath(string path)
 	{
-		if (string.IsNullOrEmpty(path))
+		if (string.IsNullOrEmpty(path) || !File.Exists(path))
 		{
 			return false;
 		}
