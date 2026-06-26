@@ -5,6 +5,12 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SYSROOT=/mnt/d/hp-laptop/E-band/target-sysroot
 TOOLCHAIN=/opt/gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabihf
 CC="$TOOLCHAIN/bin/arm-linux-gnueabihf-gcc"
+COMMIT_ID=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+if ! git -C "$SCRIPT_DIR" diff --quiet -- video_modem_bridge.c 2>/dev/null; then
+    COMMIT_ID="${COMMIT_ID}-dirty"
+fi
+BUILD_STAMP=$(date +%Y%m%d_%H%M%S)
+OUTPUT="$SCRIPT_DIR/video_modem_bridge_4096_${COMMIT_ID}_${BUILD_STAMP}"
 
 if [ ! -x "$CC" ]; then
     echo "Compiler not found: $CC" >&2
@@ -18,7 +24,7 @@ fi
 
 "$CC" "$SCRIPT_DIR/video_modem_bridge.c" \
     -O2 \
-    -o "$SCRIPT_DIR/video_modem_bridge_4096" \
+    -o "$OUTPUT" \
     -I"$SYSROOT/usr/include" \
     -L"$SYSROOT/usr/lib" \
     -Wl,-rpath-link,"$SYSROOT/usr/lib" \
@@ -26,9 +32,11 @@ fi
     -liio -lpthread -lm
 
 echo
-file "$SCRIPT_DIR/video_modem_bridge_4096"
+echo "Built: $OUTPUT"
+echo "Commit: $COMMIT_ID"
+file "$OUTPUT"
 echo
-strings "$SCRIPT_DIR/video_modem_bridge_4096" |
+strings "$OUTPUT" |
     grep 'GLIBC_' |
     sort -V |
     tail
