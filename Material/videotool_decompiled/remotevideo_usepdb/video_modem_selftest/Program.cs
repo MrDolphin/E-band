@@ -469,6 +469,11 @@ if (args.Length > 0)
 }
 
 Console.WriteLine("1. Wireless frame serialize/CRC...");
+Require(
+	AppBuildInfo.BuildTitle("视频流测试工具", "1.1", "2b23a88") ==
+	"视频流测试工具 v1.1 (2b23a88)",
+	"Window title build/version format changed.");
+
 byte[] chunkPayload = Enumerable.Range(0, 251).Select(i => (byte)(i * 17)).ToArray();
 WirelessVideoFrame original = new(
 	WirelessPayloadType.Video,

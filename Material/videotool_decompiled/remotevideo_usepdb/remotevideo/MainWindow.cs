@@ -342,6 +342,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		ConfigureInteractiveScaling();
 		InitUdpSocket();
 		string version = Settings.Default.Version;
+		Title = AppBuildInfo.CurrentTitle(version);
 		tbVersion.Text = "版本: " + version;
 	}
 
