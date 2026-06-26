@@ -576,6 +576,9 @@ while (byteOffset < streamBytes.Length)
 }
 Require(streamedRx != null && streamedRx.SequenceEqual(wirelessBytes),
 	"Streaming QPSK decoder failed across RX chunk boundaries.");
+Require(streamDecoder.LastFrameStart >= 0, "Streaming decoder did not report frame start.");
+Require(streamDecoder.LastConsumedSamples > 0, "Streaming decoder did not report consumed samples.");
+Require(!streamDecoder.LastUsedConjugate, "Normal streaming decoder was incorrectly marked conjugated.");
 
 Console.WriteLine("8. Streaming decoder with conjugated IQ...");
 short[] conjugateIq = QpskModem.ToInterleavedInt16(

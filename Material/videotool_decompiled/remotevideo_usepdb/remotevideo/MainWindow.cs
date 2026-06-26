@@ -219,7 +219,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private long m_videoIqCaptureBytes;
 
-	private const long MaximumVideoIqCaptureBytes = 64 * 1024 * 1024;
+	private static long MaximumVideoIqCaptureBytes =>
+		(long)ClampSetting(Settings.Default.VideoIqCaptureLimitMb, 16, 2048) *
+		1024L *
+		1024L;
 
 	private const double RxAdcFullScale = 2048.0;
 
@@ -240,6 +243,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private long m_videoModemChunkCount;
 
 	private long m_videoModemFailureCount;
+
+	private string m_videoLastCandidateDiagnostic = "候选包诊断：尚无候选包";
 
 	private long m_videoModemDecodedChunkCount;
 
@@ -2040,10 +2045,20 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				out WirelessVideoFrame chunk))
 			{
 				m_videoModemFailureCount++;
+				m_videoLastCandidateDiagnostic = BuildVideoCandidateDiagnostic(
+					rxFrameId,
+					correlation,
+					accepted: false,
+					null);
 				continue;
 			}
 
 			m_videoModemDecodedChunkCount++;
+			m_videoLastCandidateDiagnostic = BuildVideoCandidateDiagnostic(
+				rxFrameId,
+				correlation,
+				accepted: true,
+				chunk);
 			byte[] completedImage = null;
 			if (m_videoReassembler.TryAdd(chunk, out byte[] image))
 			{
@@ -2077,6 +2092,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					$"采样率：3.84 MSPS\n" +
 					$"符号率：{3840 / QpskModem.SamplesPerSymbol} ksym/s\n" +
 					$"调制：QPSK，{QpskModem.SamplesPerSymbol} samples/symbol";
+				tbRadarData.Text += $"\n\n{m_videoLastCandidateDiagnostic}";
 			});
 		}
 
@@ -2086,6 +2102,25 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				rxFrameId,
 				m_qpskStreamDecoder.LastCorrelation);
 		}
+	}
+
+	private string BuildVideoCandidateDiagnostic(
+		int rxFrameId,
+		double correlation,
+		bool accepted,
+		WirelessVideoFrame chunk)
+	{
+		int start = m_qpskStreamDecoder.LastFrameStart;
+		int consumed = m_qpskStreamDecoder.LastConsumedSamples;
+		int rxFrameSpan = consumed <= 0 ? 0 : (consumed + 4095) / 4096;
+		string result = accepted ? "OK" : "CRC/FORMAT FAIL";
+		string chunkText = chunk == null
+			? string.Empty
+			: $" chunk={chunk.ChunkIndex + 1}/{chunk.ChunkCount}";
+		return
+			$"候选包诊断 (Candidate): {result}{chunkText}\n" +
+			$"RX frame={rxFrameId}, start={start} samples, consumed={consumed} samples\n" +
+			$"span≈{rxFrameSpan} RX frames @4096 samples, corr={correlation:F4}, conj={(m_qpskStreamDecoder.LastUsedConjugate ? "yes" : "no")}";
 	}
 
 	private void VideoModemDecodeProc()
@@ -2152,7 +2187,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				"peak,iq_imbalance_db,iq_correlation,coarse_frequency_hz," +
 				"clipping_percent,zero_percent,normal_correlation," +
 				"conjugate_correlation,decode_queue,decode_queue_drops," +
-				"gate_queued_frames,gate_skipped_frames");
+				"gate_queued_frames,gate_skipped_frames,decoder_frame_start," +
+				"decoder_consumed_samples,decoder_used_conjugate,iq_capture_mb");
 			m_videoMetricsWriter.Flush();
 			m_videoIqCaptureStream = new FileStream(
 				m_videoIqCapturePath,
@@ -2285,7 +2321,11 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"{m_qpskStreamDecoder.LastNormalCorrelation:F6}," +
 				$"{m_qpskStreamDecoder.LastConjugateCorrelation:F6}," +
 				$"{m_videoDecodeQueue.Count},{m_videoDecodeQueueDropCount}," +
-				$"{m_videoGateQueuedFrameCount},{m_videoGateSkippedFrameCount}");
+				$"{m_videoGateQueuedFrameCount},{m_videoGateSkippedFrameCount}," +
+				$"{m_qpskStreamDecoder.LastFrameStart}," +
+				$"{m_qpskStreamDecoder.LastConsumedSamples}," +
+				$"{(m_qpskStreamDecoder.LastUsedConjugate ? 1 : 0)}," +
+				$"{m_videoIqCaptureBytes / (1024.0 * 1024.0):F2}");
 			m_videoMetricsWriter.Flush();
 
 		}

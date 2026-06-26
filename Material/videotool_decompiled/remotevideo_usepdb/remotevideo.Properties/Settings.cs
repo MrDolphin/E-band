@@ -465,6 +465,21 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
+	[DefaultSettingValue("512")]
+	public int VideoIqCaptureLimitMb
+	{
+		get
+		{
+			return (int)this["VideoIqCaptureLimitMb"];
+		}
+		set
+		{
+			this["VideoIqCaptureLimitMb"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
 	[DefaultSettingValue("65")]
 	public int QpskTxScalePercent
 	{

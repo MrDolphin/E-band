@@ -69,6 +69,8 @@ public class SettingDialog : Window, IComponentConnector
 
 	private TextBox tbVideoWirelessChunkPayloadBytes;
 
+	private TextBox tbVideoIqCaptureLimitMb;
+
 	private TextBox tbQpskTxScalePercent;
 
 	private TextBox tbQpskPreambleThresholdPercent;
@@ -165,6 +167,11 @@ public class SettingDialog : Window, IComponentConnector
 			256,
 			32,
 			WirelessVideoFrame.MaxPayloadSize);
+		Settings.Default.VideoIqCaptureLimitMb = ParseBoundedInt(
+			tbVideoIqCaptureLimitMb,
+			512,
+			16,
+			2048);
 		Settings.Default.QpskTxScalePercent = ParseBoundedInt(
 			tbQpskTxScalePercent,
 			65,
@@ -244,6 +251,8 @@ public class SettingDialog : Window, IComponentConnector
 			Settings.Default.VideoRepairWaitMs);
 		tbVideoWirelessChunkPayloadBytes = CreateTuningTextBox(
 			Settings.Default.VideoWirelessChunkPayloadBytes);
+		tbVideoIqCaptureLimitMb = CreateTuningTextBox(
+			Settings.Default.VideoIqCaptureLimitMb);
 		tbQpskTxScalePercent = CreateTuningTextBox(
 			Settings.Default.QpskTxScalePercent);
 		tbQpskPreambleThresholdPercent = CreateTuningTextBox(
@@ -272,6 +281,7 @@ public class SettingDialog : Window, IComponentConnector
 		AddTuningCell(tuningGrid, 4, 0, "快速筛选门限%", tbQpskQuickThresholdPercent, "粗搜索快速前导筛选门限，53 表示 0.53");
 		AddTuningCell(tuningGrid, 4, 2, "前导搜索步进", tbQpskPreambleSearchStep, "粗搜索采样步进，1 最细但更慢，4 为默认");
 		AddTuningCell(tuningGrid, 5, 0, "分片负载字节", tbVideoWirelessChunkPayloadBytes, "每个无线视频分片的 payload 字节数；误码多时先试 64/96/128");
+		AddTuningCell(tuningGrid, 5, 2, "IQ捕获MB", tbVideoIqCaptureLimitMb, "原始 IQ 诊断文件最大大小，长时间测试建议 512 或 1024");
 
 		ScrollViewer tuningScrollViewer = new ScrollViewer
 		{

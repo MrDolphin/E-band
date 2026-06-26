@@ -19,6 +19,10 @@ internal sealed class QpskStreamDecoder
 
 	public bool LastUsedConjugate { get; private set; }
 
+	public int LastFrameStart { get; private set; } = -1;
+
+	public int LastConsumedSamples { get; private set; }
+
 	public void AppendInt16Iq(ReadOnlySpan<byte> iq)
 	{
 		int sampleCount = iq.Length / 4;
@@ -98,15 +102,18 @@ internal sealed class QpskStreamDecoder
 			frame = conjugateFrame;
 			correlation = conjugateCorrelation;
 			consumedSamples = conjugateConsumedSamples;
+			LastFrameStart = conjugateFrameStart;
 			LastUsedConjugate = true;
 		}
 		else
 		{
 			correlation = normalCorrelation;
 			consumedSamples = normalConsumedSamples;
+			LastFrameStart = normalFrameStart;
 			LastUsedConjugate = false;
 		}
 		LastCorrelation = correlation;
+		LastConsumedSamples = consumedSamples;
 		samples.RemoveRange(0, Math.Min(consumedSamples, samples.Count));
 		return true;
 	}
@@ -118,6 +125,8 @@ internal sealed class QpskStreamDecoder
 		LastNormalCorrelation = 0.0;
 		LastConjugateCorrelation = 0.0;
 		LastUsedConjugate = false;
+		LastFrameStart = -1;
+		LastConsumedSamples = 0;
 	}
 
 	private void TrimIfNeeded()
