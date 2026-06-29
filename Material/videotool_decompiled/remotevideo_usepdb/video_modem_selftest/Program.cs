@@ -112,6 +112,7 @@ static void DecodeCapture(string path, string txManifestPath = null)
 		{
 			decodedFrames++;
 			bestCorrelation = Math.Max(bestCorrelation, correlation);
+			string symbolQuality = FormatSymbolQuality(QpskModem.LastDiagnostics);
 			if (WirelessVideoFrame.TryParse(frame, out WirelessVideoFrame wireless))
 			{
 				validWirelessFrames++;
@@ -139,6 +140,10 @@ static void DecodeCapture(string path, string txManifestPath = null)
 				if (!string.IsNullOrEmpty(comparison))
 				{
 					Console.WriteLine($"  TX compare: {comparison}");
+				}
+				if (!string.IsNullOrEmpty(symbolQuality))
+				{
+					Console.WriteLine($"  Symbol quality: {symbolQuality}");
 				}
 				Console.WriteLine(
 					$"  Head: {BitConverter.ToString(frame.Take(Math.Min(32, frame.Length)).ToArray())}");
@@ -173,6 +178,22 @@ static void DecodeCapture(string path, string txManifestPath = null)
 	}
 	Console.WriteLine($"Best preamble correlation: {bestCorrelation:F4}");
 	Console.WriteLine($"Buffered samples: {decoder.BufferedSamples}");
+}
+
+static string FormatSymbolQuality(QpskDemodulationDiagnostics diagnostics)
+{
+	if (diagnostics == null || diagnostics.Segments.Count == 0)
+	{
+		return "";
+	}
+	return string.Join(
+		"; ",
+		diagnostics.Segments.Select(segment =>
+			$"{segment.Index * 16}-{segment.Index * 16 + 15}:" +
+			$"mag={segment.AverageMagnitude:F4}," +
+			$"margin={segment.AverageDecisionMargin:F3}," +
+			$"phase_rms={segment.PhaseErrorRms * 180.0 / Math.PI:F1}deg," +
+			$"phase_change={segment.TrackedPhaseChange * 180.0 / Math.PI:+0.0;-0.0;0.0}deg"));
 }
 
 static string CompareWithTxManifest(byte[] rxFrame, IReadOnlyList<TxPacket> txPackets)
@@ -511,6 +532,15 @@ Require(
 	QpskModem.TryDemodulate(cleanChannel, out byte[] cleanRx, out double cleanCorrelation),
 	"Clean QPSK frame not detected.");
 Require(cleanRx.SequenceEqual(wirelessBytes), "Clean QPSK payload mismatch.");
+Require(
+	QpskModem.LastDiagnostics != null &&
+	QpskModem.LastDiagnostics.Segments.Count > 0,
+	"Clean QPSK demodulation did not expose symbol diagnostics.");
+Require(
+	QpskModem.LastDiagnostics.Segments.All(segment =>
+		segment.AverageMagnitude > 0.5 &&
+		segment.AverageDecisionMargin > 0.5),
+	"Clean QPSK symbol diagnostics reported unexpectedly poor quality.");
 Require(cleanCorrelation > 0.99, "Clean preamble correlation is unexpectedly low.");
 
 Console.WriteLine("4. QPSK AWGN loopback...");

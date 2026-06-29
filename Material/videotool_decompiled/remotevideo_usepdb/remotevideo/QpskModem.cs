@@ -8,6 +8,7 @@ namespace remotevideo;
 
 internal static class QpskModem
 {
+	private const int DiagnosticSegmentBytes = 16;
 	public const int SamplesPerSymbol = 4;
 	public const int MaxFrameBytes = 4096;
 	private const double SymbolScale = 0.7071067811865476;
@@ -41,6 +42,8 @@ internal static class QpskModem
 	public static double PhaseErrorGain => phaseErrorGain;
 
 	public static double PhaseStepGain => phaseStepGain;
+
+	public static QpskDemodulationDiagnostics LastDiagnostics { get; private set; }
 
 	public static void ConfigureTuning(
 		int preambleThreshold,
@@ -119,6 +122,7 @@ internal static class QpskModem
 		out int consumedSamples)
 	{
 		frame = null;
+		LastDiagnostics = null;
 		correlation = 0.0;
 		frameStart = -1;
 		consumedSamples = 0;
@@ -236,13 +240,18 @@ internal static class QpskModem
 		{
 			return false;
 		}
+		QpskDemodulationDiagnostics diagnostics = new QpskDemodulationDiagnostics(
+			DiagnosticSegmentBytes);
 		frame = DemodulateBytes(
 			samples,
 			payloadSampleStart + 24 * SamplesPerSymbol,
 			frameSymbols,
 			bestCorrelation.Phase,
 			bestPhaseStep,
-			PreambleSymbols.Length + 24);
+			PreambleSymbols.Length + 24,
+			diagnostics);
+		diagnostics.Complete();
+		LastDiagnostics = diagnostics;
 		ApplyScrambler(frame, scramblerId, 4);
 		consumedSamples = bestStart +
 			(PreambleSymbols.Length + 24 + frameSymbols) * SamplesPerSymbol;
@@ -353,7 +362,8 @@ internal static class QpskModem
 		int symbolCount,
 		double phase,
 		double phaseStep,
-		int firstSymbolIndex)
+		int firstSymbolIndex,
+		QpskDemodulationDiagnostics diagnostics = null)
 	{
 		if (symbolCount % 4 != 0)
 		{
@@ -371,10 +381,30 @@ internal static class QpskModem
 			Complex decision = MapDibit(dibit);
 			double phaseError =
 				(value * Complex.Conjugate(decision)).Phase;
+			diagnostics?.AddSymbol(
+				value.Magnitude,
+				CalculateDecisionMargin(value),
+				phaseError,
+				trackedPhase);
 			trackedPhaseStep += phaseStepGain * phaseError;
 			trackedPhase += trackedPhaseStep + phaseErrorGain * phaseError;
 		}
 		return bytes;
+	}
+
+	private static double CalculateDecisionMargin(Complex value)
+	{
+		double magnitude = value.Magnitude;
+		if (magnitude < 1e-12)
+		{
+			return 0.0;
+		}
+		return Math.Clamp(
+			Math.Sqrt(2.0) * Math.Min(
+				Math.Abs(value.Real),
+				Math.Abs(value.Imaginary)) / magnitude,
+			0.0,
+			1.0);
 	}
 
 	private static Complex AverageSymbol(
@@ -497,4 +527,93 @@ internal static class QpskModem
 		}
 		return 2;
 	}
+}
+
+internal sealed class QpskDemodulationDiagnostics
+{
+	private readonly int symbolsPerSegment;
+	private readonly List<QpskSymbolSegment> segments = new();
+	private int symbolCount;
+	private double magnitudeSum;
+	private double marginSum;
+	private double phaseErrorSquaredSum;
+	private double segmentStartPhase;
+	private double lastPhase;
+
+	public QpskDemodulationDiagnostics(int segmentBytes)
+	{
+		symbolsPerSegment = segmentBytes * 4;
+	}
+
+	public IReadOnlyList<QpskSymbolSegment> Segments => segments;
+
+	public void AddSymbol(
+		double magnitude,
+		double decisionMargin,
+		double phaseError,
+		double trackedPhase)
+	{
+		if (symbolCount == 0)
+		{
+			segmentStartPhase = trackedPhase;
+		}
+		magnitudeSum += magnitude;
+		marginSum += decisionMargin;
+		phaseErrorSquaredSum += phaseError * phaseError;
+		lastPhase = trackedPhase;
+		symbolCount++;
+		if (symbolCount == symbolsPerSegment)
+		{
+			FlushSegment();
+		}
+	}
+
+	public void Complete()
+	{
+		if (symbolCount > 0)
+		{
+			FlushSegment();
+		}
+	}
+
+	private void FlushSegment()
+	{
+		segments.Add(new QpskSymbolSegment(
+			segments.Count,
+			symbolCount,
+			magnitudeSum / symbolCount,
+			marginSum / symbolCount,
+			Math.Sqrt(phaseErrorSquaredSum / symbolCount),
+			lastPhase - segmentStartPhase));
+		symbolCount = 0;
+		magnitudeSum = 0.0;
+		marginSum = 0.0;
+		phaseErrorSquaredSum = 0.0;
+	}
+}
+
+internal sealed class QpskSymbolSegment
+{
+	public QpskSymbolSegment(
+		int index,
+		int symbolCount,
+		double averageMagnitude,
+		double averageDecisionMargin,
+		double phaseErrorRms,
+		double trackedPhaseChange)
+	{
+		Index = index;
+		SymbolCount = symbolCount;
+		AverageMagnitude = averageMagnitude;
+		AverageDecisionMargin = averageDecisionMargin;
+		PhaseErrorRms = phaseErrorRms;
+		TrackedPhaseChange = trackedPhaseChange;
+	}
+
+	public int Index { get; }
+	public int SymbolCount { get; }
+	public double AverageMagnitude { get; }
+	public double AverageDecisionMargin { get; }
+	public double PhaseErrorRms { get; }
+	public double TrackedPhaseChange { get; }
 }
