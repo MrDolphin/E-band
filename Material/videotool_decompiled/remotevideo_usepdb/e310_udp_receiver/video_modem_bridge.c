@@ -36,6 +36,7 @@
 #define TX_DMA_GUARD_US 100U
 #define RX_ACTIVE_PEAK_THRESHOLD_ADC 100
 #define RX_ACTIVE_HANGOVER_FRAMES 2U
+#define RX_CHUNK_PACING_US 50U
 
 static volatile int stop;
 static volatile int streaming_active;
@@ -686,6 +687,9 @@ static int send_rx_frame(
 			count) < 0) {
 			return -1;
 		}
+		if (chunk_index + 1 < chunk_count) {
+			usleep(RX_CHUNK_PACING_US);
+		}
 	}
 	return 0;
 }
@@ -901,6 +905,7 @@ int main(void)
 	printf("RX UDP gate: peak threshold=%d ADC, preroll=1 frame, hangover=%u frames\n",
 		RX_ACTIVE_PEAK_THRESHOLD_ADC,
 		RX_ACTIVE_HANGOVER_FRAMES);
+	printf("RX UDP chunk pacing=%u us\n", RX_CHUNK_PACING_US);
 
 	while (!stop) {
 		struct sockaddr_in peer;
