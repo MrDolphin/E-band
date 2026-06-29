@@ -511,6 +511,14 @@ try
 	Require(
 		loadedTuning == recommendedTuning,
 		"Mode 9 tuning profile did not survive a save/load round trip.");
+	Mode9TuningProfile fiveRepairRounds = recommendedTuning with
+	{
+		RepairRoundCount = 5,
+	};
+	fiveRepairRounds.Save(tuningPath);
+	Require(
+		Mode9TuningProfile.Load(tuningPath).RepairRoundCount == 5,
+		"Mode 9 tuning profile truncated five repair rounds.");
 }
 finally
 {

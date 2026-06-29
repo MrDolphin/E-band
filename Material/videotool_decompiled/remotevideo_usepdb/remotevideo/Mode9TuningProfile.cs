@@ -65,7 +65,7 @@ internal sealed record Mode9TuningProfile(
 	private static Mode9TuningProfile Normalize(Mode9TuningProfile value)
 	{
 		return new Mode9TuningProfile(
-			Math.Clamp(value.RepairRoundCount, 0, 3),
+			Math.Clamp(value.RepairRoundCount, 0, 10),
 			Math.Clamp(value.RepairWaitMs, 0, 2000),
 			Math.Clamp(value.QpskTxScalePercent, 5, 100),
 			Math.Clamp(value.PreambleThresholdPercent, 25, 95),
