@@ -420,7 +420,7 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
-	[DefaultSettingValue("3")]
+	[DefaultSettingValue("1")]
 	public int VideoRepairRoundCount
 	{
 		get
@@ -450,7 +450,7 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
-	[DefaultSettingValue("256")]
+	[DefaultSettingValue("32")]
 	public int VideoWirelessChunkPayloadBytes
 	{
 		get
@@ -495,7 +495,7 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
-	[DefaultSettingValue("65")]
+	[DefaultSettingValue("25")]
 	public int QpskPreambleThresholdPercent
 	{
 		get
@@ -510,7 +510,7 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
-	[DefaultSettingValue("53")]
+	[DefaultSettingValue("30")]
 	public int QpskQuickThresholdPercent
 	{
 		get

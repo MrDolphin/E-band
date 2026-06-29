@@ -490,6 +490,32 @@ if (args.Length > 0)
 }
 
 Console.WriteLine("1. Wireless frame serialize/CRC...");
+Mode9TuningProfile recommendedTuning = Mode9TuningProfile.Recommended;
+Require(
+	recommendedTuning.RepairRoundCount == 1 &&
+	recommendedTuning.RepairWaitMs == 100 &&
+	recommendedTuning.QpskTxScalePercent == 65 &&
+	recommendedTuning.PreambleThresholdPercent == 25 &&
+	recommendedTuning.QuickThresholdPercent == 30 &&
+	recommendedTuning.PreambleSearchStep == 4 &&
+	recommendedTuning.WirelessChunkPayloadBytes == 32 &&
+	recommendedTuning.IqCaptureLimitMb == 512,
+	"Mode 9 recommended defaults changed.");
+string tuningPath = Path.Combine(
+	Path.GetTempPath(),
+	$"remotevideo-mode9-{Guid.NewGuid():N}.json");
+try
+{
+	recommendedTuning.Save(tuningPath);
+	Mode9TuningProfile loadedTuning = Mode9TuningProfile.Load(tuningPath);
+	Require(
+		loadedTuning == recommendedTuning,
+		"Mode 9 tuning profile did not survive a save/load round trip.");
+}
+finally
+{
+	File.Delete(tuningPath);
+}
 Require(
 	AppBuildInfo.BuildTitle("视频流测试工具", "1.1", "2b23a88") ==
 	"视频流测试工具 v1.1 (2b23a88)",

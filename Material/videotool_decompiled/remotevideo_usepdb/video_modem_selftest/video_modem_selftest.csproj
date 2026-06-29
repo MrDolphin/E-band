@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="..\remotevideo\Crc32.cs" Link="Crc32.cs" />
     <Compile Include="..\remotevideo\AppBuildInfo.cs" Link="AppBuildInfo.cs" />
+    <Compile Include="..\remotevideo\Mode9TuningProfile.cs" Link="Mode9TuningProfile.cs" />
     <Compile Include="..\remotevideo\WirelessVideoFrame.cs" Link="WirelessVideoFrame.cs" />
     <Compile Include="..\remotevideo\QpskModem.cs" Link="QpskModem.cs" />
     <Compile Include="..\remotevideo\QpskStreamDecoder.cs" Link="QpskStreamDecoder.cs" />

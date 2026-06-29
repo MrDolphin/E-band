@@ -315,6 +315,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		LogManager.AddDebugListener();
 		LogManager.IsDebugEnabled = false;
 		UpgradeLegacyCommunicationDefaults();
+		LoadMode9TuningProfile();
 		ApplyQpskTuningSettings();
 		m_protocolVersion = Settings.Default.ProtocolVersion;
 		m_mode = Settings.Default.Mode;
@@ -381,6 +382,20 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			Settings.Default.QpskPreambleThresholdPercent,
 			Settings.Default.QpskQuickThresholdPercent,
 			Settings.Default.QpskPreambleSearchStep);
+	}
+
+	private static void LoadMode9TuningProfile()
+	{
+		Mode9TuningProfile profile = Mode9TuningProfile.Load(
+			Mode9TuningProfile.DefaultPath);
+		Settings.Default.VideoRepairRoundCount = profile.RepairRoundCount;
+		Settings.Default.VideoRepairWaitMs = profile.RepairWaitMs;
+		Settings.Default.QpskTxScalePercent = profile.QpskTxScalePercent;
+		Settings.Default.QpskPreambleThresholdPercent = profile.PreambleThresholdPercent;
+		Settings.Default.QpskQuickThresholdPercent = profile.QuickThresholdPercent;
+		Settings.Default.QpskPreambleSearchStep = profile.PreambleSearchStep;
+		Settings.Default.VideoWirelessChunkPayloadBytes = profile.WirelessChunkPayloadBytes;
+		Settings.Default.VideoIqCaptureLimitMb = profile.IqCaptureLimitMb;
 	}
 
 	private void InitUdpSocket()
