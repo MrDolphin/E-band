@@ -492,6 +492,9 @@ if (args.Length > 0)
 Console.WriteLine("1. Wireless frame serialize/CRC...");
 Mode9TuningProfile recommendedTuning = Mode9TuningProfile.Recommended;
 Require(
+	Mode9TuningProfile.MaxRepairRoundCount == 10,
+	"Mode 9 repair-round limit changed.");
+Require(
 	recommendedTuning.RepairRoundCount == 1 &&
 	recommendedTuning.RepairWaitMs == 100 &&
 	recommendedTuning.QpskTxScalePercent == 65 &&

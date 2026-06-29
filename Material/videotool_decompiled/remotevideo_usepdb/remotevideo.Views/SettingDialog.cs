@@ -157,7 +157,7 @@ public class SettingDialog : Window, IComponentConnector
 			tbVideoRepairRoundCount,
 			1,
 			0,
-			3);
+			Mode9TuningProfile.MaxRepairRoundCount);
 		Settings.Default.VideoRepairWaitMs = ParseBoundedInt(
 			tbVideoRepairWaitMs,
 			100,
