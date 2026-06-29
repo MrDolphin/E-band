@@ -2035,12 +2035,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private void ProcessVideoModemRxIq(byte[] iq, int rxFrameId)
 	{
 		m_qpskStreamDecoder.AppendInt16Iq(iq);
-		bool decodedAny = false;
 		while (m_qpskStreamDecoder.TryReadFrame(
 			out byte[] wirelessBytes,
 			out double correlation))
 		{
-			decodedAny = true;
 			if (!WirelessVideoFrame.TryParse(
 				wirelessBytes,
 				out WirelessVideoFrame chunk))
@@ -2066,43 +2064,18 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				completedImage = image;
 				m_videoModemRecoveredFrameCount++;
 			}
-			string reassemblyStatus = m_videoReassembler.GetStatus(chunk.FrameId);
-
 			((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
 			{
 				if (completedImage != null)
 				{
 					DisplayImage(recvVideoDisplay, completedImage);
 				}
-				tbRadarData.Text =
-					$"QPSK 视频 E310 链路\n\n" +
-					$"RX IQ帧：{rxFrameId}\n" +
-					$"视频帧号：{chunk.FrameId}\n" +
-					$"视频分片：{chunk.ChunkIndex + 1}/{chunk.ChunkCount}\n" +
-					$"分片载荷：{chunk.Payload.Length} 字节\n" +
-					$"前导相关：{correlation:F4}\n" +
-					$"流缓冲：{m_qpskStreamDecoder.BufferedSamples} 样点\n" +
-					$"累计TX分片：{m_videoModemChunkCount}\n" +
-					$"其中选择性补发：{m_videoModemRepairChunkCount}\n" +
-					$"发送源帧：{m_videoModemSentFrameCount}\n" +
-					$"接收确认完整帧：{m_videoModemConfirmedFrameCount}\n" +
-					$"累计RX分片：{m_videoModemDecodedChunkCount}\n" +
-					$"恢复视频帧：{m_videoModemRecoveredFrameCount}\n" +
-					$"CRC/解调失败：{m_videoModemFailureCount}\n" +
-					$"分片重组：{reassemblyStatus}\n\n" +
-					$"采样率：3.84 MSPS\n" +
-					$"符号率：{3840 / QpskModem.SamplesPerSymbol} ksym/s\n" +
-					$"调制：QPSK，{QpskModem.SamplesPerSymbol} samples/symbol";
-				tbRadarData.Text += $"\n\n{m_videoLastCandidateDiagnostic}";
 			});
 		}
 
-		if (!decodedAny)
-		{
-			UpdateVideoModemWaitingStatus(
-				rxFrameId,
-				m_qpskStreamDecoder.LastCorrelation);
-		}
+		UpdateVideoModemWaitingStatus(
+			rxFrameId,
+			m_qpskStreamDecoder.LastCorrelation);
 	}
 
 	private string BuildVideoCandidateDiagnostic(
@@ -2467,6 +2440,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"原始IQ：diagnostics\\{iqCaptureFile}\n" +
 				$"TX清单：diagnostics\\{txManifestFile}";
 			tbRadarData.Text += $"\n\n分片重组：{reassemblyStatus}";
+			if (!string.IsNullOrWhiteSpace(m_videoLastCandidateDiagnostic))
+			{
+				tbRadarData.Text += $"\n\n{m_videoLastCandidateDiagnostic}";
+			}
 		});
 	}
 

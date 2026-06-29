@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <iio.h>
+#include <math.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <signal.h>
@@ -10,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #define UDP_PORT 8080
@@ -31,6 +33,9 @@
 #define RF_LO_HZ 200000000LL
 #define TX_HARDWAREGAIN_DB -30.5
 #define RX_HARDWAREGAIN_DB 20.0
+#define TX_DMA_GUARD_US 100U
+#define RX_ACTIVE_PEAK_THRESHOLD_ADC 100
+#define RX_ACTIVE_HANGOVER_FRAMES 2U
 
 static volatile int stop;
 static volatile int streaming_active;
@@ -330,6 +335,41 @@ static struct tx_frame *dequeue_tx(struct tx_queue *queue)
 	return frame;
 }
 
+static double measure_iq_range_rms(
+	const uint8_t *iq,
+	size_t start_sample,
+	size_t end_sample,
+	int *peak_adc)
+{
+	size_t index;
+	double power = 0.0;
+	int peak = 0;
+	size_t sample_count = end_sample - start_sample;
+
+	for (index = start_sample; index < end_sample; index++) {
+		int16_t i_sample;
+		int16_t q_sample;
+		int abs_i;
+		int abs_q;
+		memcpy(&i_sample, iq + index * IQ_BYTES_PER_SAMPLE, sizeof(i_sample));
+		memcpy(&q_sample, iq + index * IQ_BYTES_PER_SAMPLE + 2, sizeof(q_sample));
+		abs_i = i_sample < 0 ? -i_sample : i_sample;
+		abs_q = q_sample < 0 ? -q_sample : q_sample;
+		if (abs_i > peak) {
+			peak = abs_i;
+		}
+		if (abs_q > peak) {
+			peak = abs_q;
+		}
+		power += (double)i_sample * (double)i_sample +
+			(double)q_sample * (double)q_sample;
+	}
+	*peak_adc = peak;
+	return sample_count > 0 ?
+		sqrt(power / ((double)sample_count * 2.0)) :
+		0.0;
+}
+
 static int push_tx_frame(
 	struct iio_device *device,
 	struct iio_channel *i_channel,
@@ -337,6 +377,7 @@ static int push_tx_frame(
 	struct iio_buffer **active_buffer,
 	size_t *active_sample_count,
 	bool *active_cyclic,
+	uint32_t frame_id,
 	const uint8_t *iq,
 	size_t sample_count,
 	bool cyclic)
@@ -350,6 +391,16 @@ static int push_tx_frame(
 	char *end;
 	size_t index;
 	ssize_t pushed;
+	static uint32_t push_count;
+	struct timeval push_started;
+	struct timeval push_finished;
+	long long elapsed_us;
+	ptrdiff_t buffer_bytes;
+	ptrdiff_t expected_bytes;
+	unsigned int dma_hold_us;
+	double segment_rms[4];
+	int segment_peak[4];
+	int segment;
 
 	if (cyclic || !buffer || *active_sample_count != sample_count ||
 		*active_cyclic != cyclic) {
@@ -393,10 +444,58 @@ static int push_tx_frame(
 		memcpy(i_ptr, &packed_i, sizeof(packed_i));
 		memcpy(q_ptr, &packed_q, sizeof(packed_q));
 	}
+	for (segment = 0; segment < 4; segment++) {
+		size_t segment_start = sample_count * (size_t)segment / 4;
+		size_t segment_end = sample_count * (size_t)(segment + 1) / 4;
+		segment_rms[segment] = measure_iq_range_rms(
+			iq,
+			segment_start,
+			segment_end,
+			&segment_peak[segment]);
+	}
+	buffer_bytes = (char *)iio_buffer_end(buffer) -
+		(char *)iio_buffer_start(buffer);
+	expected_bytes = (ptrdiff_t)sample_count * step;
+	gettimeofday(&push_started, NULL);
 	pushed = iio_buffer_push(buffer);
+	gettimeofday(&push_finished, NULL);
+	elapsed_us =
+		((long long)push_finished.tv_sec - push_started.tv_sec) * 1000000LL +
+		((long long)push_finished.tv_usec - push_started.tv_usec);
+	push_count++;
 	if (pushed < 0) {
 		fprintf(stderr, "non-cyclic TX push failed: %zd\n", pushed);
 		return -1;
+	}
+	dma_hold_us = cyclic ? 0U : (unsigned int)(
+		((unsigned long long)sample_count * 1000000ULL +
+			(unsigned long long)SAMPLE_RATE_HZ - 1ULL) /
+		(unsigned long long)SAMPLE_RATE_HZ) + TX_DMA_GUARD_US;
+	if (push_count <= 10 || push_count % 100 == 0 ||
+		index != sample_count || pushed != expected_bytes) {
+		printf(
+			"TX push diag: n=%u frame=%u requested=%zu written=%zu step=%td expected_bytes=%td buffer_bytes=%td pushed_bytes=%zd elapsed_us=%lld hold_us=%u src_rms=[%.1f,%.1f,%.1f,%.1f] src_peak=[%d,%d,%d,%d]\n",
+			push_count,
+			frame_id,
+			sample_count,
+			index,
+			step,
+			expected_bytes,
+			buffer_bytes,
+			pushed,
+			elapsed_us,
+			dma_hold_us,
+			segment_rms[0],
+			segment_rms[1],
+			segment_rms[2],
+			segment_rms[3],
+			segment_peak[0],
+			segment_peak[1],
+			segment_peak[2],
+			segment_peak[3]);
+	}
+	if (!cyclic) {
+		usleep(dma_hold_us);
 	}
 	return 0;
 }
@@ -431,6 +530,7 @@ static void *tx_thread(void *opaque)
 				&buffer,
 				&buffer_sample_count,
 				&buffer_cyclic,
+				frame->frame_id,
 				frame->iq,
 				frame->sample_count,
 				frame->sample_count == RX_FRAME_SAMPLES) == 0) {
@@ -482,6 +582,42 @@ static size_t copy_rx_iq(
 	return count;
 }
 
+static void measure_iq_frame(
+	const uint8_t *iq,
+	size_t sample_count,
+	double *rms_adc,
+	int *peak_adc)
+{
+	size_t index;
+	double power = 0.0;
+	int peak = 0;
+
+	for (index = 0; index < sample_count; index++) {
+		int16_t i_sample;
+		int16_t q_sample;
+		int abs_i;
+		int abs_q;
+
+		memcpy(&i_sample, iq + index * IQ_BYTES_PER_SAMPLE, sizeof(i_sample));
+		memcpy(&q_sample, iq + index * IQ_BYTES_PER_SAMPLE + 2, sizeof(q_sample));
+		abs_i = i_sample < 0 ? -i_sample : i_sample;
+		abs_q = q_sample < 0 ? -q_sample : q_sample;
+		if (abs_i > peak) {
+			peak = abs_i;
+		}
+		if (abs_q > peak) {
+			peak = abs_q;
+		}
+		power += (double)i_sample * (double)i_sample +
+			(double)q_sample * (double)q_sample;
+	}
+
+	*rms_adc = sample_count > 0 ?
+		sqrt(power / ((double)sample_count * 2.0)) :
+		0.0;
+	*peak_adc = peak;
+}
+
 static int send_rx_chunk(
 	uint32_t frame_id,
 	uint16_t chunk_index,
@@ -527,12 +663,50 @@ static int send_rx_chunk(
 		sizeof(peer)) < 0 ? -1 : 0;
 }
 
+static int send_rx_frame(
+	uint32_t frame_id,
+	const uint8_t *iq,
+	size_t sample_count)
+{
+	uint16_t chunk_count = (uint16_t)(
+		(sample_count + RX_CHUNK_SAMPLES - 1) / RX_CHUNK_SAMPLES);
+	uint16_t chunk_index;
+
+	for (chunk_index = 0; chunk_index < chunk_count; chunk_index++) {
+		size_t offset = chunk_index * RX_CHUNK_SAMPLES;
+		uint16_t count = (uint16_t)(sample_count - offset);
+		if (count > RX_CHUNK_SAMPLES) {
+			count = RX_CHUNK_SAMPLES;
+		}
+		if (send_rx_chunk(
+			frame_id,
+			chunk_index,
+			chunk_count,
+			iq + offset * IQ_BYTES_PER_SAMPLE,
+			count) < 0) {
+			return -1;
+		}
+	}
+	return 0;
+}
+
 static void *rx_thread(void *opaque)
 {
 	struct rx_thread_args *args = opaque;
 	struct iio_buffer *buffer;
 	uint8_t *iq;
+	uint8_t *previous_iq;
 	uint32_t frame_id = 0;
+	uint32_t send_error_count = 0;
+	uint32_t sent_frame_count = 0;
+	uint32_t skipped_frame_count = 0;
+	uint32_t active_frame_count = 0;
+	uint32_t previous_frame_id = 0;
+	uint32_t last_sent_frame_id = 0;
+	size_t previous_sample_count = 0;
+	unsigned int hangover_frames = 0;
+	int previous_valid = 0;
+	int last_sent_valid = 0;
 
 	buffer = iio_device_create_buffer(args->device, RX_FRAME_SAMPLES, false);
 	if (!buffer) {
@@ -540,7 +714,10 @@ static void *rx_thread(void *opaque)
 		return NULL;
 	}
 	iq = malloc(RX_FRAME_SAMPLES * IQ_BYTES_PER_SAMPLE);
-	if (!iq) {
+	previous_iq = malloc(RX_FRAME_SAMPLES * IQ_BYTES_PER_SAMPLE);
+	if (!iq || !previous_iq) {
+		free(iq);
+		free(previous_iq);
 		iio_buffer_destroy(buffer);
 		return NULL;
 	}
@@ -548,10 +725,15 @@ static void *rx_thread(void *opaque)
 	while (!stop) {
 		ssize_t refilled;
 		size_t sample_count;
-		uint16_t chunk_count;
-		uint16_t chunk_index;
+		double rms_adc;
+		int peak_adc;
+		int active;
+		int send_current = 0;
 
 		if (!streaming_active || !pc_peer_valid) {
+			previous_valid = 0;
+			last_sent_valid = 0;
+			hangover_frames = 0;
 			usleep(10000);
 			continue;
 		}
@@ -566,32 +748,64 @@ static void *rx_thread(void *opaque)
 			args->q_channel,
 			iq,
 			RX_FRAME_SAMPLES);
-		chunk_count = (uint16_t)((sample_count + RX_CHUNK_SAMPLES - 1) /
-			RX_CHUNK_SAMPLES);
-		for (chunk_index = 0; chunk_index < chunk_count; chunk_index++) {
-			size_t offset = chunk_index * RX_CHUNK_SAMPLES;
-			uint16_t count = (uint16_t)(sample_count - offset);
-			if (count > RX_CHUNK_SAMPLES) {
-				count = RX_CHUNK_SAMPLES;
+		measure_iq_frame(iq, sample_count, &rms_adc, &peak_adc);
+		active = peak_adc >= RX_ACTIVE_PEAK_THRESHOLD_ADC;
+		if (active) {
+			active_frame_count++;
+			if (previous_valid &&
+				(!last_sent_valid || last_sent_frame_id != previous_frame_id)) {
+				if (send_rx_frame(
+					previous_frame_id,
+					previous_iq,
+					previous_sample_count) < 0) {
+					perror("send RX IQ preroll");
+					send_error_count++;
+				} else {
+					sent_frame_count++;
+					last_sent_frame_id = previous_frame_id;
+					last_sent_valid = 1;
+				}
 			}
-			if (send_rx_chunk(
-				frame_id,
-				chunk_index,
-				chunk_count,
-				iq + offset * IQ_BYTES_PER_SAMPLE,
-				count) < 0) {
-				perror("send RX IQ");
-				break;
-			}
+			hangover_frames = RX_ACTIVE_HANGOVER_FRAMES;
+			send_current = 1;
+		} else if (hangover_frames > 0) {
+			hangover_frames--;
+			send_current = 1;
 		}
+
+		if (send_current) {
+			if (send_rx_frame(frame_id, iq, sample_count) < 0) {
+				perror("send RX IQ");
+				send_error_count++;
+			} else {
+				sent_frame_count++;
+				last_sent_frame_id = frame_id;
+				last_sent_valid = 1;
+			}
+		} else {
+			skipped_frame_count++;
+		}
+
+		memcpy(previous_iq, iq, sample_count * IQ_BYTES_PER_SAMPLE);
+		previous_sample_count = sample_count;
+		previous_frame_id = frame_id;
+		previous_valid = 1;
 		if (frame_id % 1000 == 0) {
-			printf("video RX returned: frame=%u samples=%zu chunks=%u\n",
+			printf("video RX gate: frame=%u samples=%zu active=%u sent=%u skipped=%u threshold=%d hangover=%u rx_rms_adc=%.1f rx_peak_adc=%d send_errors=%u\n",
 				frame_id,
 				sample_count,
-				chunk_count);
+				active_frame_count,
+				sent_frame_count,
+				skipped_frame_count,
+				RX_ACTIVE_PEAK_THRESHOLD_ADC,
+				hangover_frames,
+				rms_adc,
+				peak_adc,
+				send_error_count);
 		}
 		frame_id++;
 	}
+	free(previous_iq);
 	free(iq);
 	iio_buffer_destroy(buffer);
 	return NULL;
@@ -684,6 +898,9 @@ int main(void)
 	printf("TX attenuation=%.1f dB, RX manual gain=%.1f dB\n",
 		TX_HARDWAREGAIN_DB,
 		RX_HARDWAREGAIN_DB);
+	printf("RX UDP gate: peak threshold=%d ADC, preroll=1 frame, hangover=%u frames\n",
+		RX_ACTIVE_PEAK_THRESHOLD_ADC,
+		RX_ACTIVE_HANGOVER_FRAMES);
 
 	while (!stop) {
 		struct sockaddr_in peer;
