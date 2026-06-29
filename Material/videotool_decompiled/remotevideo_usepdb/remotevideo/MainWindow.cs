@@ -251,6 +251,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private long m_videoModemRecoveredFrameCount;
 
 	private const int VideoChunkRepeatCount = 2;
+	private const int VideoRecentRepairFrameWindow = 8;
+	private const int VideoFinalRepairRounds = 5;
 	private static int VideoWirelessChunkPayloadBytes => ClampSetting(
 		Settings.Default.VideoWirelessChunkPayloadBytes,
 		32,
@@ -278,6 +280,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private int m_videoIqFrameId;
 
 	private long m_videoTxManifestSequence;
+
+	private readonly Dictionary<uint, IReadOnlyList<WirelessVideoFrame>> m_videoRecentChunks =
+		new Dictionary<uint, IReadOnlyList<WirelessVideoFrame>>();
 
 	internal TextBlock tbStatus;
 
@@ -846,6 +851,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_videoRxCoarseFrequencyHz = 0.0;
 				m_videoRxClippingPercent = 0.0;
 				m_videoRxZeroPercent = 0.0;
+				m_videoRecentChunks.Clear();
 				m_lastVideoDiagnosticsTick = 0;
 				while (m_videoDecodeQueue.TryDequeue(out _))
 				{
@@ -1224,6 +1230,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 		if (m_videoPlaybackCompleted && m_isSending)
 		{
+			DrainVideoRepairBacklog();
 			Thread.Sleep(750);
 			m_isSending = false;
 			m_acceptRxIq = false;
@@ -1236,6 +1243,24 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					? "视频已播放并发送一次，E310 已停止发送"
 					: "视频已播放一次，但停止命令发送失败";
 			});
+		}
+	}
+
+	private void DrainVideoRepairBacklog()
+	{
+		if (m_commMode != 9 || m_videoRecentChunks.Count == 0)
+		{
+			return;
+		}
+
+		uint newestFrameId = m_videoRecentChunks.Keys.Max();
+		int rounds = Math.Max(VideoRepairRoundCount, VideoFinalRepairRounds);
+		for (int round = 0; round < rounds && m_isSending; round++)
+		{
+			Thread.Sleep(VideoRepairWaitMs);
+			RepairRecentVideoFrames(
+				newestFrameId,
+				VideoChunkRepeatCount + VideoRepairRoundCount + round);
 		}
 	}
 
@@ -1367,6 +1392,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				frameId,
 				timestampMs,
 				VideoWirelessChunkPayloadBytes);
+		RememberVideoChunks(frameId, chunks);
 
 		for (int repeat = 0; repeat < VideoChunkRepeatCount; repeat++)
 		{
@@ -1395,30 +1421,16 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			repairRound++)
 		{
 			Thread.Sleep(VideoRepairWaitMs);
-			if (!m_videoReassembler.TryGetMissingChunkIndices(
-				frameId,
-				out ushort[] missingChunkIndices,
-				out bool completed))
-			{
-				continue;
-			}
-			if (completed || missingChunkIndices.Length == 0)
-			{
-				frameConfirmed = completed;
-				break;
-			}
-
-			foreach (ushort missingChunkIndex in missingChunkIndices)
-			{
-				if (!m_isSending)
-				{
-					break;
-				}
-				SendVideoWirelessChunk(
-					chunks[missingChunkIndex],
+			RepairRecentVideoFrames(frameId, VideoChunkRepeatCount + repairRound);
+			frameConfirmed =
+				m_videoReassembler.TryGetMissingChunkIndices(
 					frameId,
-					VideoChunkRepeatCount + repairRound,
-					isRepair: true);
+					out ushort[] missingChunkIndices,
+					out bool completed) &&
+				(completed || missingChunkIndices.Length == 0);
+			if (frameConfirmed)
+			{
+				break;
 			}
 		}
 
@@ -1454,6 +1466,63 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			tbStatus.Text = txStatus;
 		});
 		return frameConfirmed;
+	}
+
+	private void RememberVideoChunks(
+		uint frameId,
+		IReadOnlyList<WirelessVideoFrame> chunks)
+	{
+		m_videoRecentChunks[frameId] = chunks;
+		foreach (uint oldFrameId in m_videoRecentChunks.Keys
+			.Where(id => frameId > id && frameId - id > VideoRecentRepairFrameWindow)
+			.ToArray())
+		{
+			m_videoRecentChunks.Remove(oldFrameId);
+		}
+	}
+
+	private void RepairRecentVideoFrames(uint newestFrameId, int variant)
+	{
+		foreach (uint frameId in m_videoRecentChunks.Keys
+			.Where(id => newestFrameId >= id && newestFrameId - id <= VideoRecentRepairFrameWindow)
+			.OrderBy(id => id)
+			.ToArray())
+		{
+			if (!m_isSending)
+			{
+				break;
+			}
+			if (!m_videoRecentChunks.TryGetValue(frameId, out IReadOnlyList<WirelessVideoFrame> chunks))
+			{
+				continue;
+			}
+			if (!m_videoReassembler.TryGetMissingChunkIndices(
+				frameId,
+				out ushort[] missingChunkIndices,
+				out bool completed) ||
+				completed ||
+				missingChunkIndices.Length == 0)
+			{
+				continue;
+			}
+
+			foreach (ushort missingChunkIndex in missingChunkIndices)
+			{
+				if (!m_isSending)
+				{
+					break;
+				}
+				if (missingChunkIndex >= chunks.Count)
+				{
+					continue;
+				}
+				SendVideoWirelessChunk(
+					chunks[missingChunkIndex],
+					frameId,
+					variant,
+					isRepair: true);
+			}
+		}
 	}
 
 	private void SendVideoWirelessChunk(
