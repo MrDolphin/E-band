@@ -256,6 +256,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private const int VideoChunkRepeatCount = 2;
 	private const int VideoRecentRepairFrameWindow = 8;
 	private const int VideoFinalRepairRounds = 5;
+	private const int VideoChunkPacingInterval = 8;
 	private static int VideoWirelessChunkPayloadBytes => ClampSetting(
 		Settings.Default.VideoWirelessChunkPayloadBytes,
 		32,
@@ -1549,10 +1550,14 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			m_videoModemRepairChunkCount++;
 		}
 
-		int durationMs = Math.Max(
-			1,
-			(int)Math.Ceiling(samples.Length * 1000.0 / 3840000.0));
-		Thread.Sleep(durationMs);
+		if (m_videoModemChunkCount % VideoChunkPacingInterval == 0)
+		{
+			Thread.Sleep(1);
+		}
+		else
+		{
+			Thread.Yield();
+		}
 	}
 
 	private void WriteVideoTxManifest(
