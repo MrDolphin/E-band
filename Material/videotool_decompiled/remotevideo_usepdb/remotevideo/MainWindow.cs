@@ -210,6 +210,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private FileStream m_videoIqCaptureStream;
 
 	private StreamWriter m_videoTxManifestWriter;
+	private long m_videoMetricsWriteCount;
+	private long m_videoTxManifestWriteCount;
+	private const int VideoDiagnosticsFlushInterval = 256;
 
 	private string m_videoMetricsPath = "";
 
@@ -1581,7 +1584,11 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"{chunk.ChunkIndex},{chunk.ChunkCount}," +
 				$"{chunk.Payload.Length},{wirelessBytes.Length}," +
 				$"0x{crc:X8},{headHex},{packetHex}");
-			m_videoTxManifestWriter.Flush();
+			m_videoTxManifestWriteCount++;
+			if (m_videoTxManifestWriteCount % VideoDiagnosticsFlushInterval == 0)
+			{
+				m_videoTxManifestWriter.Flush();
+			}
 		}
 	}
 
@@ -2260,6 +2267,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				"time,seq,source_frame,variant,is_repair,chunk_index," +
 				"chunk_count,payload_len,wireless_len,crc32,head_hex,packet_hex");
 			m_videoTxManifestWriter.Flush();
+			m_videoMetricsWriteCount = 0;
+			m_videoTxManifestWriteCount = 0;
 			m_videoIqCaptureBytes = 0;
 			m_videoTxManifestSequence = 0;
 		}
@@ -2275,10 +2284,12 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private void CloseVideoDiagnosticsLocked()
 	{
+		m_videoMetricsWriter?.Flush();
 		m_videoMetricsWriter?.Dispose();
 		m_videoMetricsWriter = null;
 		m_videoIqCaptureStream?.Dispose();
 		m_videoIqCaptureStream = null;
+		m_videoTxManifestWriter?.Flush();
 		m_videoTxManifestWriter?.Dispose();
 		m_videoTxManifestWriter = null;
 	}
@@ -2384,7 +2395,11 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"{m_qpskStreamDecoder.LastConsumedSamples}," +
 				$"{(m_qpskStreamDecoder.LastUsedConjugate ? 1 : 0)}," +
 				$"{m_videoIqCaptureBytes / (1024.0 * 1024.0):F2}");
-			m_videoMetricsWriter.Flush();
+			m_videoMetricsWriteCount++;
+			if (m_videoMetricsWriteCount % VideoDiagnosticsFlushInterval == 0)
+			{
+				m_videoMetricsWriter.Flush();
+			}
 
 		}
 	}
