@@ -213,6 +213,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private long m_videoMetricsWriteCount;
 	private long m_videoTxManifestWriteCount;
 	private const int VideoDiagnosticsFlushInterval = 256;
+	private MemoryStream m_videoTxBatchStream;
+	private int m_videoTxBatchChunkCount;
 
 	private string m_videoMetricsPath = "";
 
@@ -266,6 +268,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private const int VideoFinalRepairRounds = 2;
 	private const int VideoRepairChunkBudgetPerRound = 96;
 	private const int VideoChunkPacingInterval = 8;
+	private const int VideoTxBatchChunkCount = 8;
 	private static int VideoWirelessChunkPayloadBytes => ClampSetting(
 		Settings.Default.VideoWirelessChunkPayloadBytes,
 		32,
@@ -869,6 +872,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_videoRxClippingPercent = 0.0;
 				m_videoRxZeroPercent = 0.0;
 				m_videoRecentChunks.Clear();
+				m_videoTxBatchStream?.SetLength(0);
+				m_videoTxBatchChunkCount = 0;
 				m_lastVideoDiagnosticsTick = 0;
 				while (m_videoDecodeQueue.TryDequeue(out _))
 				{
@@ -1278,6 +1283,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			RepairRecentVideoFrames(
 				newestFrameId,
 				VideoChunkRepeatCount + VideoRepairRoundCount + round);
+			FlushVideoWirelessBatch();
 		}
 	}
 
@@ -1426,6 +1432,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				}
 				SendVideoWirelessChunk(chunk, frameId, repeat, isRepair: false);
 			}
+			FlushVideoWirelessBatch();
 			if (!m_isSending)
 			{
 				break;
@@ -1439,6 +1446,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		{
 			Thread.Sleep(VideoRepairWaitMs);
 			RepairRecentVideoFrames(frameId, VideoChunkRepeatCount + repairRound);
+			FlushVideoWirelessBatch();
 			frameConfirmed =
 				m_videoReassembler.TryGetMissingChunkIndices(
 					frameId,
@@ -1553,6 +1561,28 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 	}
 
+	private void AppendVideoWirelessBatch(byte[] iqBytes)
+	{
+		m_videoTxBatchStream ??= new MemoryStream();
+		m_videoTxBatchStream.Write(iqBytes, 0, iqBytes.Length);
+		m_videoTxBatchChunkCount++;
+		if (m_videoTxBatchChunkCount >= VideoTxBatchChunkCount)
+		{
+			FlushVideoWirelessBatch();
+		}
+	}
+
+	private void FlushVideoWirelessBatch()
+	{
+		if (m_videoTxBatchStream == null || m_videoTxBatchStream.Length == 0)
+		{
+			return;
+		}
+		SendWaveformFrame(m_videoTxBatchStream.ToArray(), m_videoIqFrameId++, 0x05);
+		m_videoTxBatchStream.SetLength(0);
+		m_videoTxBatchChunkCount = 0;
+	}
+
 	private void SendVideoWirelessChunk(
 		WirelessVideoFrame chunk,
 		uint frameId,
@@ -1567,7 +1597,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		byte[] iqBytes = new byte[interleaved.Length * sizeof(short)];
 		Buffer.BlockCopy(interleaved, 0, iqBytes, 0, iqBytes.Length);
 		WriteVideoTxManifest(chunk, frameId, variant, isRepair, wirelessBytes);
-		SendWaveformFrame(iqBytes, m_videoIqFrameId++, 0x05);
+		AppendVideoWirelessBatch(iqBytes);
 		m_videoModemChunkCount++;
 		if (isRepair)
 		{
