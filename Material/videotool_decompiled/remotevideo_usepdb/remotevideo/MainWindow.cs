@@ -249,6 +249,14 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private string m_videoLastCandidateDiagnostic = "候选包诊断：尚无候选包";
 
+	private string m_videoLastDemodDiagnostic = "解调质量：尚无有效候选包";
+
+	private string m_videoLastParseFailureReason = "格式失败原因：尚无";
+
+	private long m_videoWirelessCrcFailureCount;
+
+	private long m_videoWirelessFormatFailureCount;
+
 	private long m_videoModemDecodedChunkCount;
 
 	private long m_videoModemRecoveredFrameCount;
@@ -827,6 +835,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_videoModemDecodedChunkCount = 0;
 				m_videoModemRecoveredFrameCount = 0;
 				m_videoModemFailureCount = 0;
+				m_videoWirelessCrcFailureCount = 0;
+				m_videoWirelessFormatFailureCount = 0;
+				m_videoLastDemodDiagnostic = "解调质量：尚无有效候选包";
+				m_videoLastParseFailureReason = "格式失败原因：尚无";
 				m_videoModemRepairChunkCount = 0;
 				m_videoModemSentFrameCount = 0;
 				m_videoModemConfirmedFrameCount = 0;
@@ -2152,6 +2164,18 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				out WirelessVideoFrame chunk))
 			{
 				m_videoModemFailureCount++;
+				string parseReason = AnalyzeWirelessFrameParseFailure(wirelessBytes);
+				m_videoLastParseFailureReason = parseReason;
+				if (parseReason.StartsWith("CRC", StringComparison.OrdinalIgnoreCase))
+				{
+					m_videoWirelessCrcFailureCount++;
+				}
+				else
+				{
+					m_videoWirelessFormatFailureCount++;
+				}
+				m_videoLastDemodDiagnostic = BuildQpskDemodDiagnostic(
+					QpskModem.LastDiagnostics);
 				m_videoLastCandidateDiagnostic = BuildVideoCandidateDiagnostic(
 					rxFrameId,
 					correlation,
@@ -2161,6 +2185,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			}
 
 			m_videoModemDecodedChunkCount++;
+			m_videoLastParseFailureReason = "格式失败原因：最近候选包已通过";
+			m_videoLastDemodDiagnostic = BuildQpskDemodDiagnostic(
+				QpskModem.LastDiagnostics);
 			m_videoLastCandidateDiagnostic = BuildVideoCandidateDiagnostic(
 				rxFrameId,
 				correlation,
@@ -2203,6 +2230,79 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			$"候选包诊断 (Candidate): {result}{chunkText}\n" +
 			$"RX frame={rxFrameId}, start={start} samples, consumed={consumed} samples\n" +
 			$"span≈{rxFrameSpan} RX frames @4096 samples, corr={correlation:F4}, conj={(m_qpskStreamDecoder.LastUsedConjugate ? "yes" : "no")}";
+	}
+
+	private static string AnalyzeWirelessFrameParseFailure(byte[] data)
+	{
+		if (data == null || data.Length < WirelessVideoFrame.HeaderSize + WirelessVideoFrame.CrcSize)
+		{
+			return $"FORMAT: packet too short ({data?.Length ?? 0} bytes)";
+		}
+		uint sync = BitConverter.ToUInt32(data, 0);
+		if (sync != WirelessVideoFrame.SyncWord)
+		{
+			return $"FORMAT: sync mismatch 0x{sync:X8}";
+		}
+		if (data[4] != WirelessVideoFrame.Version)
+		{
+			return $"FORMAT: version mismatch {data[4]}";
+		}
+		ushort payloadLength = BitConverter.ToUInt16(data, 14);
+		int expectedLength = WirelessVideoFrame.HeaderSize + payloadLength + WirelessVideoFrame.CrcSize;
+		if (payloadLength > WirelessVideoFrame.MaxPayloadSize ||
+			data.Length != expectedLength)
+		{
+			return $"FORMAT: payload length {payloadLength}, packet {data.Length}, expected {expectedLength}";
+		}
+		uint expectedCrc = BitConverter.ToUInt32(
+			data,
+			expectedLength - WirelessVideoFrame.CrcSize);
+		uint actualCrc = Crc32.Compute(data.AsSpan(0, expectedLength - WirelessVideoFrame.CrcSize));
+		if (actualCrc != expectedCrc)
+		{
+			return $"CRC: expected 0x{expectedCrc:X8}, actual 0x{actualCrc:X8}";
+		}
+		ushort chunkIndex = BitConverter.ToUInt16(data, 10);
+		ushort chunkCount = BitConverter.ToUInt16(data, 12);
+		if (chunkCount == 0 || chunkIndex >= chunkCount)
+		{
+			return $"FORMAT: chunk {chunkIndex + 1}/{chunkCount}";
+		}
+		return "FORMAT: unknown parse failure";
+	}
+
+	private static string BuildQpskDemodDiagnostic(QpskDemodulationDiagnostics diagnostics)
+	{
+		if (diagnostics == null || diagnostics.Segments.Count == 0)
+		{
+			return "解调质量：无 payload 诊断";
+		}
+		double minMargin = diagnostics.Segments.Min(segment => segment.AverageDecisionMargin);
+		double maxPhaseError = diagnostics.Segments.Max(segment => segment.PhaseErrorRms);
+		QpskSymbolSegment worstMargin = diagnostics.Segments
+			.OrderBy(segment => segment.AverageDecisionMargin)
+			.First();
+		QpskSymbolSegment worstPhase = diagnostics.Segments
+			.OrderByDescending(segment => segment.PhaseErrorRms)
+			.First();
+		string firstSegments = string.Join(
+			" | ",
+			diagnostics.Segments
+				.Take(4)
+				.Select(segment =>
+					$"{segment.Index}:m={segment.AverageDecisionMargin:F2},pe={segment.PhaseErrorRms:F2}"));
+		string lastSegments = string.Join(
+			" | ",
+			diagnostics.Segments
+				.Skip(Math.Max(0, diagnostics.Segments.Count - 4))
+				.Select(segment =>
+					$"{segment.Index}:m={segment.AverageDecisionMargin:F2},pe={segment.PhaseErrorRms:F2}"));
+		return
+			$"解调质量：segments={diagnostics.Segments.Count}, " +
+			$"minMargin={minMargin:F2}@{worstMargin.Index}, " +
+			$"maxPhaseErr={maxPhaseError:F2}@{worstPhase.Index}\n" +
+			$"前段：{firstSegments}\n" +
+			$"尾段：{lastSegments}";
 	}
 
 	private void VideoModemDecodeProc()
@@ -2545,7 +2645,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"接收确认完整帧：{m_videoModemConfirmedFrameCount}\n" +
 				$"累计 RX 分片：{m_videoModemDecodedChunkCount}\n" +
 				$"恢复视频帧：{m_videoModemRecoveredFrameCount}\n" +
-				$"CRC/格式失败：{m_videoModemFailureCount}\n\n" +
+				$"CRC/格式失败：{m_videoModemFailureCount}\n" +
+				$"  CRC fail: {m_videoWirelessCrcFailureCount}\n" +
+				$"  FORMAT fail: {m_videoWirelessFormatFailureCount}\n\n" +
 				$"采样率：3.84 MSPS\n" +
 				$"符号率：{3840 / QpskModem.SamplesPerSymbol} ksym/s\n" +
 				$"分片负载：{VideoWirelessChunkPayloadBytes} bytes\n" +
@@ -2559,6 +2661,14 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			if (!string.IsNullOrWhiteSpace(m_videoLastCandidateDiagnostic))
 			{
 				tbRadarData.Text += $"\n\n{m_videoLastCandidateDiagnostic}";
+			}
+			if (!string.IsNullOrWhiteSpace(m_videoLastParseFailureReason))
+			{
+				tbRadarData.Text += $"\n{m_videoLastParseFailureReason}";
+			}
+			if (!string.IsNullOrWhiteSpace(m_videoLastDemodDiagnostic))
+			{
+				tbRadarData.Text += $"\n\n{m_videoLastDemodDiagnostic}";
 			}
 		});
 	}
