@@ -79,6 +79,10 @@ public class SettingDialog : Window, IComponentConnector
 
 	private TextBox tbQpskPreambleSearchStep;
 
+	private TextBox tbVideoTxMaxLongEdge;
+
+	private TextBox tbVideoTxWebPQuality;
+
 	private bool _contentLoaded;
 
 	public SettingDialog()
@@ -193,6 +197,16 @@ public class SettingDialog : Window, IComponentConnector
 			4,
 			1,
 			4);
+		Settings.Default.VideoTxMaxLongEdge = ParseBoundedInt(
+			tbVideoTxMaxLongEdge,
+			Mode9TuningProfile.DefaultVideoTxMaxLongEdge,
+			64,
+			1920);
+		Settings.Default.VideoTxWebPQuality = ParseBoundedInt(
+			tbVideoTxWebPQuality,
+			Mode9TuningProfile.DefaultVideoTxWebPQuality,
+			5,
+			100);
 		Settings.Default.Save();
 		new Mode9TuningProfile(
 			Settings.Default.VideoRepairRoundCount,
@@ -202,7 +216,9 @@ public class SettingDialog : Window, IComponentConnector
 			Settings.Default.QpskQuickThresholdPercent,
 			Settings.Default.QpskPreambleSearchStep,
 			Settings.Default.VideoWirelessChunkPayloadBytes,
-			Settings.Default.VideoIqCaptureLimitMb).Save(
+			Settings.Default.VideoIqCaptureLimitMb,
+			Settings.Default.VideoTxMaxLongEdge,
+			Settings.Default.VideoTxWebPQuality).Save(
 				Mode9TuningProfile.DefaultPath);
 		base.DialogResult = true;
 	}
@@ -219,6 +235,8 @@ public class SettingDialog : Window, IComponentConnector
 		Settings.Default.QpskPreambleSearchStep = profile.PreambleSearchStep;
 		Settings.Default.VideoWirelessChunkPayloadBytes = profile.WirelessChunkPayloadBytes;
 		Settings.Default.VideoIqCaptureLimitMb = profile.IqCaptureLimitMb;
+		Settings.Default.VideoTxMaxLongEdge = profile.VideoTxMaxLongEdge;
+		Settings.Default.VideoTxWebPQuality = profile.VideoTxWebPQuality;
 	}
 
 	private static int ParseBoundedInt(TextBox textBox, int fallback, int min, int max)
@@ -286,6 +304,10 @@ public class SettingDialog : Window, IComponentConnector
 			Settings.Default.QpskQuickThresholdPercent);
 		tbQpskPreambleSearchStep = CreateTuningTextBox(
 			Settings.Default.QpskPreambleSearchStep);
+		tbVideoTxMaxLongEdge = CreateTuningTextBox(
+			Settings.Default.VideoTxMaxLongEdge);
+		tbVideoTxWebPQuality = CreateTuningTextBox(
+			Settings.Default.VideoTxWebPQuality);
 
 		Grid tuningGrid = new Grid
 		{
@@ -308,10 +330,13 @@ public class SettingDialog : Window, IComponentConnector
 		AddTuningCell(tuningGrid, 5, 0, "分片负载字节", tbVideoWirelessChunkPayloadBytes, "每个无线视频分片的 payload 字节数；诊断默认 32，稳定后逐步提高");
 		AddTuningCell(tuningGrid, 5, 2, "IQ捕获MB", tbVideoIqCaptureLimitMb, "原始 IQ 诊断文件最大大小，长时间测试建议 512 或 1024");
 
+		AddTuningCell(tuningGrid, 6, 0, "发送长边px", tbVideoTxMaxLongEdge, "模式9发送前压缩视频/图片长边，推荐 240 用于验证完整帧率");
+		AddTuningCell(tuningGrid, 6, 2, "WebP质量%", tbVideoTxWebPQuality, "模式9发送 WebP 质量，推荐 25；越低分片越少但越模糊");
+
 		ScrollViewer tuningScrollViewer = new ScrollViewer
 		{
 			Content = tuningGrid,
-			Height = 118,
+			Height = 158,
 			VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
 			HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
 			CanContentScroll = false,

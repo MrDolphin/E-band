@@ -502,7 +502,9 @@ Require(
 	recommendedTuning.QuickThresholdPercent == 30 &&
 	recommendedTuning.PreambleSearchStep == 4 &&
 	recommendedTuning.WirelessChunkPayloadBytes == 32 &&
-	recommendedTuning.IqCaptureLimitMb == 512,
+	recommendedTuning.IqCaptureLimitMb == 512 &&
+	recommendedTuning.VideoTxMaxLongEdge == 240 &&
+	recommendedTuning.VideoTxWebPQuality == 25,
 	"Mode 9 recommended defaults changed.");
 string tuningPath = Path.Combine(
 	Path.GetTempPath(),

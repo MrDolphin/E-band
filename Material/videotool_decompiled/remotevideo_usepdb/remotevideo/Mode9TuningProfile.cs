@@ -12,9 +12,13 @@ internal sealed record Mode9TuningProfile(
 	int QuickThresholdPercent,
 	int PreambleSearchStep,
 	int WirelessChunkPayloadBytes,
-	int IqCaptureLimitMb)
+	int IqCaptureLimitMb,
+	int VideoTxMaxLongEdge,
+	int VideoTxWebPQuality)
 {
 	public const int MaxRepairRoundCount = 10;
+	public const int DefaultVideoTxMaxLongEdge = 240;
+	public const int DefaultVideoTxWebPQuality = 25;
 
 	public static Mode9TuningProfile Recommended { get; } = new(
 		1,
@@ -24,7 +28,9 @@ internal sealed record Mode9TuningProfile(
 		30,
 		4,
 		32,
-		512);
+		512,
+		DefaultVideoTxMaxLongEdge,
+		DefaultVideoTxWebPQuality);
 
 	public static string DefaultPath => Path.Combine(
 		Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -74,6 +80,18 @@ internal sealed record Mode9TuningProfile(
 			Math.Clamp(value.QuickThresholdPercent, 10, 90),
 			Math.Clamp(value.PreambleSearchStep, 1, 4),
 			Math.Clamp(value.WirelessChunkPayloadBytes, 32, WirelessVideoFrame.MaxPayloadSize),
-			Math.Clamp(value.IqCaptureLimitMb, 16, 2048));
+			Math.Clamp(value.IqCaptureLimitMb, 16, 2048),
+			Math.Clamp(
+				value.VideoTxMaxLongEdge <= 0
+					? DefaultVideoTxMaxLongEdge
+					: value.VideoTxMaxLongEdge,
+				64,
+				1920),
+			Math.Clamp(
+				value.VideoTxWebPQuality <= 0
+					? DefaultVideoTxWebPQuality
+					: value.VideoTxWebPQuality,
+				5,
+				100));
 	}
 }

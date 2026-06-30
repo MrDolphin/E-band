@@ -313,11 +313,27 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		Settings.Default.QpskTxScalePercent,
 		5,
 		100) / 100.0;
+	private static int VideoTxMaxLongEdge => ClampSetting(
+		Settings.Default.VideoTxMaxLongEdge,
+		64,
+		1920);
+	private static int VideoTxWebPQuality => ClampSetting(
+		Settings.Default.VideoTxWebPQuality,
+		5,
+		100);
 	private const int PhotoMaxLongEdge = 800;
 	private const int PhotoWebPQuality = 40;
 	private long m_videoModemRepairChunkCount;
 	private long m_videoModemSentFrameCount;
 	private long m_videoModemConfirmedFrameCount;
+
+	private int m_videoLastEncodedBytes;
+
+	private int m_videoLastEncodedWidth;
+
+	private int m_videoLastEncodedHeight;
+
+	private int m_videoLastEncodedChunks;
 
 	private int m_videoIqFrameId;
 
@@ -443,6 +459,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		Settings.Default.QpskPreambleSearchStep = profile.PreambleSearchStep;
 		Settings.Default.VideoWirelessChunkPayloadBytes = profile.WirelessChunkPayloadBytes;
 		Settings.Default.VideoIqCaptureLimitMb = profile.IqCaptureLimitMb;
+		Settings.Default.VideoTxMaxLongEdge = profile.VideoTxMaxLongEdge;
+		Settings.Default.VideoTxWebPQuality = profile.VideoTxWebPQuality;
 	}
 
 	private void InitUdpSocket()
@@ -874,6 +892,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_videoModemRepairChunkCount = 0;
 				m_videoModemSentFrameCount = 0;
 				m_videoModemConfirmedFrameCount = 0;
+				m_videoLastEncodedBytes = 0;
+				m_videoLastEncodedWidth = 0;
+				m_videoLastEncodedHeight = 0;
+				m_videoLastEncodedChunks = 0;
 				m_rxIqFrameId = -1;
 				m_rxIqExpectedChunks = 0;
 				m_rxIqChunks.Clear();
@@ -1162,13 +1184,19 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				return;
 			}
 
-			resizedPhoto = ResizePhotoForLink(photo);
+			resizedPhoto = m_commMode == 9
+				? ResizeMatForLongEdge(photo, VideoTxMaxLongEdge)
+				: ResizePhotoForLink(photo);
 			DisplayLocalMat(resizedPhoto);
-			Cv2.ImEncode(
-				".webp",
+			byte[] imageBytes = EncodeWebP(
 				resizedPhoto,
-				out byte[] imageBytes,
-				new ImageEncodingParam(ImwriteFlags.WebPQuality, PhotoWebPQuality));
+				m_commMode == 9 ? VideoTxWebPQuality : PhotoWebPQuality);
+			if (m_commMode == 9)
+			{
+				m_videoLastEncodedBytes = imageBytes.Length;
+				m_videoLastEncodedWidth = resizedPhoto.Width;
+				m_videoLastEncodedHeight = resizedPhoto.Height;
+			}
 
 			if (m_commMode == 8)
 			{
@@ -1215,19 +1243,37 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private static Mat ResizePhotoForLink(Mat source)
 	{
+		return ResizeMatForLongEdge(source, PhotoMaxLongEdge);
+	}
+
+	private static Mat ResizeMatForLongEdge(Mat source, int maxLongEdge)
+	{
+		int targetLongEdge = ClampSetting(maxLongEdge, 64, 4096);
 		int longEdge = Math.Max(source.Width, source.Height);
-		if (longEdge <= PhotoMaxLongEdge)
+		if (longEdge <= targetLongEdge)
 		{
 			return source.Clone();
 		}
 
-		double scale = (double)PhotoMaxLongEdge / longEdge;
+		double scale = (double)targetLongEdge / longEdge;
 		OpenCvSharp.Size targetSize = new OpenCvSharp.Size(
 			Math.Max(1, (int)Math.Round(source.Width * scale)),
 			Math.Max(1, (int)Math.Round(source.Height * scale)));
 		Mat resized = new Mat();
 		Cv2.Resize(source, resized, targetSize, 0.0, 0.0, InterpolationFlags.Area);
 		return resized;
+	}
+
+	private static byte[] EncodeWebP(Mat mat, int quality)
+	{
+		Cv2.ImEncode(
+			".webp",
+			mat,
+			out byte[] imageBytes,
+			new ImageEncodingParam(
+				ImwriteFlags.WebPQuality,
+				ClampSetting(quality, 5, 100)));
+		return imageBytes;
 	}
 
 	private void DisplayLocalMat(Mat mat)
@@ -1375,7 +1421,18 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		{
 			return;
 		}
-		Cv2.ImEncode(".webp", mat, out byte[] imageBytes, new ImageEncodingParam(ImwriteFlags.WebPQuality, 30));
+		using Mat encodedMat = m_commMode == 9
+			? ResizeMatForLongEdge(mat, VideoTxMaxLongEdge)
+			: mat.Clone();
+		byte[] imageBytes = EncodeWebP(
+			encodedMat,
+			m_commMode == 9 ? VideoTxWebPQuality : 30);
+		if (m_commMode == 9)
+		{
+			m_videoLastEncodedBytes = imageBytes.Length;
+			m_videoLastEncodedWidth = encodedMat.Width;
+			m_videoLastEncodedHeight = encodedMat.Height;
+		}
 		if (m_commMode == 8)
 		{
 			ProcessVideoModemSoftwareLoopback(imageBytes);
@@ -1448,6 +1505,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				frameId,
 				timestampMs,
 				VideoWirelessChunkPayloadBytes);
+		m_videoLastEncodedChunks = chunks.Count;
 		RememberVideoChunks(frameId, chunks);
 
 		for (int repeat = 0; repeat < VideoChunkRepeatCount; repeat++)
@@ -2901,6 +2959,19 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		string recoveryFile = Path.GetFileName(m_videoRecoveryPath);
 		string reassemblyStatus = m_videoReassembler.LatestStatus;
 		string recoverySummary = BuildVideoRecoverySummary();
+		int encodedBytes = m_videoLastEncodedBytes;
+		int encodedWidth = m_videoLastEncodedWidth;
+		int encodedHeight = m_videoLastEncodedHeight;
+		int encodedChunks = m_videoLastEncodedChunks;
+		string encodedSizeText = encodedWidth > 0 && encodedHeight > 0
+			? $"{encodedWidth}x{encodedHeight}"
+			: "--";
+		string txEncodeSummary =
+			$"发送长边：{VideoTxMaxLongEdge} px\n" +
+			$"WebP质量：{VideoTxWebPQuality}%\n" +
+			$"最近发送尺寸：{encodedSizeText}\n" +
+			$"最近WebP大小：{encodedBytes} bytes\n" +
+			$"最近预计分片：{encodedChunks}\n";
 
 		((DispatcherObject)this).Dispatcher.BeginInvoke((Action)delegate
 		{
@@ -2938,6 +3009,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"累计 RX 分片：{m_videoModemDecodedChunkCount}\n" +
 				$"恢复视频帧：{m_videoModemRecoveredFrameCount}\n" +
 				recoverySummary +
+				txEncodeSummary +
 				$"CRC/格式失败：{m_videoModemFailureCount}\n" +
 				$"  CRC fail: {m_videoWirelessCrcFailureCount}\n" +
 				$"  FORMAT fail: {m_videoWirelessFormatFailureCount}\n\n" +

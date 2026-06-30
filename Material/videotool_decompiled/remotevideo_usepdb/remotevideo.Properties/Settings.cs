@@ -540,6 +540,36 @@ internal sealed class Settings : ApplicationSettingsBase
 
 	[UserScopedSetting]
 	[DebuggerNonUserCode]
+	[DefaultSettingValue("240")]
+	public int VideoTxMaxLongEdge
+	{
+		get
+		{
+			return (int)this["VideoTxMaxLongEdge"];
+		}
+		set
+		{
+			this["VideoTxMaxLongEdge"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
+	[DefaultSettingValue("25")]
+	public int VideoTxWebPQuality
+	{
+		get
+		{
+			return (int)this["VideoTxWebPQuality"];
+		}
+		set
+		{
+			this["VideoTxWebPQuality"] = value;
+		}
+	}
+
+	[UserScopedSetting]
+	[DebuggerNonUserCode]
 	[DefaultSettingValue("1.1")]
 	public string Version
 	{
