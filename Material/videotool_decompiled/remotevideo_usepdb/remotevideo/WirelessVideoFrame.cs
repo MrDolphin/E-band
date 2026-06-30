@@ -87,11 +87,15 @@ internal sealed record WirelessVideoFrame(
 		int expectedLength = HeaderSize + payloadLength + CrcSize;
 		if (payloadLength > MaxPayloadSize || data.Length != expectedLength)
 		{
-			return false;
+			if (!TryInferPayloadLength(data, out payloadLength))
+			{
+				return false;
+			}
+			expectedLength = data.Length;
 		}
 
 		uint expectedCrc = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(expectedLength - CrcSize));
-		if (Crc32.Compute(data.Slice(0, expectedLength - CrcSize)) != expectedCrc)
+		if (!HasValidCrc(data, expectedLength, payloadLength, expectedCrc))
 		{
 			return false;
 		}
@@ -111,6 +115,45 @@ internal sealed record WirelessVideoFrame(
 			BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(16, 4)),
 			data.Slice(HeaderSize, payloadLength).ToArray());
 		return true;
+	}
+
+	private static bool TryInferPayloadLength(
+		ReadOnlySpan<byte> data,
+		out ushort payloadLength)
+	{
+		payloadLength = 0;
+		int inferredLength = data.Length - HeaderSize - CrcSize;
+		if (inferredLength < 0 || inferredLength > MaxPayloadSize)
+		{
+			return false;
+		}
+		payloadLength = (ushort)inferredLength;
+		return true;
+	}
+
+	private static bool HasValidCrc(
+		ReadOnlySpan<byte> data,
+		int expectedLength,
+		ushort payloadLength,
+		uint expectedCrc)
+	{
+		if (Crc32.Compute(data.Slice(0, expectedLength - CrcSize)) == expectedCrc)
+		{
+			return true;
+		}
+
+		ushort encodedPayloadLength =
+			BinaryPrimitives.ReadUInt16LittleEndian(data.Slice(14, 2));
+		if (encodedPayloadLength == payloadLength)
+		{
+			return false;
+		}
+
+		byte[] correctedHeader = data.Slice(0, expectedLength - CrcSize).ToArray();
+		BinaryPrimitives.WriteUInt16LittleEndian(
+			correctedHeader.AsSpan(14, 2),
+			payloadLength);
+		return Crc32.Compute(correctedHeader) == expectedCrc;
 	}
 
 	public static IReadOnlyList<WirelessVideoFrame> Fragment(
