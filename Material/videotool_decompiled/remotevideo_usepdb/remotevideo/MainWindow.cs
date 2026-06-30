@@ -269,6 +269,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private const int VideoRepairChunkBudgetPerRound = 96;
 	private const int VideoChunkPacingInterval = 8;
 	private const int VideoTxBatchChunkCount = 8;
+	private const int VideoNearCompleteRepairRounds = 8;
+	private const int VideoNearCompleteMissingLimit = 8;
 	private static int VideoWirelessChunkPayloadBytes => ClampSetting(
 		Settings.Default.VideoWirelessChunkPayloadBytes,
 		32,
@@ -1285,6 +1287,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				VideoChunkRepeatCount + VideoRepairRoundCount + round);
 			FlushVideoWirelessBatch();
 		}
+		RepairNearCompleteVideoFrames(newestFrameId, VideoChunkRepeatCount + VideoRepairRoundCount + rounds);
 	}
 
 	private void sendRadarCommand(byte[] bctlvalues)
@@ -1558,6 +1561,59 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					isRepair: true);
 				repairedChunks++;
 			}
+		}
+	}
+
+	private void RepairNearCompleteVideoFrames(uint newestFrameId, int firstVariant)
+	{
+		for (int round = 0; round < VideoNearCompleteRepairRounds && m_isSending; round++)
+		{
+			bool sentAny = false;
+			foreach (uint frameId in m_videoRecentChunks.Keys
+				.Where(id => newestFrameId >= id && newestFrameId - id <= VideoRecentRepairFrameWindow)
+				.OrderBy(id => id)
+				.ToArray())
+			{
+				if (!m_videoRecentChunks.TryGetValue(frameId, out IReadOnlyList<WirelessVideoFrame> chunks))
+				{
+					continue;
+				}
+				if (!m_videoReassembler.TryGetMissingChunkIndices(
+					frameId,
+					out ushort[] missingChunkIndices,
+					out bool completed) ||
+					completed ||
+					missingChunkIndices.Length == 0)
+				{
+					continue;
+				}
+				int missingLimit = Math.Max(
+					VideoNearCompleteMissingLimit,
+					(int)Math.Ceiling(chunks.Count * 0.05));
+				if (missingChunkIndices.Length > missingLimit)
+				{
+					continue;
+				}
+				foreach (ushort missingChunkIndex in missingChunkIndices)
+				{
+					if (!m_isSending || missingChunkIndex >= chunks.Count)
+					{
+						break;
+					}
+					SendVideoWirelessChunk(
+						chunks[missingChunkIndex],
+						frameId,
+						firstVariant + round,
+						isRepair: true);
+					sentAny = true;
+				}
+			}
+			FlushVideoWirelessBatch();
+			if (!sentAny)
+			{
+				return;
+			}
+			Thread.Sleep(Math.Max(10, VideoRepairWaitMs / 2));
 		}
 	}
 
