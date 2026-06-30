@@ -254,8 +254,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private long m_videoModemRecoveredFrameCount;
 
 	private const int VideoChunkRepeatCount = 2;
-	private const int VideoRecentRepairFrameWindow = 8;
-	private const int VideoFinalRepairRounds = 5;
+	private const int VideoRecentRepairFrameWindow = 3;
+	private const int VideoFinalRepairRounds = 2;
+	private const int VideoRepairChunkBudgetPerRound = 96;
 	private const int VideoChunkPacingInterval = 8;
 	private static int VideoWirelessChunkPayloadBytes => ClampSetting(
 		Settings.Default.VideoWirelessChunkPayloadBytes,
@@ -1487,9 +1488,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private void RepairRecentVideoFrames(uint newestFrameId, int variant)
 	{
+		int repairedChunks = 0;
 		foreach (uint frameId in m_videoRecentChunks.Keys
 			.Where(id => newestFrameId >= id && newestFrameId - id <= VideoRecentRepairFrameWindow)
-			.OrderBy(id => id)
+			.OrderByDescending(id => id)
 			.ToArray())
 		{
 			if (!m_isSending)
@@ -1510,12 +1512,21 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				continue;
 			}
 
-			foreach (ushort missingChunkIndex in missingChunkIndices)
+			for (int position = 0; position < missingChunkIndices.Length; position++)
 			{
 				if (!m_isSending)
 				{
 					break;
 				}
+				if (repairedChunks >= VideoRepairChunkBudgetPerRound)
+				{
+					return;
+				}
+				int scheduledIndex = WirelessChunkSchedule.GetIndex(
+					missingChunkIndices.Length,
+					variant,
+					position);
+				ushort missingChunkIndex = missingChunkIndices[scheduledIndex];
 				if (missingChunkIndex >= chunks.Count)
 				{
 					continue;
@@ -1525,6 +1536,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					frameId,
 					variant,
 					isRepair: true);
+				repairedChunks++;
 			}
 		}
 	}
