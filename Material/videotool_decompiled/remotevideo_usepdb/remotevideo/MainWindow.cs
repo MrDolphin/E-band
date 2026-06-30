@@ -269,7 +269,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private const int VideoRepairChunkBudgetPerRound = 96;
 	private const int VideoChunkPacingInterval = 8;
 	private const int VideoTxBatchChunkCount = 8;
-	private const int VideoNearCompleteRepairRounds = 8;
+	private const int VideoRealtimeNearCompleteRepairRounds = 3;
+	private const int VideoFinalNearCompleteRepairRounds = 12;
 	private const int VideoNearCompleteMissingLimit = 8;
 	private static int VideoWirelessChunkPayloadBytes => ClampSetting(
 		Settings.Default.VideoWirelessChunkPayloadBytes,
@@ -1287,7 +1288,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				VideoChunkRepeatCount + VideoRepairRoundCount + round);
 			FlushVideoWirelessBatch();
 		}
-		RepairNearCompleteVideoFrames(newestFrameId, VideoChunkRepeatCount + VideoRepairRoundCount + rounds);
+		RepairNearCompleteVideoFrames(
+			newestFrameId,
+			VideoChunkRepeatCount + VideoRepairRoundCount + rounds,
+			VideoFinalNearCompleteRepairRounds);
 	}
 
 	private void sendRadarCommand(byte[] bctlvalues)
@@ -1464,6 +1468,20 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 		if (!frameConfirmed && m_isSending)
 		{
+			RepairNearCompleteVideoFrames(
+				frameId,
+				VideoChunkRepeatCount + VideoRepairRoundCount,
+				VideoRealtimeNearCompleteRepairRounds);
+			frameConfirmed =
+				m_videoReassembler.TryGetMissingChunkIndices(
+					frameId,
+					out ushort[] missingChunkIndices,
+					out bool completed) &&
+				(completed || missingChunkIndices.Length == 0);
+		}
+
+		if (!frameConfirmed && m_isSending)
+		{
 			Thread.Sleep(VideoRepairWaitMs);
 			frameConfirmed =
 				m_videoReassembler.TryGetMissingChunkIndices(
@@ -1564,9 +1582,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 	}
 
-	private void RepairNearCompleteVideoFrames(uint newestFrameId, int firstVariant)
+	private void RepairNearCompleteVideoFrames(uint newestFrameId, int firstVariant, int rounds)
 	{
-		for (int round = 0; round < VideoNearCompleteRepairRounds && m_isSending; round++)
+		for (int round = 0; round < rounds && m_isSending; round++)
 		{
 			bool sentAny = false;
 			foreach (uint frameId in m_videoRecentChunks.Keys
