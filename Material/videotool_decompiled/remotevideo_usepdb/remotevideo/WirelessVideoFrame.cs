@@ -333,7 +333,7 @@ internal sealed class WirelessVideoReassembler
 	private void DiscardOldFrames(uint newestFrameId)
 	{
 		foreach (uint frameId in pendingFrames.Keys
-			.Where(id => newestFrameId > id && newestFrameId - id > 8)
+			.Where(id => newestFrameId > id && newestFrameId - id > 32)
 			.ToArray())
 		{
 			pendingFrames.Remove(frameId);

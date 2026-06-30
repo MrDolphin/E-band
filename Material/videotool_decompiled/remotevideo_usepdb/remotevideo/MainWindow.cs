@@ -287,9 +287,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		new Dictionary<uint, VideoRecoveryFrameStats>();
 
 	private const int VideoChunkRepeatCount = 2;
-	private const int VideoRecentRepairFrameWindow = 3;
+	private const int VideoRecentRepairFrameWindow = 16;
+	private const int VideoRepairRetentionFrameWindow = 32;
 	private const int VideoFinalRepairRounds = 2;
-	private const int VideoRepairChunkBudgetPerRound = 96;
+	private const int VideoRepairChunkBudgetPerRound = 160;
 	private const int VideoChunkPacingInterval = 8;
 	private const int VideoTxBatchChunkCount = 8;
 	private const int VideoRealtimeNearCompleteRepairRounds = 3;
@@ -1604,7 +1605,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	{
 		m_videoRecentChunks[frameId] = chunks;
 		foreach (uint oldFrameId in m_videoRecentChunks.Keys
-			.Where(id => frameId > id && frameId - id > VideoRecentRepairFrameWindow)
+			.Where(id => frameId > id && frameId - id > VideoRepairRetentionFrameWindow)
 			.ToArray())
 		{
 			m_videoRecentChunks.Remove(oldFrameId);
@@ -1614,28 +1615,43 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private void RepairRecentVideoFrames(uint newestFrameId, int variant)
 	{
 		int repairedChunks = 0;
-		foreach (uint frameId in m_videoRecentChunks.Keys
+		var repairCandidates = m_videoRecentChunks.Keys
 			.Where(id => newestFrameId >= id && newestFrameId - id <= VideoRecentRepairFrameWindow)
-			.OrderByDescending(id => id)
-			.ToArray())
+			.Select(frameId =>
+			{
+				if (!m_videoRecentChunks.TryGetValue(
+					frameId,
+					out IReadOnlyList<WirelessVideoFrame> chunks) ||
+					!m_videoReassembler.TryGetMissingChunkIndices(
+						frameId,
+						out ushort[] missingChunkIndices,
+						out bool completed) ||
+					completed ||
+					missingChunkIndices.Length == 0)
+				{
+					return null;
+				}
+				return new
+				{
+					FrameId = frameId,
+					Chunks = chunks,
+					MissingChunkIndices = missingChunkIndices
+				};
+			})
+			.Where(candidate => candidate != null)
+			.OrderBy(candidate => candidate.MissingChunkIndices.Length)
+			.ThenByDescending(candidate => candidate.FrameId)
+			.ToArray();
+
+		foreach (var candidate in repairCandidates)
 		{
 			if (!m_isSending)
 			{
 				break;
 			}
-			if (!m_videoRecentChunks.TryGetValue(frameId, out IReadOnlyList<WirelessVideoFrame> chunks))
-			{
-				continue;
-			}
-			if (!m_videoReassembler.TryGetMissingChunkIndices(
-				frameId,
-				out ushort[] missingChunkIndices,
-				out bool completed) ||
-				completed ||
-				missingChunkIndices.Length == 0)
-			{
-				continue;
-			}
+			uint frameId = candidate.FrameId;
+			IReadOnlyList<WirelessVideoFrame> chunks = candidate.Chunks;
+			ushort[] missingChunkIndices = candidate.MissingChunkIndices;
 
 			for (int position = 0; position < missingChunkIndices.Length; position++)
 			{
