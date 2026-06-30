@@ -32,6 +32,16 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 {
 	private static readonly ILog Log = LogManager.GetCurrentClassLogger();
 
+	private sealed class VideoRecoveryFrameStats
+	{
+		public uint FrameId { get; init; }
+		public int TotalChunks { get; set; }
+		public int BestReceivedChunks { get; set; }
+		public long FirstSeenMs { get; init; }
+		public long FirstNearCompleteMs { get; set; } = -1;
+		public long CompletedMs { get; set; } = -1;
+	}
+
 	private VideoCapture capture;
 
 	private Thread m_senderThread;
@@ -210,8 +220,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private FileStream m_videoIqCaptureStream;
 
 	private StreamWriter m_videoTxManifestWriter;
+	private StreamWriter m_videoRecoveryWriter;
 	private long m_videoMetricsWriteCount;
 	private long m_videoTxManifestWriteCount;
+	private long m_videoRecoveryWriteCount;
 	private const int VideoDiagnosticsFlushInterval = 256;
 	private MemoryStream m_videoTxBatchStream;
 	private int m_videoTxBatchChunkCount;
@@ -221,6 +233,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private string m_videoIqCapturePath = "";
 
 	private string m_videoTxManifestPath = "";
+
+	private string m_videoRecoveryPath = "";
 
 	private long m_videoIqCaptureBytes;
 
@@ -262,6 +276,15 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private long m_videoModemDecodedChunkCount;
 
 	private long m_videoModemRecoveredFrameCount;
+
+	private long m_videoRecoveryStartTick;
+
+	private long m_videoFirstRecoveredFrameMs = -1;
+
+	private uint m_videoLastRecoveredFrameId;
+
+	private readonly Dictionary<uint, VideoRecoveryFrameStats> m_videoRecoveryStats =
+		new Dictionary<uint, VideoRecoveryFrameStats>();
 
 	private const int VideoChunkRepeatCount = 2;
 	private const int VideoRecentRepairFrameWindow = 3;
@@ -843,6 +866,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_videoModemFailureCount = 0;
 				m_videoWirelessCrcFailureCount = 0;
 				m_videoWirelessFormatFailureCount = 0;
+				m_videoFirstRecoveredFrameMs = -1;
+				m_videoLastRecoveredFrameId = 0;
+				m_videoRecoveryStats.Clear();
 				m_videoLastDemodDiagnostic = "解调质量：尚无有效候选包";
 				m_videoLastParseFailureReason = "格式失败原因：尚无";
 				m_videoModemRepairChunkCount = 0;
@@ -1725,6 +1751,102 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 	}
 
+	private void RecordVideoRecoveryProgress(
+		WirelessVideoFrame chunk,
+		int rxFrameId,
+		bool completed)
+	{
+		ushort[] missingChunkIndices = Array.Empty<ushort>();
+		bool knownCompleted = completed;
+		m_videoReassembler.TryGetMissingChunkIndices(
+			chunk.FrameId,
+			out missingChunkIndices,
+			out knownCompleted);
+		int totalChunks = Math.Max(1, (int)chunk.ChunkCount);
+		int missingChunks = knownCompleted ? 0 : missingChunkIndices.Length;
+		int receivedChunks = totalChunks - missingChunks;
+		int nearCompleteLimit = Math.Max(
+			VideoNearCompleteMissingLimit,
+			(int)Math.Ceiling(totalChunks * 0.05));
+		bool nearComplete =
+			!knownCompleted &&
+			missingChunks > 0 &&
+			missingChunks <= nearCompleteLimit;
+		long nowMs = Math.Max(0, Environment.TickCount64 - m_videoRecoveryStartTick);
+		string eventName = "progress";
+		string missingPreview = missingChunks == 0
+			? ""
+			: string.Join("|", missingChunkIndices
+				.Take(16)
+				.Select(index => index + 1));
+		if (missingChunks > 16)
+		{
+			missingPreview += $"|...{missingChunks}";
+		}
+
+		lock (m_videoDiagnosticsLock)
+		{
+			if (!m_videoRecoveryStats.TryGetValue(
+				chunk.FrameId,
+				out VideoRecoveryFrameStats stats))
+			{
+				stats = new VideoRecoveryFrameStats
+				{
+					FrameId = chunk.FrameId,
+					TotalChunks = totalChunks,
+					FirstSeenMs = nowMs
+				};
+				m_videoRecoveryStats[chunk.FrameId] = stats;
+			}
+			stats.TotalChunks = totalChunks;
+			if (receivedChunks <= stats.BestReceivedChunks &&
+				!nearComplete &&
+				!knownCompleted)
+			{
+				return;
+			}
+			stats.BestReceivedChunks = Math.Max(
+				stats.BestReceivedChunks,
+				receivedChunks);
+			if (nearComplete && stats.FirstNearCompleteMs < 0)
+			{
+				stats.FirstNearCompleteMs = nowMs;
+				eventName = "near_complete";
+			}
+			if (knownCompleted && stats.CompletedMs < 0)
+			{
+				stats.CompletedMs = nowMs;
+				eventName = "complete";
+				m_videoLastRecoveredFrameId = chunk.FrameId;
+				if (m_videoFirstRecoveredFrameMs < 0)
+				{
+					m_videoFirstRecoveredFrameMs = nowMs;
+				}
+			}
+			long latencyMs =
+				stats.CompletedMs >= 0 ? stats.CompletedMs - stats.FirstSeenMs : -1;
+
+			if (m_videoRecoveryWriter == null)
+			{
+				return;
+			}
+			m_videoRecoveryWriter.WriteLine(
+				$"{DateTime.Now:O},{eventName},{chunk.FrameId},{totalChunks}," +
+				$"{receivedChunks},{missingChunks},{missingPreview},{rxFrameId}," +
+				$"{chunk.ChunkIndex + 1},{stats.FirstSeenMs}," +
+				$"{stats.FirstNearCompleteMs},{stats.CompletedMs},{latencyMs}," +
+				$"{m_videoModemRecoveredFrameCount},{m_videoModemDecodedChunkCount}," +
+				$"{m_videoModemChunkCount},{m_videoModemRepairChunkCount}");
+			m_videoRecoveryWriteCount++;
+			if (eventName == "complete" ||
+				eventName == "near_complete" ||
+				m_videoRecoveryWriteCount % VideoDiagnosticsFlushInterval == 0)
+			{
+				m_videoRecoveryWriter.Flush();
+			}
+		}
+	}
+
 	private void ProcessVideoModemSoftwareLoopback(byte[] imageBytes)
 	{
 		uint frameId = m_videoModemFrameId++;
@@ -2298,11 +2420,14 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				accepted: true,
 				chunk);
 			byte[] completedImage = null;
+			bool completedFrame = false;
 			if (m_videoReassembler.TryAdd(chunk, out byte[] image))
 			{
 				completedImage = image;
 				m_videoModemRecoveredFrameCount++;
+				completedFrame = true;
 			}
+			RecordVideoRecoveryProgress(chunk, rxFrameId, completedFrame);
 			((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
 			{
 				if (completedImage != null)
@@ -2465,6 +2590,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			m_videoTxManifestPath = Path.Combine(
 				directory,
 				$"tx_wireless_{timestamp}.csv");
+			m_videoRecoveryPath = Path.Combine(
+				directory,
+				$"video_recovery_{timestamp}.csv");
 			m_videoMetricsWriter = new StreamWriter(
 				m_videoMetricsPath,
 				append: false);
@@ -2488,10 +2616,21 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				"time,seq,source_frame,variant,is_repair,chunk_index," +
 				"chunk_count,payload_len,wireless_len,crc32,head_hex,packet_hex");
 			m_videoTxManifestWriter.Flush();
+			m_videoRecoveryWriter = new StreamWriter(
+				m_videoRecoveryPath,
+				append: false);
+			m_videoRecoveryWriter.WriteLine(
+				"time,event,frame_id,total_chunks,received_chunks,missing_chunks," +
+				"missing_preview,rx_frame,chunk_index,first_seen_ms,near_complete_ms," +
+				"completed_ms,recovery_latency_ms,recovered_frames,decoded_chunks," +
+				"tx_chunks,repair_chunks");
+			m_videoRecoveryWriter.Flush();
 			m_videoMetricsWriteCount = 0;
 			m_videoTxManifestWriteCount = 0;
+			m_videoRecoveryWriteCount = 0;
 			m_videoIqCaptureBytes = 0;
 			m_videoTxManifestSequence = 0;
+			m_videoRecoveryStartTick = Environment.TickCount64;
 		}
 	}
 
@@ -2513,6 +2652,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		m_videoTxManifestWriter?.Flush();
 		m_videoTxManifestWriter?.Dispose();
 		m_videoTxManifestWriter = null;
+		m_videoRecoveryWriter?.Flush();
+		m_videoRecoveryWriter?.Dispose();
+		m_videoRecoveryWriter = null;
 	}
 
 	private void MeasureVideoIq(byte[] iq, int rxFrameId)
@@ -2678,6 +2820,50 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		m_videoDecodeEvent.Set();
 	}
 
+	private string BuildVideoRecoverySummary()
+	{
+		lock (m_videoDiagnosticsLock)
+		{
+			int trackedFrames = m_videoRecoveryStats.Count;
+			if (trackedFrames == 0)
+			{
+				return
+					"首帧恢复耗时：--\n" +
+					"最近完整帧：--\n" +
+					"近完整未完成帧：0\n" +
+					"平均恢复耗时：--\n";
+			}
+
+			var completedFrames = m_videoRecoveryStats.Values
+				.Where(stats => stats.CompletedMs >= 0)
+				.ToArray();
+			int nearCompletePending = m_videoRecoveryStats.Values.Count(stats =>
+				stats.CompletedMs < 0 &&
+				stats.FirstNearCompleteMs >= 0);
+			double averageLatency = completedFrames.Length == 0
+				? -1.0
+				: completedFrames.Average(stats => stats.CompletedMs - stats.FirstSeenMs);
+			double completedRatio = trackedFrames == 0
+				? 0.0
+				: completedFrames.Length * 100.0 / trackedFrames;
+			string firstRecoveredText = m_videoFirstRecoveredFrameMs < 0
+				? "--"
+				: $"{m_videoFirstRecoveredFrameMs / 1000.0:F2} s";
+			string averageText = averageLatency < 0.0
+				? "--"
+				: $"{averageLatency / 1000.0:F2} s";
+			string lastFrameText = completedFrames.Length == 0
+				? "--"
+				: $"{m_videoLastRecoveredFrameId}";
+			return
+				$"首帧恢复耗时：{firstRecoveredText}\n" +
+				$"最近完整帧：{lastFrameText}\n" +
+				$"近完整未完成帧：{nearCompletePending}\n" +
+				$"帧恢复率：{completedFrames.Length}/{trackedFrames} ({completedRatio:F1}%)\n" +
+				$"平均恢复耗时：{averageText}\n";
+		}
+	}
+
 	private void UpdateVideoModemWaitingStatus(int rxFrameId, double correlation)
 	{
 		long now = Environment.TickCount64;
@@ -2712,7 +2898,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		string metricsFile = Path.GetFileName(m_videoMetricsPath);
 		string iqCaptureFile = Path.GetFileName(m_videoIqCapturePath);
 		string txManifestFile = Path.GetFileName(m_videoTxManifestPath);
+		string recoveryFile = Path.GetFileName(m_videoRecoveryPath);
 		string reassemblyStatus = m_videoReassembler.LatestStatus;
+		string recoverySummary = BuildVideoRecoverySummary();
 
 		((DispatcherObject)this).Dispatcher.BeginInvoke((Action)delegate
 		{
@@ -2749,6 +2937,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"接收确认完整帧：{m_videoModemConfirmedFrameCount}\n" +
 				$"累计 RX 分片：{m_videoModemDecodedChunkCount}\n" +
 				$"恢复视频帧：{m_videoModemRecoveredFrameCount}\n" +
+				recoverySummary +
 				$"CRC/格式失败：{m_videoModemFailureCount}\n" +
 				$"  CRC fail: {m_videoWirelessCrcFailureCount}\n" +
 				$"  FORMAT fail: {m_videoWirelessFormatFailureCount}\n\n" +
@@ -2760,7 +2949,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"调制：QPSK，{QpskModem.SamplesPerSymbol} samples/symbol\n\n" +
 				$"CSV：diagnostics\\{metricsFile}\n" +
 				$"原始IQ：diagnostics\\{iqCaptureFile}\n" +
-				$"TX清单：diagnostics\\{txManifestFile}";
+				$"TX清单：diagnostics\\{txManifestFile}\n" +
+				$"恢复日志：diagnostics\\{recoveryFile}";
 			tbRadarData.Text += $"\n\n分片重组：{reassemblyStatus}";
 			if (!string.IsNullOrWhiteSpace(m_videoLastCandidateDiagnostic))
 			{
