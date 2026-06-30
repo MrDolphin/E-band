@@ -317,21 +317,20 @@ public class SettingDialog : Window, IComponentConnector
 		tuningGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 		tuningGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 		tuningGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-		AddTuningCell(tuningGrid, 0, 0, "RX峰值门限", tbVideoRxPeakThreshold, "ADC 计数，低于此值的 RX IQ 不进入解调队列");
-		AddTuningCell(tuningGrid, 0, 2, "门控拖尾帧", tbVideoActiveRxHangoverFrames, "检测到有效 burst 后额外保留的 RX 帧数");
-		AddTuningCell(tuningGrid, 1, 0, "解调批帧数", tbVideoDecodeBatchFrames, "每次送入 QPSK 流解码器的 RX IQ 帧数");
-		AddTuningCell(tuningGrid, 1, 2, "解调队列上限", tbVideoDecodeQueueLimit, "RX IQ 等待解调的最大队列长度");
-		AddTuningCell(tuningGrid, 2, 0, "补发轮数", tbVideoRepairRoundCount, "每个视频/图片帧缺片后的选择性补发轮数");
-		AddTuningCell(tuningGrid, 2, 2, "补发等待ms", tbVideoRepairWaitMs, "每轮补发前等待 RX 确认的时间");
-		AddTuningCell(tuningGrid, 3, 0, "QPSK发送幅度%", tbQpskTxScalePercent, "发送 IQ 幅度百分比，过强或截断时调低");
-		AddTuningCell(tuningGrid, 3, 2, "前导解调门限%", tbQpskPreambleThresholdPercent, "最终 QPSK 前导相关门限，推荐 25 表示 0.25");
-		AddTuningCell(tuningGrid, 4, 0, "快速筛选门限%", tbQpskQuickThresholdPercent, "粗搜索快速前导筛选门限，推荐 30 表示 0.30");
-		AddTuningCell(tuningGrid, 4, 2, "前导搜索步进", tbQpskPreambleSearchStep, "粗搜索采样步进，1 最细但更慢，4 为默认");
-		AddTuningCell(tuningGrid, 5, 0, "分片负载字节", tbVideoWirelessChunkPayloadBytes, "每个无线视频分片的 payload 字节数；诊断默认 32，稳定后逐步提高");
-		AddTuningCell(tuningGrid, 5, 2, "IQ捕获MB", tbVideoIqCaptureLimitMb, "原始 IQ 诊断文件最大大小，长时间测试建议 512 或 1024");
-
-		AddTuningCell(tuningGrid, 6, 0, "发送长边px", tbVideoTxMaxLongEdge, "模式9发送前压缩视频/图片长边，推荐 240 用于验证完整帧率");
-		AddTuningCell(tuningGrid, 6, 2, "WebP质量%", tbVideoTxWebPQuality, "模式9发送 WebP 质量，推荐 25；越低分片越少但越模糊");
+		AddTuningCell(tuningGrid, 0, 0, "发送长边px", tbVideoTxMaxLongEdge, "模式9发送前压缩视频/图片长边，推荐 240 用于验证完整帧率");
+		AddTuningCell(tuningGrid, 0, 2, "WebP质量%", tbVideoTxWebPQuality, "模式9发送 WebP 质量，推荐 25；越低分片越少但越模糊");
+		AddTuningCell(tuningGrid, 1, 0, "RX峰值门限", tbVideoRxPeakThreshold, "ADC 计数，低于此值的 RX IQ 不进入解调队列");
+		AddTuningCell(tuningGrid, 1, 2, "门控拖尾帧", tbVideoActiveRxHangoverFrames, "检测到有效 burst 后额外保留的 RX 帧数");
+		AddTuningCell(tuningGrid, 2, 0, "解调批帧数", tbVideoDecodeBatchFrames, "每次送入 QPSK 流解码器的 RX IQ 帧数");
+		AddTuningCell(tuningGrid, 2, 2, "解调队列上限", tbVideoDecodeQueueLimit, "RX IQ 等待解调的最大队列长度");
+		AddTuningCell(tuningGrid, 3, 0, "补发轮数", tbVideoRepairRoundCount, "每个视频/图片帧缺片后的选择性补发轮数");
+		AddTuningCell(tuningGrid, 3, 2, "补发等待ms", tbVideoRepairWaitMs, "每轮补发前等待 RX 确认的时间");
+		AddTuningCell(tuningGrid, 4, 0, "QPSK发送幅度%", tbQpskTxScalePercent, "发送 IQ 幅度百分比，过强或截断时调低");
+		AddTuningCell(tuningGrid, 4, 2, "前导解调门限%", tbQpskPreambleThresholdPercent, "最终 QPSK 前导相关门限，推荐 25 表示 0.25");
+		AddTuningCell(tuningGrid, 5, 0, "快速筛选门限%", tbQpskQuickThresholdPercent, "粗搜索快速前导筛选门限，推荐 30 表示 0.30");
+		AddTuningCell(tuningGrid, 5, 2, "前导搜索步进", tbQpskPreambleSearchStep, "粗搜索采样步进，1 最细但更慢，4 为默认");
+		AddTuningCell(tuningGrid, 6, 0, "分片负载字节", tbVideoWirelessChunkPayloadBytes, "每个无线视频分片的 payload 字节数；诊断默认 32，稳定后逐步提高");
+		AddTuningCell(tuningGrid, 6, 2, "IQ捕获MB", tbVideoIqCaptureLimitMb, "原始 IQ 诊断文件最大大小，长时间测试建议 512 或 1024");
 
 		ScrollViewer tuningScrollViewer = new ScrollViewer
 		{
