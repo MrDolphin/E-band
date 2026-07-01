@@ -343,6 +343,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private readonly Dictionary<uint, IReadOnlyList<WirelessVideoFrame>> m_videoRecentChunks =
 		new Dictionary<uint, IReadOnlyList<WirelessVideoFrame>>();
 
+	private readonly Dictionary<uint, long> m_videoRecentChunkTicks =
+		new Dictionary<uint, long>();
+
 	internal TextBlock tbStatus;
 
 	internal TextBlock tbListenPort;
@@ -1277,6 +1280,34 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		return imageBytes;
 	}
 
+	private static byte[] EncodeRealtimeWebP(Mat source, out Mat encodedMat)
+	{
+		int maxBytes = VideoRealtimePolicy.MaxEncodedBytes(VideoWirelessChunkPayloadBytes);
+		int longEdge = VideoTxMaxLongEdge;
+		int quality = VideoTxWebPQuality;
+		while (true)
+		{
+			Mat candidate = ResizeMatForLongEdge(source, longEdge);
+			byte[] imageBytes = EncodeWebP(candidate, quality);
+			if (imageBytes.Length <= maxBytes || (longEdge <= 64 && quality <= 5))
+			{
+				encodedMat = candidate;
+				return imageBytes;
+			}
+
+			candidate.Dispose();
+			if (quality > 5)
+			{
+				quality = Math.Max(5, quality - 5);
+			}
+			else
+			{
+				longEdge = Math.Max(64, longEdge * 3 / 4);
+				quality = VideoTxWebPQuality;
+			}
+		}
+	}
+
 	private void DisplayLocalMat(Mat mat)
 	{
 		BitmapSource bitmap = mat.ToBitmapSource();
@@ -1306,6 +1337,12 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_encodeEvent.WaitOne(100);
 				continue;
 			}
+			while (m_encodeQueue.TryDequeue(out Mat newerMat))
+			{
+				mat.Dispose();
+				mat = newerMat;
+			}
+			long sendStartedMs = Environment.TickCount64;
 			try
 			{
 				SendVideoFrame(mat);
@@ -1322,6 +1359,15 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				}
 				catch
 				{
+				}
+			}
+			if (m_commMode == 9 && m_isSending)
+			{
+				int remainingMs = VideoRealtimePolicy.TargetFrameIntervalMs -
+					(int)(Environment.TickCount64 - sendStartedMs);
+				if (remainingMs > 0)
+				{
+					Thread.Sleep(remainingMs);
 				}
 			}
 		}
@@ -1352,19 +1398,22 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 
 		uint newestFrameId = m_videoRecentChunks.Keys.Max();
-		int rounds = Math.Max(VideoRepairRoundCount, VideoFinalRepairRounds);
-		for (int round = 0; round < rounds && m_isSending; round++)
+		long deadlineMs = Environment.TickCount64 + VideoRealtimePolicy.MaxFrameAgeMs;
+		int repairBudget = VideoRealtimePolicy.GetRepairChunkBudget(
+			VideoRealtimePolicy.MaxChunksPerFrame);
+		for (int round = 0;
+			round < VideoFinalRepairRounds &&
+			m_isSending &&
+			Environment.TickCount64 < deadlineMs;
+			round++)
 		{
-			Thread.Sleep(VideoRepairWaitMs);
 			RepairRecentVideoFrames(
 				newestFrameId,
-				VideoChunkRepeatCount + VideoRepairRoundCount + round);
+				VideoChunkRepeatCount + round,
+				repairBudget);
 			FlushVideoWirelessBatch();
+			Thread.Sleep(Math.Min(50, Math.Max(0, VideoRepairWaitMs)));
 		}
-		RepairNearCompleteVideoFrames(
-			newestFrameId,
-			VideoChunkRepeatCount + VideoRepairRoundCount + rounds,
-			VideoFinalNearCompleteRepairRounds);
 	}
 
 	private void sendRadarCommand(byte[] bctlvalues)
@@ -1423,16 +1472,19 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			return;
 		}
 		using Mat encodedMat = m_commMode == 9
-			? ResizeMatForLongEdge(mat, VideoTxMaxLongEdge)
+			? null
 			: mat.Clone();
-		byte[] imageBytes = EncodeWebP(
-			encodedMat,
-			m_commMode == 9 ? VideoTxWebPQuality : 30);
+		Mat realtimeEncodedMat = null;
+		byte[] imageBytes = m_commMode == 9
+			? EncodeRealtimeWebP(mat, out realtimeEncodedMat)
+			: EncodeWebP(encodedMat, 30);
+		using Mat mode9EncodedMat = realtimeEncodedMat;
+		Mat transmittedMat = m_commMode == 9 ? mode9EncodedMat : encodedMat;
 		if (m_commMode == 9)
 		{
 			m_videoLastEncodedBytes = imageBytes.Length;
-			m_videoLastEncodedWidth = encodedMat.Width;
-			m_videoLastEncodedHeight = encodedMat.Height;
+			m_videoLastEncodedWidth = transmittedMat.Width;
+			m_videoLastEncodedHeight = transmittedMat.Height;
 		}
 		if (m_commMode == 8)
 		{
@@ -1441,7 +1493,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 		if (m_commMode == 9)
 		{
-			SendVideoModemHardwareFrame(imageBytes, "视频");
+			SendVideoModemHardwareFrame(imageBytes, "视频", realtime: true);
 			return;
 		}
 		int totalSize = imageBytes.Length;
@@ -1495,7 +1547,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 	}
 
-	private bool SendVideoModemHardwareFrame(byte[] imageBytes, string mediaLabel)
+	private bool SendVideoModemHardwareFrame(
+		byte[] imageBytes,
+		string mediaLabel,
+		bool realtime = false)
 	{
 		uint frameId = m_videoModemFrameId++;
 		m_videoModemSentFrameCount++;
@@ -1509,7 +1564,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		m_videoLastEncodedChunks = chunks.Count;
 		RememberVideoChunks(frameId, chunks);
 
-		for (int repeat = 0; repeat < VideoChunkRepeatCount; repeat++)
+		int repeatCount = realtime ? 1 : VideoChunkRepeatCount;
+		for (int repeat = 0; repeat < repeatCount; repeat++)
 		{
 			for (int position = 0; position < chunks.Count; position++)
 			{
@@ -1532,12 +1588,13 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 
 		bool frameConfirmed = false;
-		for (int repairRound = 0;
-			repairRound < VideoRepairRoundCount && m_isSending;
-			repairRound++)
+		if (realtime && m_isSending)
 		{
-			Thread.Sleep(VideoRepairWaitMs);
-			RepairRecentVideoFrames(frameId, VideoChunkRepeatCount + repairRound);
+			RepairRecentVideoFrames(
+				frameId,
+				repeatCount,
+				VideoRealtimePolicy.GetRepairChunkBudget(chunks.Count),
+				onlyOlderFrames: true);
 			FlushVideoWirelessBatch();
 			frameConfirmed =
 				m_videoReassembler.TryGetMissingChunkIndices(
@@ -1545,35 +1602,52 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					out ushort[] missingChunkIndices,
 					out bool completed) &&
 				(completed || missingChunkIndices.Length == 0);
-			if (frameConfirmed)
+		}
+		else
+		{
+			for (int repairRound = 0;
+				repairRound < VideoRepairRoundCount && m_isSending;
+				repairRound++)
 			{
-				break;
+				Thread.Sleep(VideoRepairWaitMs);
+				RepairRecentVideoFrames(frameId, repeatCount + repairRound);
+				FlushVideoWirelessBatch();
+				frameConfirmed =
+					m_videoReassembler.TryGetMissingChunkIndices(
+						frameId,
+						out ushort[] missingChunkIndices,
+						out bool completed) &&
+					(completed || missingChunkIndices.Length == 0);
+				if (frameConfirmed)
+				{
+					break;
+				}
 			}
-		}
 
-		if (!frameConfirmed && m_isSending)
-		{
-			RepairNearCompleteVideoFrames(
-				frameId,
-				VideoChunkRepeatCount + VideoRepairRoundCount,
-				VideoRealtimeNearCompleteRepairRounds);
-			frameConfirmed =
-				m_videoReassembler.TryGetMissingChunkIndices(
+			if (!frameConfirmed && m_isSending)
+			{
+				RepairNearCompleteVideoFrames(
 					frameId,
-					out ushort[] missingChunkIndices,
-					out bool completed) &&
-				(completed || missingChunkIndices.Length == 0);
-		}
+					repeatCount + VideoRepairRoundCount,
+					VideoRealtimeNearCompleteRepairRounds);
+				frameConfirmed =
+					m_videoReassembler.TryGetMissingChunkIndices(
+						frameId,
+						out ushort[] missingChunkIndices,
+						out bool completed) &&
+					(completed || missingChunkIndices.Length == 0);
+			}
 
-		if (!frameConfirmed && m_isSending)
-		{
-			Thread.Sleep(VideoRepairWaitMs);
-			frameConfirmed =
-				m_videoReassembler.TryGetMissingChunkIndices(
-					frameId,
-					out _,
-					out bool completed) &&
-				completed;
+			if (!frameConfirmed && m_isSending)
+			{
+				Thread.Sleep(VideoRepairWaitMs);
+				frameConfirmed =
+					m_videoReassembler.TryGetMissingChunkIndices(
+						frameId,
+						out _,
+						out bool completed) &&
+					completed;
+			}
 		}
 		if (frameConfirmed)
 		{
@@ -1604,19 +1678,42 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		IReadOnlyList<WirelessVideoFrame> chunks)
 	{
 		m_videoRecentChunks[frameId] = chunks;
+		m_videoRecentChunkTicks[frameId] = Environment.TickCount64;
+		DiscardExpiredVideoRepairFrames(Environment.TickCount64);
 		foreach (uint oldFrameId in m_videoRecentChunks.Keys
 			.Where(id => frameId > id && frameId - id > VideoRepairRetentionFrameWindow)
 			.ToArray())
 		{
 			m_videoRecentChunks.Remove(oldFrameId);
+			m_videoRecentChunkTicks.Remove(oldFrameId);
 		}
 	}
 
-	private void RepairRecentVideoFrames(uint newestFrameId, int variant)
+	private void DiscardExpiredVideoRepairFrames(long nowMs)
 	{
+		foreach (uint frameId in m_videoRecentChunkTicks
+			.Where(pair => VideoRealtimePolicy.IsExpired(pair.Value, nowMs))
+			.Select(pair => pair.Key)
+			.ToArray())
+		{
+			m_videoRecentChunkTicks.Remove(frameId);
+			m_videoRecentChunks.Remove(frameId);
+		}
+	}
+
+	private void RepairRecentVideoFrames(
+		uint newestFrameId,
+		int variant,
+		int repairChunkBudget = VideoRepairChunkBudgetPerRound,
+		bool onlyOlderFrames = false)
+	{
+		DiscardExpiredVideoRepairFrames(Environment.TickCount64);
 		int repairedChunks = 0;
 		var repairCandidates = m_videoRecentChunks.Keys
-			.Where(id => newestFrameId >= id && newestFrameId - id <= VideoRecentRepairFrameWindow)
+			.Where(id =>
+				newestFrameId >= id &&
+				(!onlyOlderFrames || id < newestFrameId) &&
+				newestFrameId - id <= VideoRecentRepairFrameWindow)
 			.Select(frameId =>
 			{
 				if (!m_videoRecentChunks.TryGetValue(
@@ -1659,7 +1756,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				{
 					break;
 				}
-				if (repairedChunks >= VideoRepairChunkBudgetPerRound)
+				if (repairedChunks >= repairChunkBudget)
 				{
 					return;
 				}

@@ -888,6 +888,24 @@ Require(
 	photoCompletedPayload.SequenceEqual(photoPayload),
 	"Still-image payload repair failed to reconstruct the payload.");
 
+Console.WriteLine("15. Real-time video scheduling policy...");
+Require(
+	VideoRealtimePolicy.GetRepairChunkBudget(34) == 8,
+	"Real-time repair budget must stay within 20% of total transmissions.");
+Require(
+	VideoRealtimePolicy.TargetFrameIntervalMs == 200,
+	"Real-time video must target 5 FPS.");
+Require(
+	VideoRealtimePolicy.GetRepairChunkBudget(100) == 25,
+	"Real-time repair budget did not scale with the new-frame chunk count.");
+Require(
+	!VideoRealtimePolicy.IsExpired(1000, 1499) &&
+	VideoRealtimePolicy.IsExpired(1000, 1500),
+	"Real-time frame expiry must occur at the 500 ms latency limit.");
+Require(
+	VideoRealtimePolicy.MaxEncodedBytes(32) == 1088,
+	"Real-time WebP byte budget must cap a frame at 34 chunks.");
+
 Console.WriteLine();
 Console.WriteLine("All video modem self-tests passed.");
 Console.WriteLine($"Fragments: {fragments.Count}");
