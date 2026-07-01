@@ -906,6 +906,20 @@ Require(
 	VideoRealtimePolicy.MaxEncodedBytes(32) == 1088,
 	"Real-time WebP byte budget must cap a frame at 34 chunks.");
 
+Console.WriteLine("16. RX stream continuity policy...");
+Require(
+	!VideoRxContinuityPolicy.ShouldResetDecoder(100, 101),
+	"Consecutive RX frames must preserve decoder state.");
+Require(
+	!VideoRxContinuityPolicy.ShouldResetDecoder(100, 103),
+	"Short gated RX gaps must preserve a partial QPSK packet.");
+Require(
+	VideoRxContinuityPolicy.ShouldResetDecoder(100, 104),
+	"Long RX gaps must reset stale decoder state.");
+Require(
+	VideoRxContinuityPolicy.ShouldResetDecoder(100, 99),
+	"Out-of-order RX frames must reset decoder state.");
+
 Console.WriteLine();
 Console.WriteLine("All video modem self-tests passed.");
 Console.WriteLine($"Fragments: {fragments.Count}");

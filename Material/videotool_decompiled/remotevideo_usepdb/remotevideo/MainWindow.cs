@@ -2716,8 +2716,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			}
 			try
 			{
-				if (m_lastDecodedRxFrameId >= 0 &&
-					item.FrameId != m_lastDecodedRxFrameId + 1)
+				if (VideoRxContinuityPolicy.ShouldResetDecoder(
+					m_lastDecodedRxFrameId,
+					item.FrameId))
 				{
 					m_qpskStreamDecoder.Clear();
 				}
