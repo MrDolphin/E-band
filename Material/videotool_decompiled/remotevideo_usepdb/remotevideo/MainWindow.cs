@@ -1592,7 +1592,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		{
 			RepairRecentVideoFrames(
 				frameId,
-				repeatCount,
+				VideoRealtimePolicy.GetRepairVariant(repeatCount, frameId),
 				VideoRealtimePolicy.GetRepairChunkBudget(chunks.Count),
 				onlyOlderFrames: true);
 			FlushVideoWirelessBatch();

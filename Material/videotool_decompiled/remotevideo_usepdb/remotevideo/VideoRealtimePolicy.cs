@@ -20,6 +20,11 @@ internal static class VideoRealtimePolicy
 		return newFrameChunkCount;
 	}
 
+	public static int GetRepairVariant(int baseVariant, uint schedulingFrameId)
+	{
+		return baseVariant + (int)(schedulingFrameId % 251u);
+	}
+
 	public static bool IsExpired(long firstSeenMs, long nowMs)
 	{
 		return nowMs - firstSeenMs >= MaxFrameAgeMs;

@@ -967,6 +967,16 @@ Require(
 	firstOrderedRx.SequenceEqual(firstOrderedBytes),
 	"Streaming decoder skipped the earlier reliable packet.");
 
+Console.WriteLine("18. Real-time repair variants rotate...");
+int repairVariantA = VideoRealtimePolicy.GetRepairVariant(1, 40);
+int repairVariantB = VideoRealtimePolicy.GetRepairVariant(1, 41);
+Require(
+	repairVariantA != repairVariantB,
+	"Consecutive real-time repair cycles reused the same QPSK variant.");
+Require(
+	repairVariantA == VideoRealtimePolicy.GetRepairVariant(1, 40),
+	"Real-time repair variant selection must be deterministic.");
+
 Console.WriteLine();
 Console.WriteLine("All video modem self-tests passed.");
 Console.WriteLine($"Fragments: {fragments.Count}");
