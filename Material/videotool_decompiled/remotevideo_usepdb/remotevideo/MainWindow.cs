@@ -277,6 +277,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private long m_videoModemRecoveredFrameCount;
 
+	private long m_videoStaleDisplayFrameCount;
+
+	private readonly VideoFrameDisplayOrder m_videoFrameDisplayOrder = new();
+
 	private long m_videoRecoveryStartTick;
 
 	private long m_videoFirstRecoveredFrameMs = -1;
@@ -885,6 +889,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_videoReassembler.Clear();
 				m_videoModemDecodedChunkCount = 0;
 				m_videoModemRecoveredFrameCount = 0;
+				m_videoStaleDisplayFrameCount = 0;
+				m_videoFrameDisplayOrder.Reset();
 				m_videoModemFailureCount = 0;
 				m_videoWirelessCrcFailureCount = 0;
 				m_videoWirelessFormatFailureCount = 0;
@@ -2591,17 +2597,23 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				accepted: true,
 				chunk);
 			byte[] completedImage = null;
+			bool displayCompletedImage = false;
 			bool completedFrame = false;
 			if (m_videoReassembler.TryAdd(chunk, out byte[] image))
 			{
 				completedImage = image;
 				m_videoModemRecoveredFrameCount++;
 				completedFrame = true;
+				displayCompletedImage = m_videoFrameDisplayOrder.TryAdvance(chunk.FrameId);
+				if (!displayCompletedImage)
+				{
+					m_videoStaleDisplayFrameCount++;
+				}
 			}
 			RecordVideoRecoveryProgress(chunk, rxFrameId, completedFrame);
 			((DispatcherObject)this).Dispatcher.Invoke((Action)delegate
 			{
-				if (completedImage != null)
+				if (completedImage != null && displayCompletedImage)
 				{
 					DisplayImage(recvVideoDisplay, completedImage);
 				}
@@ -3122,6 +3134,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"接收确认完整帧：{m_videoModemConfirmedFrameCount}\n" +
 				$"累计 RX 分片：{m_videoModemDecodedChunkCount}\n" +
 				$"恢复视频帧：{m_videoModemRecoveredFrameCount}\n" +
+				$"丢弃迟到显示帧：{m_videoStaleDisplayFrameCount}\n" +
 				recoverySummary +
 				txEncodeSummary +
 				$"CRC/格式失败：{m_videoModemFailureCount}\n" +

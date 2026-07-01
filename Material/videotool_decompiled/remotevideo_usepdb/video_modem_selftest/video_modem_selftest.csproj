@@ -10,6 +10,7 @@
     <Compile Include="..\remotevideo\AppBuildInfo.cs" Link="AppBuildInfo.cs" />
     <Compile Include="..\remotevideo\Mode9TuningProfile.cs" Link="Mode9TuningProfile.cs" />
     <Compile Include="..\remotevideo\VideoRealtimePolicy.cs" Link="VideoRealtimePolicy.cs" />
+    <Compile Include="..\remotevideo\VideoFrameDisplayOrder.cs" Link="VideoFrameDisplayOrder.cs" />
     <Compile Include="..\remotevideo\VideoRxContinuityPolicy.cs" Link="VideoRxContinuityPolicy.cs" />
     <Compile Include="..\remotevideo\WirelessVideoFrame.cs" Link="WirelessVideoFrame.cs" />
     <Compile Include="..\remotevideo\QpskModem.cs" Link="QpskModem.cs" />

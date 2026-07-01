@@ -977,6 +977,15 @@ Require(
 	repairVariantA == VideoRealtimePolicy.GetRepairVariant(1, 40),
 	"Real-time repair variant selection must be deterministic.");
 
+Console.WriteLine("19. Received video display order is monotonic...");
+VideoFrameDisplayOrder displayOrder = new();
+Require(displayOrder.TryAdvance(288), "First completed frame must be displayed.");
+Require(!displayOrder.TryAdvance(286), "Late older frame must not replace a newer displayed frame.");
+Require(!displayOrder.TryAdvance(288), "Duplicate frame must not be displayed twice.");
+Require(displayOrder.TryAdvance(289), "Newer completed frame must be displayed.");
+displayOrder.Reset();
+Require(displayOrder.TryAdvance(1), "A new receive session must accept its first frame.");
+
 Console.WriteLine();
 Console.WriteLine("All video modem self-tests passed.");
 Console.WriteLine($"Fragments: {fragments.Count}");
