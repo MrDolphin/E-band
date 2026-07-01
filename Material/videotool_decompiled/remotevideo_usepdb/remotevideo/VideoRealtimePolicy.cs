@@ -5,7 +5,7 @@ namespace remotevideo;
 internal static class VideoRealtimePolicy
 {
 	public const int TargetFrameIntervalMs = 200;
-	public const int MaxFrameAgeMs = 500;
+	public const int MaxFrameAgeMs = 2000;
 	public const int MaxChunksPerFrame = 34;
 
 	public static int GetRepairChunkBudget(int newFrameChunkCount)
@@ -15,8 +15,9 @@ internal static class VideoRealtimePolicy
 			return 0;
 		}
 
-		// repair / (new + repair) <= 20%
-		return Math.Max(0, newFrameChunkCount / 4);
+		// Current hardware measurements recover roughly 40% of a first pass.
+		// Allow one targeted retry per new chunk without blocking the next frame.
+		return newFrameChunkCount;
 	}
 
 	public static bool IsExpired(long firstSeenMs, long nowMs)

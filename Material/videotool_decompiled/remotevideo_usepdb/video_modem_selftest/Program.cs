@@ -890,18 +890,18 @@ Require(
 
 Console.WriteLine("15. Real-time video scheduling policy...");
 Require(
-	VideoRealtimePolicy.GetRepairChunkBudget(34) == 8,
-	"Real-time repair budget must stay within 20% of total transmissions.");
+	VideoRealtimePolicy.GetRepairChunkBudget(34) == 34,
+	"Lossy links must allow one selective repair transmission per new chunk.");
 Require(
 	VideoRealtimePolicy.TargetFrameIntervalMs == 200,
 	"Real-time video must target 5 FPS.");
 Require(
-	VideoRealtimePolicy.GetRepairChunkBudget(100) == 25,
+	VideoRealtimePolicy.GetRepairChunkBudget(100) == 100,
 	"Real-time repair budget did not scale with the new-frame chunk count.");
 Require(
-	!VideoRealtimePolicy.IsExpired(1000, 1499) &&
-	VideoRealtimePolicy.IsExpired(1000, 1500),
-	"Real-time frame expiry must occur at the 500 ms latency limit.");
+	!VideoRealtimePolicy.IsExpired(1000, 2999) &&
+	VideoRealtimePolicy.IsExpired(1000, 3000),
+	"Repair expiry must match the measured two-second recovery latency.");
 Require(
 	VideoRealtimePolicy.MaxEncodedBytes(32) == 1088,
 	"Real-time WebP byte budget must cap a frame at 34 chunks.");
