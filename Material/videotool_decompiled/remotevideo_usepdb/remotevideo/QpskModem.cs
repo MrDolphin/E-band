@@ -9,6 +9,7 @@ namespace remotevideo;
 internal static class QpskModem
 {
 	private const int DiagnosticSegmentBytes = 16;
+	private const double ReliablePreambleCorrelation = 0.9;
 	public const int SamplesPerSymbol = 4;
 	public const int MaxFrameBytes = 4096;
 	private const double SymbolScale = 0.7071067811865476;
@@ -165,6 +166,10 @@ internal static class QpskModem
 				bestStart = start;
 				bestCorrelation = sum;
 				bestPhaseStep = phaseStep;
+			}
+			if (score >= ReliablePreambleCorrelation)
+			{
+				break;
 			}
 		}
 

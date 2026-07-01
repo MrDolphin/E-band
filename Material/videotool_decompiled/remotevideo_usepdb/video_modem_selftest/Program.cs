@@ -920,6 +920,53 @@ Require(
 	VideoRxContinuityPolicy.ShouldResetDecoder(100, 99),
 	"Out-of-order RX frames must reset decoder state.");
 
+Console.WriteLine("17. Streaming decoder preserves packet order...");
+byte[] firstOrderedBytes = new WirelessVideoFrame(
+	WirelessPayloadType.Video,
+	200,
+	0,
+	1,
+	20000,
+	Enumerable.Range(0, 32).Select(index => (byte)(index * 3)).ToArray())
+	.Serialize();
+byte[] secondOrderedBytes = new WirelessVideoFrame(
+	WirelessPayloadType.Video,
+	201,
+	0,
+	1,
+	20001,
+	Enumerable.Range(0, 32).Select(index => (byte)(255 - index * 3)).ToArray())
+	.Serialize();
+Complex[] firstOrderedIq = QpskModem.Modulate(firstOrderedBytes);
+Random orderNoise = new Random(1701);
+for (int index = 0; index < firstOrderedIq.Length; index++)
+{
+	firstOrderedIq[index] += new Complex(
+		NextGaussian(orderNoise) * 0.025,
+		NextGaussian(orderNoise) * 0.025);
+}
+Require(
+	QpskModem.TryDemodulate(firstOrderedIq, out byte[] firstOrderedCheck, out _) &&
+	firstOrderedCheck.SequenceEqual(firstOrderedBytes),
+	"The first ordered packet is not independently decodable.");
+Complex[] orderedStreamIq = firstOrderedIq
+	.Concat(QpskModem.Modulate(secondOrderedBytes))
+	.ToArray();
+short[] orderedStreamInt16 = QpskModem.ToInterleavedInt16(orderedStreamIq, 0.8);
+byte[] orderedStreamBytes = new byte[orderedStreamInt16.Length * sizeof(short)];
+Buffer.BlockCopy(
+	orderedStreamInt16,
+	0,
+	orderedStreamBytes,
+	0,
+	orderedStreamBytes.Length);
+QpskStreamDecoder orderedDecoder = new();
+orderedDecoder.AppendInt16Iq(orderedStreamBytes);
+Require(
+	orderedDecoder.TryReadFrame(out byte[] firstOrderedRx, out _) &&
+	firstOrderedRx.SequenceEqual(firstOrderedBytes),
+	"Streaming decoder skipped the earlier reliable packet.");
+
 Console.WriteLine();
 Console.WriteLine("All video modem self-tests passed.");
 Console.WriteLine($"Fragments: {fragments.Count}");
