@@ -8,6 +8,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Get-RelativeDirectoryPath {
+    param(
+        [string]$BaseDirectory,
+        [string]$TargetDirectory
+    )
+
+    $basePath = [IO.Path]::GetFullPath($BaseDirectory).TrimEnd('\') + '\'
+    $targetPath = [IO.Path]::GetFullPath($TargetDirectory).TrimEnd('\') + '\'
+    $relativeUri = ([Uri]$basePath).MakeRelativeUri([Uri]$targetPath)
+    return [Uri]::UnescapeDataString($relativeUri.ToString()).Replace('/', '\').TrimEnd('\')
+}
+
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Join-Path $repoRoot 'Material\videotool_decompiled\remotevideo_usepdb'
 $project = Join-Path $projectRoot 'remotevideo.csproj'
@@ -61,7 +74,7 @@ if ($null -eq $metadataSource -or
 }
 
 if ($UpdateLauncher) {
-    $relativeDirectory = [IO.Path]::GetRelativePath($repoRoot, $outputDirectory)
+    $relativeDirectory = Get-RelativeDirectoryPath $repoRoot $outputDirectory
     $launcher = @(
         '@echo off',
         "set `"APP_DIR=%~dp0$relativeDirectory`"",
