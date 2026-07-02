@@ -25,6 +25,19 @@ internal static class VideoRealtimePolicy
 		return baseVariant + (int)(schedulingFrameId % 251u);
 	}
 
+	public static bool IsRepairUseful(
+		uint frameId,
+		uint latestDisplayedFrameId,
+		bool hasDisplayedFrame)
+	{
+		return !hasDisplayedFrame || frameId > latestDisplayedFrameId;
+	}
+
+	public static uint GetRepairPriority(uint frameId)
+	{
+		return uint.MaxValue - frameId;
+	}
+
 	public static bool IsExpired(long firstSeenMs, long nowMs)
 	{
 		return nowMs - firstSeenMs >= MaxFrameAgeMs;

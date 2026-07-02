@@ -1715,11 +1715,17 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	{
 		DiscardExpiredVideoRepairFrames(Environment.TickCount64);
 		int repairedChunks = 0;
+		bool hasDisplayedFrame =
+			m_videoFrameDisplayOrder.TryGetLatest(out uint latestDisplayedFrameId);
 		var repairCandidates = m_videoRecentChunks.Keys
 			.Where(id =>
 				newestFrameId >= id &&
 				(!onlyOlderFrames || id < newestFrameId) &&
-				newestFrameId - id <= VideoRecentRepairFrameWindow)
+				newestFrameId - id <= VideoRecentRepairFrameWindow &&
+				VideoRealtimePolicy.IsRepairUseful(
+					id,
+					latestDisplayedFrameId,
+					hasDisplayedFrame))
 			.Select(frameId =>
 			{
 				if (!m_videoRecentChunks.TryGetValue(
@@ -1742,8 +1748,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				};
 			})
 			.Where(candidate => candidate != null)
-			.OrderBy(candidate => candidate.MissingChunkIndices.Length)
-			.ThenByDescending(candidate => candidate.FrameId)
+			.OrderBy(candidate =>
+				VideoRealtimePolicy.GetRepairPriority(candidate.FrameId))
+			.ThenBy(candidate => candidate.MissingChunkIndices.Length)
 			.ToArray();
 
 		foreach (var candidate in repairCandidates)
@@ -1753,6 +1760,16 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				break;
 			}
 			uint frameId = candidate.FrameId;
+			bool hasCurrentDisplayedFrame =
+				m_videoFrameDisplayOrder.TryGetLatest(
+					out uint currentDisplayedFrameId);
+			if (!VideoRealtimePolicy.IsRepairUseful(
+				frameId,
+				currentDisplayedFrameId,
+				hasCurrentDisplayedFrame))
+			{
+				continue;
+			}
 			IReadOnlyList<WirelessVideoFrame> chunks = candidate.Chunks;
 			ushort[] missingChunkIndices = candidate.MissingChunkIndices;
 
