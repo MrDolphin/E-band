@@ -32,8 +32,8 @@ if [ "$COMMIT_ID" != "unknown" ]; then
         COMMIT_ID="${COMMIT_ID}-dirty"
     fi
 fi
-BUILD_STAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT="$SCRIPT_DIR/video_modem_bridge_4096_${COMMIT_ID}_${BUILD_STAMP}"
+COMMIT_ID_CLEAN=${COMMIT_ID%-dirty}
+OUTPUT="$SCRIPT_DIR/video_modem_bridge_4096_${COMMIT_ID_CLEAN}"
 
 if [ ! -x "$CC" ]; then
     echo "Compiler not found: $CC" >&2
