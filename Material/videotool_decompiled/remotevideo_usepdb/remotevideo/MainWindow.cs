@@ -2158,6 +2158,19 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			byte[] content = BuildWaveformContent(iqPayload, offset, chunkSize, frameId, chunkIndex, chunkCount);
 			byte[] packet = BuildCommonPacket(packetType, content);
 			m_udpClient?.Send(packet, packet.Length, m_sendEndPoint);
+			if (chunkIndex + 1 < chunkCount)
+			{
+				PaceSend();
+			}
+		}
+	}
+
+	private void PaceSend()
+	{
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+		while (sw.ElapsedTicks < (System.Diagnostics.Stopwatch.Frequency / 20000))
+		{
+			Thread.SpinWait(10);
 		}
 	}
 
