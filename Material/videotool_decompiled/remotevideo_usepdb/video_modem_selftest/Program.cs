@@ -890,17 +890,14 @@ Require(
 
 Console.WriteLine("15. Real-time video scheduling policy...");
 Require(
-	VideoRealtimePolicy.GetRepairChunkBudget(34) == 8,
-	"Real-time repair budget under 40% scaling capped at 8 chunks.");
+	VideoRealtimePolicy.GetRepairChunkBudget(34) == 34,
+	"Lossy links must allow one selective repair transmission per new chunk.");
 Require(
 	VideoRealtimePolicy.TargetFrameIntervalMs == 200,
 	"Real-time video must target 5 FPS.");
 Require(
-	VideoRealtimePolicy.GetRepairChunkBudget(100) == 8,
-	"Real-time repair budget did not cap at 8 chunks.");
-Require(
-	VideoRealtimePolicy.GetRepairChunkBudget(5) == 2,
-	"Real-time repair budget should scale by 40% (ceiling) for small frames.");
+	VideoRealtimePolicy.GetRepairChunkBudget(100) == 100,
+	"Real-time repair budget did not scale with the new-frame chunk count.");
 Require(
 	!VideoRealtimePolicy.IsExpired(1000, 2999) &&
 	VideoRealtimePolicy.IsExpired(1000, 3000),
