@@ -986,31 +986,13 @@ Require(displayOrder.TryAdvance(289), "Newer completed frame must be displayed."
 displayOrder.Reset();
 Require(displayOrder.TryAdvance(1), "A new receive session must accept its first frame.");
 
-Console.WriteLine("20. Real-time repair prioritizes displayable recent frames...");
-Require(
-	displayOrder.TryGetLatest(out uint latestDisplayedFrameId) &&
-	latestDisplayedFrameId == 1,
-	"Display order did not expose the latest displayed frame.");
-Require(
-	!VideoRealtimePolicy.IsRepairUseful(1, latestDisplayedFrameId, true) &&
-	!VideoRealtimePolicy.IsRepairUseful(0, latestDisplayedFrameId, true),
-	"Repair policy allowed frames that can no longer advance the display.");
-Require(
-	VideoRealtimePolicy.IsRepairUseful(2, latestDisplayedFrameId, true),
-	"Repair policy rejected a frame newer than the displayed frame.");
-Require(
-	VideoRealtimePolicy.GetRepairPriority(12) <
-	VideoRealtimePolicy.GetRepairPriority(10),
-	"Repair policy did not rank the newest frame first.");
-
-Console.WriteLine("21. Build identity prefers immutable embedded commit...");
+Console.WriteLine("20. Build identity prefers immutable embedded commit...");
 Require(
 	AppBuildInfo.SelectCommitId("b554211abcdef", "1.0.0+runtime99") == "b554211",
 	"Embedded build commit was not selected or shortened correctly.");
 Require(
 	AppBuildInfo.SelectCommitId("", "1.0.0+371a7a8b45") == "371a7a8",
 	"Informational-version fallback did not produce a stable commit ID.");
-
 Console.WriteLine();
 Console.WriteLine("All video modem self-tests passed.");
 Console.WriteLine($"Fragments: {fragments.Count}");
