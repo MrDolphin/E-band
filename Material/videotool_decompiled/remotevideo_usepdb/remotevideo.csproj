@@ -56,4 +56,42 @@
     <None Include="..\..\videotool 1.1\videotool 1.1\runtimes\win-x64\native\OpenCvSharpExtern.dll" Link="OpenCvSharpExtern.dll" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\videotool 1.1\videotool 1.1\runtimes\win-x64\native\opencv_videoio_ffmpeg4100_64.dll" Link="opencv_videoio_ffmpeg4100_64.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="GenerateGitVersion" BeforeTargets="BeforeBuild">
+    <Exec Command="git rev-parse --short=7 HEAD" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitCommit" />
+    </Exec>
+    <PropertyGroup>
+      <GitCommit Condition="'$(GitCommit)' == ''">unknown</GitCommit>
+    </PropertyGroup>
+    <ItemGroup>
+      <Compile Include="$(IntermediateOutputPath)GeneratedGitVersion.cs" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)GeneratedGitVersion.cs"
+                      Lines="using System.Reflection%3B [assembly: AssemblyInformationalVersion(&quot;1.1.0+$(GitCommit)&quot;)]"
+                      Overwrite="true" />
+  </Target>
+
+  <Target Name="PublishAndRename" AfterTargets="AfterBuild">
+    <Exec Command="git rev-parse --short=7 HEAD" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitCommit" />
+    </Exec>
+    <PropertyGroup>
+      <GitCommit Condition="'$(GitCommit)' == ''">unknown</GitCommit>
+      <TargetPublishDir>$(ProjectDir)bin\video-modem-stage14-repair-variants-$(GitCommit)\$(Configuration)\net8.0-windows7.0</TargetPublishDir>
+      <CmdFilePath>$(ProjectDir)..\..\..\run_remotevideo.cmd</CmdFilePath>
+    </PropertyGroup>
+    <MakeDir Directories="$(TargetPublishDir)" />
+    <ItemGroup>
+      <OutputFiles Include="$(TargetDir)**\*.*" Exclude="$(TargetDir)remotevideo-*.exe" />
+    </ItemGroup>
+    <Copy SourceFiles="@(OutputFiles)" DestinationFiles="@(OutputFiles->'$(TargetPublishDir)\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(TargetDir)remotevideo.exe" DestinationFiles="$(TargetPublishDir)\remotevideo-$(GitCommit).exe" SkipUnchangedFiles="true" />
+    <Delete Files="$(TargetPublishDir)\remotevideo.exe" Condition="Exists('$(TargetPublishDir)\remotevideo.exe')" />
+    <ItemGroup>
+      <CmdLines Include="@echo off" />
+      <CmdLines Include="set &quot;APP_DIR=%~dp0Material\videotool_decompiled\remotevideo_usepdb\bin\video-modem-stage14-repair-variants-$(GitCommit)\$(Configuration)\net8.0-windows7.0&quot;" />
+      <CmdLines Include="start &quot;&quot; &quot;%APP_DIR%\remotevideo-$(GitCommit).exe&quot;" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(CmdFilePath)" Lines="@(CmdLines)" Overwrite="true" />
+  </Target>
 </Project>
