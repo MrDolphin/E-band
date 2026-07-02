@@ -15,9 +15,9 @@ internal static class VideoRealtimePolicy
 			return 0;
 		}
 
-		// Current hardware measurements recover roughly 40% of a first pass.
-		// Allow one targeted retry per new chunk without blocking the next frame.
-		return newFrameChunkCount;
+		// Restrict repair budget to prevent repair congestion.
+		// Allow up to 40% of new chunk count, capped at 8 chunks per round.
+		return Math.Min(8, (int)Math.Ceiling(newFrameChunkCount * 0.4));
 	}
 
 	public static int GetRepairVariant(int baseVariant, uint schedulingFrameId)
