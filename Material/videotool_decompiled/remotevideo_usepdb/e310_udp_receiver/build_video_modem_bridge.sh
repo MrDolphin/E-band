@@ -34,7 +34,8 @@ if [ "$COMMIT_ID" != "unknown" ]; then
 fi
 BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo gemini-dev)
 COMMIT_ID_CLEAN=${COMMIT_ID%-dirty}
-OUTPUT="$SCRIPT_DIR/video_${BRANCH_NAME}_${COMMIT_ID_CLEAN}"
+DATE_STAMP=$(date +%m%d_%H%M)
+OUTPUT="$SCRIPT_DIR/video_${BRANCH_NAME}_${DATE_STAMP}_${COMMIT_ID_CLEAN}"
 
 if [ ! -x "$CC" ]; then
     echo "Compiler not found: $CC" >&2
