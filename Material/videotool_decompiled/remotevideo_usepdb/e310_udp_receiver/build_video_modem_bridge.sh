@@ -5,14 +5,30 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SYSROOT=/mnt/d/hp-laptop/E-band/target-sysroot
 TOOLCHAIN=/opt/gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabihf
 CC="$TOOLCHAIN/bin/arm-linux-gnueabihf-gcc"
-# Allow overriding COMMIT_ID via environment variable to support Windows Git Worktrees under WSL
+# Allow overriding COMMIT_ID via environment variable, or auto-resolve Windows Git Worktrees under WSL
 COMMIT_ID=${COMMIT_ID:-}
 if [ -z "$COMMIT_ID" ] || [ "$COMMIT_ID" = "unknown" ]; then
-    COMMIT_ID=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    GIT_FILE="$SCRIPT_DIR/../../../../.git"
+    if [ -f "$GIT_FILE" ]; then
+        GITDIR_LINE=$(cat "$GIT_FILE" 2>/dev/null || echo "")
+        if echo "$GITDIR_LINE" | grep -q "^gitdir:"; then
+            WIN_PATH=$(echo "$GITDIR_LINE" | cut -d' ' -f2- | tr -d '\r')
+            if echo "$WIN_PATH" | grep -q -E "^[A-Za-z]:/"; then
+                DRIVE=$(echo "$WIN_PATH" | cut -c1 | tr '[:upper:]' '[:lower:]')
+                REST_PATH=$(echo "$WIN_PATH" | cut -c4-)
+                REAL_GIT_DIR="/mnt/$DRIVE/$REST_PATH"
+                if [ -d "$REAL_GIT_DIR" ]; then
+                    export GIT_DIR="$REAL_GIT_DIR"
+                    export GIT_WORK_TREE="$SCRIPT_DIR/../../../../"
+                fi
+            fi
+        fi
+    fi
+    COMMIT_ID=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 fi
 
 if [ "$COMMIT_ID" != "unknown" ]; then
-    if ! git -C "$SCRIPT_DIR" diff --quiet -- video_modem_bridge.c 2>/dev/null; then
+    if ! git diff --quiet -- "$SCRIPT_DIR/video_modem_bridge.c" 2>/dev/null; then
         COMMIT_ID="${COMMIT_ID}-dirty"
     fi
 fi
