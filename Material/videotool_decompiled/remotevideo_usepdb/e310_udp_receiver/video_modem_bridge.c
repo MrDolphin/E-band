@@ -14,6 +14,10 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#ifndef COMMIT_ID
+#define COMMIT_ID "unknown"
+#endif
+
 #define UDP_PORT 8080
 #define MAX_UDP_PACKET 2048
 #define PROTOCOL_HEADER_SIZE 17
@@ -902,7 +906,7 @@ int main(void)
 	tx_started = pthread_create(&tx_worker, NULL, tx_thread, &tx_args) == 0;
 	rx_started = pthread_create(&rx_worker, NULL, rx_thread, &rx_args) == 0;
 
-	printf("E310 video modem bridge listening on UDP %d\n", UDP_PORT);
+	printf("E310 video modem bridge (%s) listening on UDP %d\n", COMMIT_ID, UDP_PORT);
 	printf("LO=200 MHz Fs=3.84 MSPS BW=3 MHz TX1/RX1 non-cyclic QPSK stream RX_FRAME=%d\n",
 		RX_FRAME_SAMPLES);
 	printf("TX attenuation=%.1f dB, RX manual gain=%.1f dB\n",

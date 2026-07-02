@@ -23,6 +23,7 @@ if [ ! -f "$SYSROOT/usr/include/iio.h" ]; then
 fi
 
 "$CC" "$SCRIPT_DIR/video_modem_bridge.c" \
+    -DCOMMIT_ID="\"$COMMIT_ID\"" \
     -O2 \
     -o "$OUTPUT" \
     -I"$SYSROOT/usr/include" \
@@ -31,9 +32,12 @@ fi
     -Wl,--allow-shlib-undefined \
     -liio -lpthread -lm
 
+cp "$OUTPUT" "$SCRIPT_DIR/video_modem_bridge"
+
 echo
 echo "Built: $OUTPUT"
 echo "Commit: $COMMIT_ID"
+echo "Copied to: $SCRIPT_DIR/video_modem_bridge"
 file "$OUTPUT"
 echo
 strings "$OUTPUT" |
