@@ -1003,6 +1003,14 @@ Require(
 	VideoRealtimePolicy.GetRepairPriority(10),
 	"Repair policy did not rank the newest frame first.");
 
+Console.WriteLine("21. Build identity prefers immutable embedded commit...");
+Require(
+	AppBuildInfo.SelectCommitId("b554211abcdef", "1.0.0+runtime99") == "b554211",
+	"Embedded build commit was not selected or shortened correctly.");
+Require(
+	AppBuildInfo.SelectCommitId("", "1.0.0+371a7a8b45") == "371a7a8",
+	"Informational-version fallback did not produce a stable commit ID.");
+
 Console.WriteLine();
 Console.WriteLine("All video modem self-tests passed.");
 Console.WriteLine($"Fragments: {fragments.Count}");

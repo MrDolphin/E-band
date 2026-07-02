@@ -12,7 +12,20 @@
   </PropertyGroup>
   <PropertyGroup>
     <RootNamespace />
+    <BuildCommit Condition="'$(BuildCommit)' == ''">unknown</BuildCommit>
   </PropertyGroup>
+  <Target Name="GenerateBuildCommitMetadata" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <BuildCommitSource>$(IntermediateOutputPath)BuildCommit.g.cs</BuildCommitSource>
+    </PropertyGroup>
+    <WriteLinesToFile
+      File="$(BuildCommitSource)"
+      Lines="using System.Reflection%3B%0A[assembly: AssemblyMetadata(%22BuildCommit%22, %22$(BuildCommit)%22)]"
+      Overwrite="true" />
+    <ItemGroup>
+      <Compile Include="$(BuildCommitSource)" />
+    </ItemGroup>
+  </Target>
   <ItemGroup>
     <Compile Remove="video_modem_selftest\**\*.cs" />
     <EmbeddedResource Remove="video_modem_selftest\**\*" />
