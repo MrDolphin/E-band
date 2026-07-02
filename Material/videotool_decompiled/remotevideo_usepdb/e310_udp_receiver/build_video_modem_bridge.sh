@@ -5,9 +5,16 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SYSROOT=/mnt/d/hp-laptop/E-band/target-sysroot
 TOOLCHAIN=/opt/gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabihf
 CC="$TOOLCHAIN/bin/arm-linux-gnueabihf-gcc"
-COMMIT_ID=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
-if ! git -C "$SCRIPT_DIR" diff --quiet -- video_modem_bridge.c 2>/dev/null; then
-    COMMIT_ID="${COMMIT_ID}-dirty"
+# Allow overriding COMMIT_ID via environment variable to support Windows Git Worktrees under WSL
+COMMIT_ID=${COMMIT_ID:-}
+if [ -z "$COMMIT_ID" ] || [ "$COMMIT_ID" = "unknown" ]; then
+    COMMIT_ID=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+fi
+
+if [ "$COMMIT_ID" != "unknown" ]; then
+    if ! git -C "$SCRIPT_DIR" diff --quiet -- video_modem_bridge.c 2>/dev/null; then
+        COMMIT_ID="${COMMIT_ID}-dirty"
+    fi
 fi
 BUILD_STAMP=$(date +%Y%m%d_%H%M%S)
 OUTPUT="$SCRIPT_DIR/video_modem_bridge_4096_${COMMIT_ID}_${BUILD_STAMP}"
