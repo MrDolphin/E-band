@@ -46,6 +46,12 @@ static pthread_mutex_t peer_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct sockaddr_in pc_peer;
 static int pc_peer_valid;
 
+static struct {
+	uint64_t total_udp_received;
+	uint64_t total_complete_queued;
+	uint64_t total_aborted;
+} tx_stats;
+
 struct tx_assembly {
 	uint32_t frame_id;
 	uint16_t chunk_count;
@@ -938,6 +944,7 @@ int main(void)
 		if (!is_remotevideo_packet(packet, (int)length)) {
 			continue;
 		}
+		tx_stats.total_udp_received++;
 		pthread_mutex_lock(&peer_lock);
 		pc_peer = peer;
 		pc_peer_valid = 1;
@@ -977,6 +984,18 @@ int main(void)
 		if (!assembly.data ||
 			assembly.frame_id != frame_id ||
 			assembly.chunk_count != chunk_count) {
+			if (assembly.data && assembly.received_count > 0 && assembly.received_count < assembly.chunk_count) {
+				tx_stats.total_aborted++;
+				printf("video IQ frame abort: frame=%u, got %u/%u chunks. Missed chunks: ",
+					assembly.frame_id, assembly.received_count, assembly.chunk_count);
+				int c;
+				for (c = 0; c < assembly.chunk_count; c++) {
+					if (!assembly.received[c]) {
+						printf("%d ", c);
+					}
+				}
+				printf("\n");
+			}
 			reset_assembly(&assembly, frame_id, chunk_count);
 		}
 		if (!assembly.data) {
@@ -998,15 +1017,20 @@ int main(void)
 		if (assembly.received_count == assembly.chunk_count) {
 			size_t complete_samples = assembly.total_bytes / IQ_BYTES_PER_SAMPLE;
 			streaming_active = 1;
+			tx_stats.total_complete_queued++;
 			if (enqueue_tx(
 				&tx_queue,
 				assembly.frame_id,
 				assembly.data,
-				complete_samples) == 0 &&
-				assembly.frame_id % 100 == 0) {
-				printf("video IQ queued: frame=%u samples=%zu\n",
-					assembly.frame_id,
-					complete_samples);
+				complete_samples) == 0) {
+				if (assembly.frame_id % 100 == 0) {
+					printf("video IQ queued: frame=%u samples=%zu (stats: udp_recv=%llu, complete=%llu, aborted=%llu)\n",
+						assembly.frame_id,
+						complete_samples,
+						(unsigned long long)tx_stats.total_udp_received,
+						(unsigned long long)tx_stats.total_complete_queued,
+						(unsigned long long)tx_stats.total_aborted);
+				}
 			}
 			assembly.received_count = 0;
 			memset(assembly.received, 0, assembly.chunk_count);

@@ -3130,6 +3130,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				$"全零样点：{zeroPercent:F4}%\n\n" +
 				$"累计 TX 分片：{m_videoModemChunkCount}\n" +
 				$"其中选择性补发：{m_videoModemRepairChunkCount}\n" +
+				$"分片空口流失率：{((m_videoModemChunkCount - m_videoModemDecodedChunkCount) * 100.0 / Math.Max(1, m_videoModemChunkCount)):F1}%\n" +
 				$"发送源帧：{m_videoModemSentFrameCount}\n" +
 				$"接收确认完整帧：{m_videoModemConfirmedFrameCount}\n" +
 				$"累计 RX 分片：{m_videoModemDecodedChunkCount}\n" +
