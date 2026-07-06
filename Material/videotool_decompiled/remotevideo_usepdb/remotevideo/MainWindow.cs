@@ -251,6 +251,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private readonly QpskStreamDecoder m_qpskStreamDecoder = new QpskStreamDecoder();
 	private readonly object m_videoRxStatsLock = new object();
+	private const byte PACING_CONTROL_PACKET_TYPE = 0x06;
+	private ushort m_lastSentPacingUs = 50;
+	private long m_lastPacingChangeTick = 0;
 
 	private readonly List<byte[]> m_fmcwCpiChirps = new List<byte[]>();
 
@@ -1068,6 +1071,25 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		{
 			Log.Warning("Send stop command error: {0}", ex.Message);
 			return false;
+		}
+	}
+
+	private void SendPacingCommand(ushort pacingUs)
+	{
+		try
+		{
+			if (m_udpClient == null || m_sendEndPoint == null)
+			{
+				return;
+			}
+			byte[] content = BitConverter.GetBytes(pacingUs);
+			byte[] pacingPacket = BuildCommonPacket(PACING_CONTROL_PACKET_TYPE, content);
+			m_udpClient.Send(pacingPacket, pacingPacket.Length, m_sendEndPoint);
+			Log.Info("Dynamic backpressure pacing command sent: {0} us", pacingUs);
+		}
+		catch (Exception ex)
+		{
+			Log.Warning("Send pacing command error: {0}", ex.Message);
 		}
 	}
 
@@ -3027,6 +3049,30 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		{
 			return;
 		}
+
+		ushort targetPacing = 50;
+		int queueCount = m_videoDecodeQueue.Count;
+		if (queueCount >= 10)
+		{
+			targetPacing = 300;
+		}
+		else if (queueCount >= 6)
+		{
+			targetPacing = 180;
+		}
+		else if (queueCount >= 3)
+		{
+			targetPacing = 100;
+		}
+
+		long now = Environment.TickCount64;
+		if (targetPacing != m_lastSentPacingUs && now - m_lastPacingChangeTick > 100)
+		{
+			SendPacingCommand(targetPacing);
+			m_lastSentPacingUs = targetPacing;
+			m_lastPacingChangeTick = now;
+		}
+
 		while (m_videoDecodeQueue.Count >= VideoDecodeQueueLimit &&
 			m_videoDecodeQueue.TryDequeue(out _))
 		{
