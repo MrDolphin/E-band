@@ -41,6 +41,8 @@
 #define RX_ACTIVE_PEAK_THRESHOLD_ADC 100
 #define RX_ACTIVE_HANGOVER_FRAMES 2U
 #define RX_CHUNK_PACING_US 50U
+#define PACING_CONTROL_PACKET_TYPE 0x06
+static volatile unsigned int rx_pacing_us = 50U;
 
 static volatile int stop;
 static volatile int streaming_active;
@@ -728,7 +730,7 @@ static int send_rx_frame(
 			return -1;
 		}
 		if (chunk_index + 1 < chunk_count) {
-			usleep(RX_CHUNK_PACING_US);
+			usleep(rx_pacing_us);
 		}
 	}
 	return 0;
@@ -1024,6 +1026,14 @@ int main(void)
 		pthread_mutex_unlock(&peer_lock);
 
 		packet_type = packet[4];
+		if (packet_type == PACING_CONTROL_PACKET_TYPE) {
+			uint16_t new_pacing = read_le16(packet + 17);
+			if (new_pacing >= 5 && new_pacing <= 2000) {
+				rx_pacing_us = new_pacing;
+				printf("dynamic pacing updated from PC: %u us\n", rx_pacing_us);
+			}
+			continue;
+		}
 		if (packet_type == STOP_PACKET_TYPE) {
 			streaming_active = 0;
 			tx_reset_requested = 1;
