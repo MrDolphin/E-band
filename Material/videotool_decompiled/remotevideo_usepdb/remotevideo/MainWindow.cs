@@ -2174,20 +2174,27 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			return;
 		}
 		int chunkCount = (int)Math.Ceiling((double)iqPayload.Length / WaveformChunkPayloadBytes);
+
+		// 第一遍完整发送
 		for (int chunkIndex = 0; chunkIndex < chunkCount && m_isSending; chunkIndex++)
 		{
 			int offset = chunkIndex * WaveformChunkPayloadBytes;
 			int chunkSize = Math.Min(WaveformChunkPayloadBytes, iqPayload.Length - offset);
 			byte[] content = BuildWaveformContent(iqPayload, offset, chunkSize, frameId, chunkIndex, chunkCount);
 			byte[] packet = BuildCommonPacket(packetType, content);
-			for (int attempt = 0; attempt < 2; attempt++)
-			{
-				m_udpClient?.Send(packet, packet.Length, m_sendEndPoint);
-				if (attempt < 1)
-				{
-					System.Threading.Thread.SpinWait(1500);
-				}
-			}
+			m_udpClient?.Send(packet, packet.Length, m_sendEndPoint);
+			System.Threading.Thread.SpinWait(1200);
+		}
+
+		// 第二遍交错发送
+		for (int chunkIndex = 0; chunkIndex < chunkCount && m_isSending; chunkIndex++)
+		{
+			int offset = chunkIndex * WaveformChunkPayloadBytes;
+			int chunkSize = Math.Min(WaveformChunkPayloadBytes, iqPayload.Length - offset);
+			byte[] content = BuildWaveformContent(iqPayload, offset, chunkSize, frameId, chunkIndex, chunkCount);
+			byte[] packet = BuildCommonPacket(packetType, content);
+			m_udpClient?.Send(packet, packet.Length, m_sendEndPoint);
+			System.Threading.Thread.SpinWait(1200);
 		}
 	}
 
@@ -3059,17 +3066,13 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 		ushort targetPacing = 50;
 		int queueCount = m_videoDecodeQueue.Count;
-		if (queueCount >= 10)
+		if (queueCount >= 12)
 		{
-			targetPacing = 300;
+			targetPacing = 90;
 		}
 		else if (queueCount >= 6)
 		{
-			targetPacing = 180;
-		}
-		else if (queueCount >= 3)
-		{
-			targetPacing = 100;
+			targetPacing = 70;
 		}
 
 		long now = Environment.TickCount64;

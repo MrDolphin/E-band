@@ -715,30 +715,49 @@ static int send_rx_frame(
 		(sample_count + RX_CHUNK_SAMPLES - 1) / RX_CHUNK_SAMPLES);
 	uint16_t chunk_index;
 
+	// 第一遍发送
 	for (chunk_index = 0; chunk_index < chunk_count; chunk_index++) {
 		size_t offset = chunk_index * RX_CHUNK_SAMPLES;
 		uint16_t count = (uint16_t)(sample_count - offset);
 		if (count > RX_CHUNK_SAMPLES) {
 			count = RX_CHUNK_SAMPLES;
 		}
-		int attempt;
-		for (attempt = 0; attempt < 2; attempt++) {
-			if (send_rx_chunk(
-				frame_id,
-				chunk_index,
-				chunk_count,
-				iq + offset * IQ_BYTES_PER_SAMPLE,
-				count) < 0) {
-				return -1;
-			}
-			if (attempt < 1) {
-				usleep(10U);
-			}
+		if (send_rx_chunk(
+			frame_id,
+			chunk_index,
+			chunk_count,
+			iq + offset * IQ_BYTES_PER_SAMPLE,
+			count) < 0) {
+			return -1;
 		}
 		if (chunk_index + 1 < chunk_count) {
 			usleep(rx_pacing_us);
 		}
 	}
+
+	// 引入一小段起搏以保护网络
+	usleep(rx_pacing_us);
+
+	// 第二遍交错发送
+	for (chunk_index = 0; chunk_index < chunk_count; chunk_index++) {
+		size_t offset = chunk_index * RX_CHUNK_SAMPLES;
+		uint16_t count = (uint16_t)(sample_count - offset);
+		if (count > RX_CHUNK_SAMPLES) {
+			count = RX_CHUNK_SAMPLES;
+		}
+		if (send_rx_chunk(
+			frame_id,
+			chunk_index,
+			chunk_count,
+			iq + offset * IQ_BYTES_PER_SAMPLE,
+			count) < 0) {
+			return -1;
+		}
+		if (chunk_index + 1 < chunk_count) {
+			usleep(rx_pacing_us);
+		}
+	}
+
 	return 0;
 }
 
