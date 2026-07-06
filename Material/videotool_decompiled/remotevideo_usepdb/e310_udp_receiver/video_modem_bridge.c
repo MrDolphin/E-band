@@ -49,6 +49,42 @@ static int udp_socket = -1;
 static pthread_mutex_t peer_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct sockaddr_in pc_peer;
 static int pc_peer_valid;
+#define RX_QUEUE_CAPACITY 64
+
+struct rx_queue_node {
+	uint32_t frame_id;
+	uint8_t iq[RX_FRAME_SAMPLES * IQ_BYTES_PER_SAMPLE];
+	size_t sample_count;
+};
+
+struct rx_fifo {
+	struct rx_queue_node nodes[RX_QUEUE_CAPACITY];
+	int head;
+	int tail;
+	int count;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+};
+
+static struct rx_fifo rx_send_fifo;
+
+static void push_rx_send_queue(uint32_t frame_id, const uint8_t *iq, size_t sample_count)
+{
+	pthread_mutex_lock(&rx_send_fifo.mutex);
+	if (rx_send_fifo.count >= RX_QUEUE_CAPACITY) {
+		rx_send_fifo.head = (rx_send_fifo.head + 1) % RX_QUEUE_CAPACITY;
+		rx_send_fifo.count--;
+	}
+	struct rx_queue_node *node = &rx_send_fifo.nodes[rx_send_fifo.tail];
+	node->frame_id = frame_id;
+	node->sample_count = sample_count;
+	memcpy(node->iq, iq, sample_count * IQ_BYTES_PER_SAMPLE);
+
+	rx_send_fifo.tail = (rx_send_fifo.tail + 1) % RX_QUEUE_CAPACITY;
+	rx_send_fifo.count++;
+	pthread_cond_signal(&rx_send_fifo.cond);
+	pthread_mutex_unlock(&rx_send_fifo.mutex);
+}
 
 struct tx_assembly {
 	uint32_t frame_id;
@@ -698,6 +734,45 @@ static int send_rx_frame(
 	return 0;
 }
 
+static void *rx_send_worker(void *opaque)
+{
+	(void)opaque;
+	uint8_t *iq_buf = malloc(RX_FRAME_SAMPLES * IQ_BYTES_PER_SAMPLE);
+	if (!iq_buf) {
+		fprintf(stderr, "failed to allocate memory for RX send worker\n");
+		return NULL;
+	}
+
+	while (!stop) {
+		uint32_t frame_id;
+		size_t sample_count;
+
+		pthread_mutex_lock(&rx_send_fifo.mutex);
+		while (rx_send_fifo.count == 0 && !stop) {
+			pthread_cond_wait(&rx_send_fifo.cond, &rx_send_fifo.mutex);
+		}
+		if (stop) {
+			pthread_mutex_unlock(&rx_send_fifo.mutex);
+			break;
+		}
+
+		struct rx_queue_node *node = &rx_send_fifo.nodes[rx_send_fifo.head];
+		frame_id = node->frame_id;
+		sample_count = node->sample_count;
+		memcpy(iq_buf, node->iq, sample_count * IQ_BYTES_PER_SAMPLE);
+
+		rx_send_fifo.head = (rx_send_fifo.head + 1) % RX_QUEUE_CAPACITY;
+		rx_send_fifo.count--;
+		pthread_mutex_unlock(&rx_send_fifo.mutex);
+
+		if (send_rx_frame(frame_id, iq_buf, sample_count) < 0) {
+			perror("async send RX IQ");
+		}
+	}
+	free(iq_buf);
+	return NULL;
+}
+
 static void *rx_thread(void *opaque)
 {
 	struct rx_thread_args *args = opaque;
@@ -762,17 +837,13 @@ static void *rx_thread(void *opaque)
 			active_frame_count++;
 			if (previous_valid &&
 				(!last_sent_valid || last_sent_frame_id != previous_frame_id)) {
-				if (send_rx_frame(
+				push_rx_send_queue(
 					previous_frame_id,
 					previous_iq,
-					previous_sample_count) < 0) {
-					perror("send RX IQ preroll");
-					send_error_count++;
-				} else {
-					sent_frame_count++;
-					last_sent_frame_id = previous_frame_id;
-					last_sent_valid = 1;
-				}
+					previous_sample_count);
+				sent_frame_count++;
+				last_sent_frame_id = previous_frame_id;
+				last_sent_valid = 1;
 			}
 			hangover_frames = RX_ACTIVE_HANGOVER_FRAMES;
 			send_current = 1;
@@ -782,14 +853,10 @@ static void *rx_thread(void *opaque)
 		}
 
 		if (send_current) {
-			if (send_rx_frame(frame_id, iq, sample_count) < 0) {
-				perror("send RX IQ");
-				send_error_count++;
-			} else {
-				sent_frame_count++;
-				last_sent_frame_id = frame_id;
-				last_sent_valid = 1;
-			}
+			push_rx_send_queue(frame_id, iq, sample_count);
+			sent_frame_count++;
+			last_sent_frame_id = frame_id;
+			last_sent_valid = 1;
 		} else {
 			skipped_frame_count++;
 		}
@@ -834,8 +901,10 @@ int main(void)
 	struct rx_thread_args rx_args;
 	pthread_t tx_worker;
 	pthread_t rx_worker;
+	pthread_t rx_send_thread;
 	int tx_started = 0;
 	int rx_started = 0;
+	int rx_send_started = 0;
 	uint8_t packet[MAX_UDP_PACKET];
 
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -897,8 +966,15 @@ int main(void)
 	rx_args.device = rx_device;
 	rx_args.i_channel = rx_i;
 	rx_args.q_channel = rx_q;
+	pthread_mutex_init(&rx_send_fifo.mutex, NULL);
+	pthread_cond_init(&rx_send_fifo.cond, NULL);
+	rx_send_fifo.head = 0;
+	rx_send_fifo.tail = 0;
+	rx_send_fifo.count = 0;
+
 	tx_started = pthread_create(&tx_worker, NULL, tx_thread, &tx_args) == 0;
 	rx_started = pthread_create(&rx_worker, NULL, rx_thread, &rx_args) == 0;
+	rx_send_started = pthread_create(&rx_send_thread, NULL, rx_send_worker, NULL) == 0;
 
 	printf("E310 video modem bridge (%s) listening on UDP %d\n", COMMIT_ID, UDP_PORT);
 	printf("LO=200 MHz Fs=3.84 MSPS BW=3 MHz TX1/RX1 non-cyclic QPSK stream RX_FRAME=%d\n",
@@ -1019,13 +1095,19 @@ int main(void)
 
 	stop = 1;
 	pthread_cond_broadcast(&tx_queue.ready);
+	pthread_cond_broadcast(&rx_send_fifo.cond);
 	if (tx_started) {
 		pthread_join(tx_worker, NULL);
+	}
+	if (rx_send_started) {
+		pthread_join(rx_send_thread, NULL);
 	}
 	if (rx_started) {
 		pthread_cancel(rx_worker);
 		pthread_join(rx_worker, NULL);
 	}
+	pthread_mutex_destroy(&rx_send_fifo.mutex);
+	pthread_cond_destroy(&rx_send_fifo.cond);
 	clear_tx_queue(&tx_queue);
 	free(assembly.data);
 	free(assembly.received);
