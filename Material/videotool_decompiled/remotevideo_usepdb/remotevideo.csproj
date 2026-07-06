@@ -72,12 +72,17 @@
   </Target>
 
   <Target Name="PublishAndRename" AfterTargets="AfterBuild">
+    <Exec Command="git rev-parse --abbrev-ref HEAD" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitBranch" />
+    </Exec>
     <Exec Command="git rev-parse --short=7 HEAD" ConsoleToMSBuild="true" StandardOutputImportance="low" IgnoreExitCode="true">
       <Output TaskParameter="ConsoleOutput" PropertyName="GitCommit" />
     </Exec>
     <PropertyGroup>
+      <GitBranch>$([System.Text.RegularExpressions.Regex]::Replace('$(GitBranch)', '[^a-zA-Z0-9_\-]', '_'))</GitBranch>
+      <GitBranch Condition="'$(GitBranch)' == ''">unknown-branch</GitBranch>
       <GitCommit Condition="'$(GitCommit)' == ''">unknown</GitCommit>
-      <TargetPublishDir>$(ProjectDir)bin\video-modem-stage14-repair-variants-$(GitCommit)\$(Configuration)\net8.0-windows7.0</TargetPublishDir>
+      <TargetPublishDir>$(ProjectDir)bin\$(GitBranch)-$(GitCommit)\$(Configuration)\net8.0-windows7.0</TargetPublishDir>
     </PropertyGroup>
     <MakeDir Directories="$(TargetPublishDir)" />
     <ItemGroup>
