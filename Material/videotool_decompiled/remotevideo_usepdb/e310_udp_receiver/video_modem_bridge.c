@@ -721,13 +721,19 @@ static int send_rx_frame(
 		if (count > RX_CHUNK_SAMPLES) {
 			count = RX_CHUNK_SAMPLES;
 		}
-		if (send_rx_chunk(
-			frame_id,
-			chunk_index,
-			chunk_count,
-			iq + offset * IQ_BYTES_PER_SAMPLE,
-			count) < 0) {
-			return -1;
+		int attempt;
+		for (attempt = 0; attempt < 2; attempt++) {
+			if (send_rx_chunk(
+				frame_id,
+				chunk_index,
+				chunk_count,
+				iq + offset * IQ_BYTES_PER_SAMPLE,
+				count) < 0) {
+				return -1;
+			}
+			if (attempt < 1) {
+				usleep(10U);
+			}
 		}
 		if (chunk_index + 1 < chunk_count) {
 			usleep(rx_pacing_us);

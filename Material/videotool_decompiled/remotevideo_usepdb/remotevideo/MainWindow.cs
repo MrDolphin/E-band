@@ -2180,7 +2180,14 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			int chunkSize = Math.Min(WaveformChunkPayloadBytes, iqPayload.Length - offset);
 			byte[] content = BuildWaveformContent(iqPayload, offset, chunkSize, frameId, chunkIndex, chunkCount);
 			byte[] packet = BuildCommonPacket(packetType, content);
-			m_udpClient?.Send(packet, packet.Length, m_sendEndPoint);
+			for (int attempt = 0; attempt < 2; attempt++)
+			{
+				m_udpClient?.Send(packet, packet.Length, m_sendEndPoint);
+				if (attempt < 1)
+				{
+					System.Threading.Thread.SpinWait(1500);
+				}
+			}
 		}
 	}
 
