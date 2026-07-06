@@ -44,7 +44,14 @@ internal static class QpskModem
 
 	public static double PhaseStepGain => phaseStepGain;
 
-	public static QpskDemodulationDiagnostics LastDiagnostics { get; private set; }
+	[ThreadStatic]
+	private static QpskDemodulationDiagnostics _lastDiagnostics;
+
+	public static QpskDemodulationDiagnostics LastDiagnostics
+	{
+		get => _lastDiagnostics;
+		private set => _lastDiagnostics = value;
+	}
 
 	public static void ConfigureTuning(
 		int preambleThreshold,

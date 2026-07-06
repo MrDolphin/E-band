@@ -250,6 +250,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 	private readonly WirelessVideoReassembler m_videoReassembler = new WirelessVideoReassembler();
 
 	private readonly QpskStreamDecoder m_qpskStreamDecoder = new QpskStreamDecoder();
+	private readonly object m_videoRxStatsLock = new object();
 
 	private readonly List<byte[]> m_fmcwCpiChirps = new List<byte[]>();
 
@@ -2557,8 +2558,9 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private void ProcessVideoModemRxIq(byte[] iq, int rxFrameId)
 	{
-		m_qpskStreamDecoder.AppendInt16Iq(iq);
-		while (m_qpskStreamDecoder.TryReadFrame(
+		QpskStreamDecoder localDecoder = new QpskStreamDecoder();
+		localDecoder.AppendInt16Iq(iq);
+		while (localDecoder.TryReadFrame(
 			out byte[] wirelessBytes,
 			out double correlation))
 		{
@@ -2566,48 +2568,63 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				wirelessBytes,
 				out WirelessVideoFrame chunk))
 			{
-				m_videoModemFailureCount++;
-				string parseReason = AnalyzeWirelessFrameParseFailure(wirelessBytes);
-				m_videoLastParseFailureReason = parseReason;
-				if (parseReason.StartsWith("CRC", StringComparison.OrdinalIgnoreCase))
+				lock (m_videoRxStatsLock)
 				{
-					m_videoWirelessCrcFailureCount++;
+					m_videoModemFailureCount++;
+					string parseReason = AnalyzeWirelessFrameParseFailure(wirelessBytes);
+					m_videoLastParseFailureReason = parseReason;
+					if (parseReason.StartsWith("CRC", StringComparison.OrdinalIgnoreCase))
+					{
+						m_videoWirelessCrcFailureCount++;
+					}
+					else
+					{
+						m_videoWirelessFormatFailureCount++;
+					}
+					m_videoLastDemodDiagnostic = BuildQpskDemodDiagnostic(
+						QpskModem.LastDiagnostics);
+					m_videoLastCandidateDiagnostic = BuildVideoCandidateDiagnostic(
+						rxFrameId,
+						correlation,
+						accepted: false,
+						null,
+						localDecoder);
 				}
-				else
-				{
-					m_videoWirelessFormatFailureCount++;
-				}
+				continue;
+			}
+
+			lock (m_videoRxStatsLock)
+			{
+				m_videoModemDecodedChunkCount++;
+				m_videoLastParseFailureReason = "格式失败原因：最近候选包已通过";
 				m_videoLastDemodDiagnostic = BuildQpskDemodDiagnostic(
 					QpskModem.LastDiagnostics);
 				m_videoLastCandidateDiagnostic = BuildVideoCandidateDiagnostic(
 					rxFrameId,
 					correlation,
-					accepted: false,
-					null);
-				continue;
+					accepted: true,
+					chunk,
+					localDecoder);
 			}
 
-			m_videoModemDecodedChunkCount++;
-			m_videoLastParseFailureReason = "格式失败原因：最近候选包已通过";
-			m_videoLastDemodDiagnostic = BuildQpskDemodDiagnostic(
-				QpskModem.LastDiagnostics);
-			m_videoLastCandidateDiagnostic = BuildVideoCandidateDiagnostic(
-				rxFrameId,
-				correlation,
-				accepted: true,
-				chunk);
 			byte[] completedImage = null;
 			bool displayCompletedImage = false;
 			bool completedFrame = false;
 			if (m_videoReassembler.TryAdd(chunk, out byte[] image))
 			{
 				completedImage = image;
-				m_videoModemRecoveredFrameCount++;
+				lock (m_videoRxStatsLock)
+				{
+					m_videoModemRecoveredFrameCount++;
+				}
 				completedFrame = true;
 				displayCompletedImage = m_videoFrameDisplayOrder.TryAdvance(chunk.FrameId);
 				if (!displayCompletedImage)
 				{
-					m_videoStaleDisplayFrameCount++;
+					lock (m_videoRxStatsLock)
+					{
+						m_videoStaleDisplayFrameCount++;
+					}
 				}
 			}
 			RecordVideoRecoveryProgress(chunk, rxFrameId, completedFrame);
@@ -2620,19 +2637,24 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			});
 		}
 
-		UpdateVideoModemWaitingStatus(
-			rxFrameId,
-			m_qpskStreamDecoder.LastCorrelation);
+		lock (m_videoRxStatsLock)
+		{
+			m_qpskStreamDecoder.CopyStatsFrom(localDecoder);
+			UpdateVideoModemWaitingStatus(
+				rxFrameId,
+				localDecoder.LastCorrelation);
+		}
 	}
 
 	private string BuildVideoCandidateDiagnostic(
 		int rxFrameId,
 		double correlation,
 		bool accepted,
-		WirelessVideoFrame chunk)
+		WirelessVideoFrame chunk,
+		QpskStreamDecoder decoder)
 	{
-		int start = m_qpskStreamDecoder.LastFrameStart;
-		int consumed = m_qpskStreamDecoder.LastConsumedSamples;
+		int start = decoder.LastFrameStart;
+		int consumed = decoder.LastConsumedSamples;
 		int rxFrameSpan = consumed <= 0 ? 0 : (consumed + 4095) / 4096;
 		string result = accepted ? "OK" : "CRC/FORMAT FAIL";
 		string chunkText = chunk == null
@@ -2641,7 +2663,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		return
 			$"候选包诊断 (Candidate): {result}{chunkText}\n" +
 			$"RX frame={rxFrameId}, start={start} samples, consumed={consumed} samples\n" +
-			$"span≈{rxFrameSpan} RX frames @4096 samples, corr={correlation:F4}, conj={(m_qpskStreamDecoder.LastUsedConjugate ? "yes" : "no")}";
+			$"span≈{rxFrameSpan} RX frames @4096 samples, corr={correlation:F4}, conj={(decoder.LastUsedConjugate ? "yes" : "no")}";
 	}
 
 	private static string AnalyzeWirelessFrameParseFailure(byte[] data)
@@ -2747,7 +2769,19 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					lastFrameId = next.FrameId;
 					batchFrames++;
 				}
-				ProcessVideoModemRxIq(batch.ToArray(), lastFrameId);
+				byte[] batchIq = batch.ToArray();
+				int frameId = lastFrameId;
+				System.Threading.Tasks.Task.Run(() =>
+				{
+					try
+					{
+						ProcessVideoModemRxIq(batchIq, frameId);
+					}
+					catch (Exception ex)
+					{
+						Log.Warning("Async video modem decode failed: {0}", ex.Message);
+					}
+				});
 				m_lastDecodedRxFrameId = lastFrameId;
 			}
 			catch (Exception ex)
@@ -3050,45 +3084,82 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private void UpdateVideoModemWaitingStatus(int rxFrameId, double correlation)
 	{
-		long now = Environment.TickCount64;
-		if (now - m_lastVideoDiagnosticsTick < 250)
-		{
-			return;
-		}
-		m_lastVideoDiagnosticsTick = now;
+		long packetCount;
+		long completeFrameCount;
+		long droppedFrameCount;
+		long sampleCount;
+		long decodeQueueDropCount;
+		long gateQueuedFrameCount;
+		long gateSkippedFrameCount;
+		int decodeQueueDepth;
+		int bufferedSamples;
+		double normalCorrelation;
+		double conjugateCorrelation;
+		double rms;
+		double peak;
+		double meanI;
+		double meanQ;
+		double rmsI;
+		double rmsQ;
+		double imbalanceDb;
+		double iqCorrelation;
+		double coarseFrequencyHz;
+		double clippingPercent;
+		double zeroPercent;
+		string metricsFile;
+		string iqCaptureFile;
+		string txManifestFile;
+		string recoveryFile;
+		string reassemblyStatus;
+		string recoverySummary;
+		int encodedBytes;
+		int encodedWidth;
+		int encodedHeight;
+		int encodedChunks;
 
-		long packetCount = m_rxIqPacketCount;
-		long completeFrameCount = m_rxIqCompleteFrameCount;
-		long droppedFrameCount = m_rxIqDroppedFrameCount;
-		long sampleCount = m_rxIqSampleCount;
-		long decodeQueueDropCount = m_videoDecodeQueueDropCount;
-		long gateQueuedFrameCount = m_videoGateQueuedFrameCount;
-		long gateSkippedFrameCount = m_videoGateSkippedFrameCount;
-		int decodeQueueDepth = m_videoDecodeQueue.Count;
-		int bufferedSamples = m_qpskStreamDecoder.BufferedSamples;
-		double normalCorrelation = m_qpskStreamDecoder.LastNormalCorrelation;
-		double conjugateCorrelation = m_qpskStreamDecoder.LastConjugateCorrelation;
-		double rms = m_videoRxRms;
-		double peak = m_videoRxPeak;
-		double meanI = m_videoRxMeanI;
-		double meanQ = m_videoRxMeanQ;
-		double rmsI = m_videoRxRmsI;
-		double rmsQ = m_videoRxRmsQ;
-		double imbalanceDb = m_videoRxIqImbalanceDb;
-		double iqCorrelation = m_videoRxIqCorrelation;
-		double coarseFrequencyHz = m_videoRxCoarseFrequencyHz;
-		double clippingPercent = m_videoRxClippingPercent;
-		double zeroPercent = m_videoRxZeroPercent;
-		string metricsFile = Path.GetFileName(m_videoMetricsPath);
-		string iqCaptureFile = Path.GetFileName(m_videoIqCapturePath);
-		string txManifestFile = Path.GetFileName(m_videoTxManifestPath);
-		string recoveryFile = Path.GetFileName(m_videoRecoveryPath);
-		string reassemblyStatus = m_videoReassembler.LatestStatus;
-		string recoverySummary = BuildVideoRecoverySummary();
-		int encodedBytes = m_videoLastEncodedBytes;
-		int encodedWidth = m_videoLastEncodedWidth;
-		int encodedHeight = m_videoLastEncodedHeight;
-		int encodedChunks = m_videoLastEncodedChunks;
+		lock (m_videoRxStatsLock)
+		{
+			long now = Environment.TickCount64;
+			if (now - m_lastVideoDiagnosticsTick < 250)
+			{
+				return;
+			}
+			m_lastVideoDiagnosticsTick = now;
+
+			packetCount = m_rxIqPacketCount;
+			completeFrameCount = m_rxIqCompleteFrameCount;
+			droppedFrameCount = m_rxIqDroppedFrameCount;
+			sampleCount = m_rxIqSampleCount;
+			decodeQueueDropCount = m_videoDecodeQueueDropCount;
+			gateQueuedFrameCount = m_videoGateQueuedFrameCount;
+			gateSkippedFrameCount = m_videoGateSkippedFrameCount;
+			decodeQueueDepth = m_videoDecodeQueue.Count;
+			bufferedSamples = m_qpskStreamDecoder.BufferedSamples;
+			normalCorrelation = m_qpskStreamDecoder.LastNormalCorrelation;
+			conjugateCorrelation = m_qpskStreamDecoder.LastConjugateCorrelation;
+			rms = m_videoRxRms;
+			peak = m_videoRxPeak;
+			meanI = m_videoRxMeanI;
+			meanQ = m_videoRxMeanQ;
+			rmsI = m_videoRxRmsI;
+			rmsQ = m_videoRxRmsQ;
+			imbalanceDb = m_videoRxIqImbalanceDb;
+			iqCorrelation = m_videoRxIqCorrelation;
+			coarseFrequencyHz = m_videoRxCoarseFrequencyHz;
+			clippingPercent = m_videoRxClippingPercent;
+			zeroPercent = m_videoRxZeroPercent;
+			metricsFile = Path.GetFileName(m_videoMetricsPath);
+			iqCaptureFile = Path.GetFileName(m_videoIqCapturePath);
+			txManifestFile = Path.GetFileName(m_videoTxManifestPath);
+			recoveryFile = Path.GetFileName(m_videoRecoveryPath);
+			reassemblyStatus = m_videoReassembler.LatestStatus;
+			recoverySummary = BuildVideoRecoverySummary();
+			encodedBytes = m_videoLastEncodedBytes;
+			encodedWidth = m_videoLastEncodedWidth;
+			encodedHeight = m_videoLastEncodedHeight;
+			encodedChunks = m_videoLastEncodedChunks;
+		}
+
 		string encodedSizeText = encodedWidth > 0 && encodedHeight > 0
 			? $"{encodedWidth}x{encodedHeight}"
 			: "--";

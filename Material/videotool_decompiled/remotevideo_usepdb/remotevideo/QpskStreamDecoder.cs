@@ -129,6 +129,16 @@ internal sealed class QpskStreamDecoder
 		LastConsumedSamples = 0;
 	}
 
+	public void CopyStatsFrom(QpskStreamDecoder other)
+	{
+		LastCorrelation = other.LastCorrelation;
+		LastNormalCorrelation = other.LastNormalCorrelation;
+		LastConjugateCorrelation = other.LastConjugateCorrelation;
+		LastUsedConjugate = other.LastUsedConjugate;
+		LastFrameStart = other.LastFrameStart;
+		LastConsumedSamples = other.LastConsumedSamples;
+	}
+
 	private void TrimIfNeeded()
 	{
 		if (samples.Count <= MaximumBufferedSamples)
