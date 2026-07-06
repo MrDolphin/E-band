@@ -274,29 +274,157 @@ internal sealed class WirelessVideoReassembler
 			pendingFrames[chunk.FrameId] = pending;
 		}
 
-		pending.Chunks[chunk.ChunkIndex] = chunk.Payload;
-		if (pending.Chunks.Count != pending.ChunkCount)
+		if (chunk.TimestampMs == 0xFEC0FFEEu)
 		{
-			latestStatus = BuildStatus(chunk.FrameId, pending);
-			DiscardOldFrames(chunk.FrameId);
-			return false;
+			pending.HasFecParity = true;
 		}
 
-		using MemoryStream stream = new MemoryStream();
-		for (ushort index = 0; index < pending.ChunkCount; index++)
+		pending.Chunks[chunk.ChunkIndex] = chunk.Payload;
+
+		// 2D XOR FEC (二维奇偶校验前向纠错) 恢复逻辑
+		if (pending.HasFecParity && pending.ChunkCount > 3)
 		{
-			if (!pending.Chunks.TryGetValue(index, out byte[] bytes))
+			ushort originalCount = (ushort)(pending.ChunkCount - 3);
+
+			// 检查有哪些原始分片依然缺失
+			List<ushort> lostOriginals = new List<ushort>();
+			for (ushort index = 0; index < originalCount; index++)
 			{
-				return false;
+				if (!pending.Chunks.ContainsKey(index))
+				{
+					lostOriginals.Add(index);
+				}
 			}
-			stream.Write(bytes);
+
+			if (lostOriginals.Count == 1)
+			{
+				// 情形一：只缺失 1 个原始分片，且收到了全量校验分片 (Index = originalCount)
+				ushort lostIdx = lostOriginals[0];
+				ushort parityAllIdx = originalCount;
+				if (pending.Chunks.TryGetValue(parityAllIdx, out byte[] parityAll))
+				{
+					byte[] restored = (byte[])parityAll.Clone();
+					bool canRestore = true;
+					for (ushort index = 0; index < originalCount; index++)
+					{
+						if (index == lostIdx) continue;
+						if (pending.Chunks.TryGetValue(index, out byte[] other))
+						{
+							if (other.Length != restored.Length) { canRestore = false; break; }
+							for (int i = 0; i < restored.Length; i++) restored[i] ^= other[i];
+						}
+						else
+						{
+							canRestore = false;
+							break;
+						}
+					}
+					if (canRestore)
+					{
+						pending.Chunks[lostIdx] = restored;
+						lostOriginals.Clear(); // 成功还原，缺失原始片归零
+					}
+				}
+			}
+			else if (lostOriginals.Count == 2)
+			{
+				// 情形二：缺失了 2 个原始分片，且正好一个是偶数、一个是奇数
+				ushort lost0 = lostOriginals[0];
+				ushort lost1 = lostOriginals[1];
+				if ((lost0 % 2 == 0 && lost1 % 2 == 1) || (lost0 % 2 == 1 && lost1 % 2 == 0))
+				{
+					ushort lostEven = lost0 % 2 == 0 ? lost0 : lost1;
+					ushort lostOdd = lost0 % 2 == 1 ? lost0 : lost1;
+					ushort parityEvenIdx = (ushort)(originalCount + 1);
+					ushort parityOddIdx = (ushort)(originalCount + 2);
+
+					if (pending.Chunks.TryGetValue(parityEvenIdx, out byte[] parityEven) &&
+						pending.Chunks.TryGetValue(parityOddIdx, out byte[] parityOdd))
+					{
+						// 尝试恢复偶数分片
+						byte[] restoredEven = (byte[])parityEven.Clone();
+						bool canRestoreEven = true;
+						for (ushort index = 0; index < originalCount; index += 2)
+						{
+							if (index == lostEven) continue;
+							if (pending.Chunks.TryGetValue(index, out byte[] other))
+							{
+								if (other.Length != restoredEven.Length) { canRestoreEven = false; break; }
+								for (int i = 0; i < restoredEven.Length; i++) restoredEven[i] ^= other[i];
+							}
+							else
+							{
+								canRestoreEven = false;
+								break;
+							}
+						}
+
+						// 尝试恢复奇数分片
+						byte[] restoredOdd = (byte[])parityOdd.Clone();
+						bool canRestoreOdd = true;
+						for (ushort index = 1; index < originalCount; index += 2)
+						{
+							if (index == lostOdd) continue;
+							if (pending.Chunks.TryGetValue(index, out byte[] other))
+							{
+								if (other.Length != restoredOdd.Length) { canRestoreOdd = false; break; }
+								for (int i = 0; i < restoredOdd.Length; i++) restoredOdd[i] ^= other[i];
+							}
+							else
+							{
+								canRestoreOdd = false;
+								break;
+							}
+						}
+
+						if (canRestoreEven && canRestoreOdd)
+						{
+							pending.Chunks[lostEven] = restoredEven;
+							pending.Chunks[lostOdd] = restoredOdd;
+							lostOriginals.Clear(); // 成功还原两个，缺失归零
+						}
+					}
+				}
+			}
+
+			// 如果所有的原始分片已经凑齐（不管是收齐还是 FEC 恢复），就代表这帧接收重构完成！
+			if (lostOriginals.Count == 0)
+			{
+				using MemoryStream stream = new MemoryStream();
+				for (ushort index = 0; index < originalCount; index++)
+				{
+					stream.Write(pending.Chunks[index]);
+				}
+				completedPayload = stream.ToArray();
+				pendingFrames.Remove(chunk.FrameId);
+				completedFrameIds.Add(chunk.FrameId);
+				latestStatus = $"帧 {chunk.FrameId}: 已通过 FEC/接收 完整恢复 {originalCount} 原始分片";
+				DiscardOldFrames(chunk.FrameId);
+				return true;
+			}
 		}
-		completedPayload = stream.ToArray();
-		pendingFrames.Remove(chunk.FrameId);
-		completedFrameIds.Add(chunk.FrameId);
-		latestStatus = $"帧 {chunk.FrameId}: 已完整恢复 {pending.ChunkCount}/{pending.ChunkCount}";
+		else
+		{
+			// Fallback: 普通原始无 FEC 的重组逻辑
+			if (pending.Chunks.Count == pending.ChunkCount)
+			{
+				using MemoryStream stream = new MemoryStream();
+				for (ushort index = 0; index < pending.ChunkCount; index++)
+				{
+					stream.Write(pending.Chunks[index]);
+				}
+				completedPayload = stream.ToArray();
+				pendingFrames.Remove(chunk.FrameId);
+				completedFrameIds.Add(chunk.FrameId);
+				latestStatus = $"帧 {chunk.FrameId}: 已完整恢复 {pending.ChunkCount}/{pending.ChunkCount}";
+				DiscardOldFrames(chunk.FrameId);
+				return true;
+			}
+		}
+
+		latestStatus = BuildStatus(chunk.FrameId, pending);
 		DiscardOldFrames(chunk.FrameId);
-		return true;
+		return false;
 	}
 
 	public string GetStatus(uint frameId)
@@ -350,6 +478,7 @@ internal sealed class WirelessVideoReassembler
 	{
 		public ushort ChunkCount { get; }
 		public Dictionary<ushort, byte[]> Chunks { get; } = new();
+		public bool HasFecParity { get; set; }
 
 		public PendingFrame(ushort chunkCount)
 		{

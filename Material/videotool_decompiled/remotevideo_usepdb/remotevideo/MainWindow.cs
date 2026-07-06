@@ -1573,13 +1573,55 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		int repeatCount = realtime ? 1 : VideoChunkRepeatCount;
 		for (int repeat = 0; repeat < repeatCount; repeat++)
 		{
-			for (int position = 0; position < chunks.Count; position++)
+			IReadOnlyList<WirelessVideoFrame> chunksToTransmit = chunks;
+			if (realtime && chunks.Count > 0)
+			{
+				int maxLen = 0;
+				foreach (var c in chunks)
+				{
+					maxLen = Math.Max(maxLen, c.Payload.Length);
+				}
+
+				byte[] parityAll = new byte[maxLen];
+				byte[] parityEven = new byte[maxLen];
+				byte[] parityOdd = new byte[maxLen];
+
+				for (int chunkIndex = 0; chunkIndex < chunks.Count; chunkIndex++)
+				{
+					byte[] payload = chunks[chunkIndex].Payload;
+					for (int i = 0; i < payload.Length; i++)
+					{
+						parityAll[i] ^= payload[i];
+						if (chunkIndex % 2 == 0)
+						{
+							parityEven[i] ^= payload[i];
+						}
+						else
+						{
+							parityOdd[i] ^= payload[i];
+						}
+					}
+				}
+
+				var list = new List<WirelessVideoFrame>();
+				ushort totalCount = (ushort)(chunks.Count + 3);
+				for (int i = 0; i < chunks.Count; i++)
+				{
+					list.Add(chunks[i] with { ChunkCount = totalCount });
+				}
+				list.Add(new WirelessVideoFrame(WirelessPayloadType.Video, frameId, (ushort)chunks.Count, totalCount, 0xFEC0FFEEu, parityAll));
+				list.Add(new WirelessVideoFrame(WirelessPayloadType.Video, frameId, (ushort)(chunks.Count + 1), totalCount, 0xFEC0FFEEu, parityEven));
+				list.Add(new WirelessVideoFrame(WirelessPayloadType.Video, frameId, (ushort)(chunks.Count + 2), totalCount, 0xFEC0FFEEu, parityOdd));
+				chunksToTransmit = list;
+			}
+
+			for (int position = 0; position < chunksToTransmit.Count; position++)
 			{
 				int chunkIndex = WirelessChunkSchedule.GetIndex(
-					chunks.Count,
+					chunksToTransmit.Count,
 					repeat,
 					position);
-				WirelessVideoFrame chunk = chunks[chunkIndex];
+				WirelessVideoFrame chunk = chunksToTransmit[chunkIndex];
 				if (!m_isSending)
 				{
 					break;
