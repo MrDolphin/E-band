@@ -48,6 +48,10 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private Thread receiverThread;
 
+	private Thread m_rxPacketsConsumerThread;
+
+	private readonly System.Collections.Concurrent.BlockingCollection<byte[]> m_rxPacketsQueue = new(new System.Collections.Concurrent.ConcurrentQueue<byte[]>());
+
 	private Thread m_encodeThread;
 
 	private Thread m_videoDecodeThread;
@@ -494,6 +498,13 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		}
 		m_recvEndPoint = new IPEndPoint(IPAddress.Any, 0);
 		m_isReceiving = true;
+
+		m_rxPacketsConsumerThread = new Thread(ProcessRxPacketsProc)
+		{
+			IsBackground = true
+		};
+		m_rxPacketsConsumerThread.Start();
+
 		receiverThread = new Thread(ReceiveVideo)
 		{
 			IsBackground = true
@@ -811,6 +822,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		m_acceptRxIq = false;
 		SendStopCommand(silent: true);
 		m_isReceiving = false;
+		try { m_rxPacketsQueue.CompleteAdding(); } catch {}
 		m_videoDecodeEvent.Set();
 		CloseVideoDiagnostics();
 		m_udpClient?.Close();
@@ -2287,31 +2299,63 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			try
 			{
 				byte[] raw = m_udpClient.Receive(ref m_recvEndPoint);
-				byte[] packetData = ParsePacket(raw);
-				if (packetData == null || packetData.Length < 16)
+				if (raw != null && raw.Length > 0)
 				{
-					continue;
-				}
-				byte packetType = packetData[4];
-				if (packetType == 1)
-				{
-					ParseRadarPacket(packetData);
-				}
-				else if (packetType == 3)
-				{
-					ParseRxIqPacket(packetData);
-				}
-				else
-				{
-					ParseVideoPacket(packetData);
+					m_rxPacketsQueue.Add(raw);
 				}
 			}
 			catch (Exception ex)
 			{
-				Log.Warning("recv video exception, " + ex.ToString());
+				if (m_isReceiving)
+				{
+					Log.Warning("recv video exception, " + ex.ToString());
+				}
 			}
 		}
-		m_udpClient.Close();
+		try { m_udpClient.Close(); } catch {}
+	}
+
+	private void ProcessRxPacketsProc()
+	{
+		try
+		{
+			foreach (byte[] raw in m_rxPacketsQueue.GetConsumingEnumerable())
+			{
+				if (!m_isReceiving)
+				{
+					break;
+				}
+				try
+				{
+					byte[] packetData = ParsePacket(raw);
+					if (packetData == null || packetData.Length < 16)
+					{
+						continue;
+					}
+					byte packetType = packetData[4];
+					if (packetType == 1)
+					{
+						ParseRadarPacket(packetData);
+					}
+					else if (packetType == 3)
+					{
+						ParseRxIqPacket(packetData);
+					}
+					else
+					{
+						ParseVideoPacket(packetData);
+					}
+				}
+				catch (Exception ex)
+				{
+					Log.Warning("process rx packet exception: " + ex.ToString());
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			Log.Warning("rx packet consumer thread terminated: " + ex.ToString());
+		}
 	}
 
 	private void ParseRxIqPacket(byte[] packetData)
