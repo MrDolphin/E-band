@@ -51,17 +51,12 @@ def print_rx_stats(rx: np.ndarray, adc_full_scale: float) -> None:
     print(f"rx_clip_ratio={clip_ratio:.6f}")
 
 
-def set_if_present(obj, name: str, value) -> bool:
-    if not hasattr(obj, name):
-        return False
-    setattr(obj, name, value)
-    return True
+def set_channel_attr(sdr, channel_index: int, attr_name: str, output: bool, value) -> None:
+    sdr._set_iio_attr(f"voltage{channel_index}", attr_name, output, value)
 
 
-def get_if_present(obj, name: str):
-    if not hasattr(obj, name):
-        return "<unsupported>"
-    return getattr(obj, name)
+def get_channel_attr(sdr, channel_index: int, attr_name: str, output: bool):
+    return sdr._get_iio_attr_str(f"voltage{channel_index}", attr_name, output)
 
 
 def main() -> int:
@@ -124,17 +119,17 @@ def main() -> int:
     sdr.rx_enabled_channels = [args.rx_channel]
     sdr.tx_enabled_channels = [args.tx_channel]
     sdr.rx_buffer_size = int(args.rx_buffer)
-    set_if_present(sdr, "rx_rf_port_select", args.rx_port)
-    set_if_present(sdr, "tx_rf_port_select", args.tx_port)
-    set_if_present(sdr, f"gain_control_mode_chan{args.rx_channel}", "manual")
-    set_if_present(sdr, f"rx_hardwaregain_chan{args.rx_channel}", float(args.rx_gain_db))
-    set_if_present(sdr, f"tx_hardwaregain_chan{args.tx_channel}", float(args.tx_gain_db))
+    set_channel_attr(sdr, args.rx_channel, "rf_port_select", False, args.rx_port)
+    set_channel_attr(sdr, args.tx_channel, "rf_port_select", True, args.tx_port)
+    set_channel_attr(sdr, args.rx_channel, "gain_control_mode", False, "manual")
+    sdr._set_iio_attr_float(f"voltage{args.rx_channel}", "hardwaregain", False, float(args.rx_gain_db))
+    sdr._set_iio_attr_float(f"voltage{args.tx_channel}", "hardwaregain", True, float(args.tx_gain_db))
     print(f"tx_channel={args.tx_channel}")
     print(f"rx_channel={args.rx_channel}")
-    print(f"tx_rf_port_select={get_if_present(sdr, 'tx_rf_port_select')}")
-    print(f"rx_rf_port_select={get_if_present(sdr, 'rx_rf_port_select')}")
-    print(f"tx_hardwaregain_chan{args.tx_channel}={get_if_present(sdr, f'tx_hardwaregain_chan{args.tx_channel}')}")
-    print(f"rx_hardwaregain_chan{args.rx_channel}={get_if_present(sdr, f'rx_hardwaregain_chan{args.rx_channel}')}")
+    print(f"tx_rf_port_select={get_channel_attr(sdr, args.tx_channel, 'rf_port_select', True)}")
+    print(f"rx_rf_port_select={get_channel_attr(sdr, args.rx_channel, 'rf_port_select', False)}")
+    print(f"tx_hardwaregain_chan{args.tx_channel}={sdr._get_iio_attr(f'voltage{args.tx_channel}', 'hardwaregain', True)}")
+    print(f"rx_hardwaregain_chan{args.rx_channel}={sdr._get_iio_attr(f'voltage{args.rx_channel}', 'hardwaregain', False)}")
 
     destroy_iio_buffers(sdr)
 
