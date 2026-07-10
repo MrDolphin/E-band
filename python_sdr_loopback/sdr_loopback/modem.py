@@ -51,7 +51,7 @@ class QpskLoopbackModem:
             raise ValueError("iq must be a 1-D complex array")
 
         matched = np.convolve(iq.astype(np.complex64), self.rrc, mode="full")
-        packet, _next_start = self._try_receive_from_matched(matched, 0)
+        packet, _next_start = self._try_receive_from_matched(matched, 0, first_match=False)
         return packet
 
     def receive_many(self, iq: np.ndarray, max_packets: int) -> list[Packet]:
@@ -65,15 +65,21 @@ class QpskLoopbackModem:
         search_start = 0
         while len(packets) < max_packets and search_start < len(matched):
             try:
-                packet, next_start = self._try_receive_from_matched(matched, search_start)
+                packet, next_start = self._try_receive_from_matched(matched, search_start, first_match=True)
             except PacketError:
-                break
+                search_start += self.sps
+                continue
             packets.append(packet)
             search_start = max(next_start, search_start + self.sps)
         return packets
 
-    def _try_receive_from_matched(self, matched: np.ndarray, search_start: int) -> tuple[Packet, int]:
-        best = self._find_preamble(matched, search_start)
+    def _try_receive_from_matched(
+        self,
+        matched: np.ndarray,
+        search_start: int,
+        first_match: bool,
+    ) -> tuple[Packet, int]:
+        best = self._find_preamble(matched, search_start, first_match)
         if best is None:
             raise PacketError("preamble not found")
 
@@ -98,7 +104,12 @@ class QpskLoopbackModem:
         packet = Packet.decode(decoded)
         return packet, start + total_symbols * self.sps
 
-    def _find_preamble(self, matched: np.ndarray, search_start: int = 0) -> tuple[int, complex] | None:
+    def _find_preamble(
+        self,
+        matched: np.ndarray,
+        search_start: int = 0,
+        first_match: bool = False,
+    ) -> tuple[int, complex] | None:
         best_score = 0.0
         best_start = 0
         best_gain = 1.0 + 0.0j
@@ -112,6 +123,8 @@ class QpskLoopbackModem:
             aligned = samples / (gain if abs(gain) > 1e-12 else 1.0)
             error = np.mean(np.abs(aligned - self.preamble_symbols) ** 2)
             score = 1.0 / (error + 1e-9)
+            if first_match and score >= 5.0:
+                return start + len(self.preamble_symbols) * self.sps, gain
             if score > best_score:
                 best_score = score
                 best_start = start
