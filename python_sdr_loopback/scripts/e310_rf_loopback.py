@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sdr_loopback import ModemConfig, QpskLoopbackModem
-from sdr_loopback.file_payload import build_file_payloads, recover_file
+from sdr_loopback.file_payload import build_file_payloads, parse_file_payload, recover_file
 from sdr_loopback.packet import Packet
 from sdr_loopback.payload import build_payload, payload_efficiency, raw_bitrate_bps
 
@@ -208,6 +208,12 @@ def main() -> int:
     parser.add_argument("--input-file", type=Path, help="Transmit this file as fixed-size file payload chunks.")
     parser.add_argument("--output-file", type=Path, help="Write recovered file bytes here when --input-file is used.")
     parser.add_argument(
+        "--file-guard-packets",
+        type=int,
+        default=16,
+        help="Dummy packets placed before file chunks to absorb cyclic TX boundary transients.",
+    )
+    parser.add_argument(
         "--tx-settle-sec",
         type=float,
         default=0.25,
@@ -271,6 +277,9 @@ def main() -> int:
     if args.rx_level_retries < 0:
         print("--rx-level-retries must be non-negative", file=sys.stderr)
         return 2
+    if args.file_guard_packets < 0:
+        print("--file-guard-packets must be non-negative", file=sys.stderr)
+        return 2
     if not args.input_file and args.payload_pattern == "message" and args.payload_bytes is not None:
         print("--payload-bytes requires --payload-pattern counter or random", file=sys.stderr)
         return 2
@@ -294,10 +303,13 @@ def main() -> int:
         )
     )
     message = args.message.encode("utf-8")
+    file_payloads: list[bytes] = []
     if args.input_file:
         file_data = args.input_file.read_bytes()
         payload_size = int(args.payload_bytes)
-        payloads = build_file_payloads(file_data, payload_size)
+        file_payloads = build_file_payloads(file_data, payload_size)
+        guard_payloads = [bytes([0x55]) * payload_size for _ in range(args.file_guard_packets)]
+        payloads = guard_payloads + file_payloads
         args.packet_count = len(payloads)
         payload_pattern_label = "file"
         print(f"input_file={args.input_file}")
@@ -329,6 +341,9 @@ def main() -> int:
     print(f"samples_per_packet={samples_per_packet:.1f}")
     print(f"payload_pattern={payload_pattern_label}")
     print(f"payload_bytes={payload_size}")
+    if args.input_file:
+        print(f"file_guard_packets={args.file_guard_packets}")
+        print(f"file_chunks_expected={len(file_payloads)}")
     print(f"raw_bitrate_bps={raw_bitrate:.0f}")
     print(f"payload_efficiency={efficiency:.6f}")
     print(f"payload_bitrate_est_bps={raw_bitrate * efficiency:.0f}")
@@ -396,18 +411,34 @@ def main() -> int:
 
     max_decode_packets = args.packet_count * rx_frame_copies
     packets = modem.receive_many(rx, max_decode_packets)
-    good_sequences = {
-        packet.sequence
-        for packet in packets
-        if 1 <= packet.sequence <= args.packet_count and packet.payload == payloads[packet.sequence - 1]
-    }
+    recovered_payloads: list[bytes] = []
+    if args.input_file:
+        seen_chunks: set[int] = set()
+        for packet in packets:
+            try:
+                chunk = parse_file_payload(packet.payload)
+            except ValueError:
+                continue
+            if 0 <= chunk.chunk_index < len(file_payloads) and packet.payload == file_payloads[chunk.chunk_index]:
+                if chunk.chunk_index not in seen_chunks:
+                    seen_chunks.add(chunk.chunk_index)
+                    recovered_payloads.append(packet.payload)
+        packets_ok = len(seen_chunks)
+        expected_packets = len(file_payloads)
+    else:
+        good_sequences = {
+            packet.sequence
+            for packet in packets
+            if 1 <= packet.sequence <= args.packet_count and packet.payload == payloads[packet.sequence - 1]
+        }
+        packets_ok = len(good_sequences)
+        expected_packets = args.packet_count
     for packet in packets[:10]:
         print_packet_preview(packet, payload_pattern_label)
 
-    packets_ok = len(good_sequences)
-    capture_capacity = min(args.packet_count, int(len(rx) / samples_per_packet))
+    capture_capacity = min(expected_packets, int(len(rx) / samples_per_packet))
     packet_error_rate = 1.0 - packets_ok / max(capture_capacity, 1)
-    print(f"packets_expected={args.packet_count}")
+    print(f"packets_expected={expected_packets}")
     print(f"packets_capture_capacity={capture_capacity}")
     print(f"packets_decoded={len(packets)}")
     print(f"packets_ok={packets_ok}")
@@ -415,12 +446,8 @@ def main() -> int:
     print(f"payload_bytes_ok={packets_ok * payload_size}")
     print(f"payload_bits_ok={packets_ok * payload_size * 8}")
     print(f"payload_bitrate_ok_bps={raw_bitrate * efficiency * packets_ok / max(capture_capacity, 1):.0f}")
+    file_ok = False
     if args.input_file:
-        recovered_payloads = [
-            packet.payload
-            for packet in packets
-            if 1 <= packet.sequence <= args.packet_count and packet.payload == payloads[packet.sequence - 1]
-        ]
         if recovered_payloads:
             recovered, file_report = recover_file(recovered_payloads)
             for key, value in file_report.items():
@@ -448,6 +475,8 @@ def main() -> int:
         )
     if args.plot_prefix:
         save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
+    if args.input_file:
+        return 0 if file_ok else 1
     return 0 if packets_ok == args.packet_count else 1
 
 
