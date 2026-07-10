@@ -67,6 +67,24 @@ def get_channel_attr(sdr, channel_index: int, attr_name: str, output: bool):
     return sdr._get_iio_attr_str(f"voltage{channel_index}", attr_name, output)
 
 
+def configure_sdr(adi_module, args, rx_buffer_size: int):
+    sdr = adi_module.ad9361(uri=args.uri)
+    sdr.sample_rate = int(args.sample_rate)
+    sdr.rx_rf_bandwidth = int(args.bandwidth)
+    sdr.tx_rf_bandwidth = int(args.bandwidth)
+    sdr.rx_lo = int(args.lo_hz)
+    sdr.tx_lo = int(args.lo_hz)
+    sdr.rx_enabled_channels = [args.rx_channel]
+    sdr.tx_enabled_channels = [args.tx_channel]
+    sdr.rx_buffer_size = int(rx_buffer_size)
+    set_channel_attr(sdr, args.rx_channel, "rf_port_select", False, args.rx_port)
+    set_channel_attr(sdr, args.tx_channel, "rf_port_select", True, args.tx_port)
+    set_channel_attr(sdr, args.rx_channel, "gain_control_mode", False, "manual")
+    sdr._set_iio_attr_float(f"voltage{args.rx_channel}", "hardwaregain", False, float(args.rx_gain_db))
+    sdr._set_iio_attr_float(f"voltage{args.tx_channel}", "hardwaregain", True, float(args.tx_gain_db))
+    return sdr
+
+
 def save_iq_capture(
     path: Path,
     tx: np.ndarray,
@@ -300,49 +318,38 @@ def main() -> int:
     print(f"rx_buffer_requested={args.rx_buffer}")
     print(f"rx_buffer_used={rx_buffer_size}")
 
-    sdr = adi.ad9361(uri=args.uri)
-    sdr.sample_rate = int(args.sample_rate)
-    sdr.rx_rf_bandwidth = int(args.bandwidth)
-    sdr.tx_rf_bandwidth = int(args.bandwidth)
-    sdr.rx_lo = int(args.lo_hz)
-    sdr.tx_lo = int(args.lo_hz)
-    sdr.rx_enabled_channels = [args.rx_channel]
-    sdr.tx_enabled_channels = [args.tx_channel]
-    sdr.rx_buffer_size = int(rx_buffer_size)
-    set_channel_attr(sdr, args.rx_channel, "rf_port_select", False, args.rx_port)
-    set_channel_attr(sdr, args.tx_channel, "rf_port_select", True, args.tx_port)
-    set_channel_attr(sdr, args.rx_channel, "gain_control_mode", False, "manual")
-    sdr._set_iio_attr_float(f"voltage{args.rx_channel}", "hardwaregain", False, float(args.rx_gain_db))
-    sdr._set_iio_attr_float(f"voltage{args.tx_channel}", "hardwaregain", True, float(args.tx_gain_db))
-    print(f"tx_channel={args.tx_channel}")
-    print(f"rx_channel={args.rx_channel}")
-    print(f"tx_rf_port_select={get_channel_attr(sdr, args.tx_channel, 'rf_port_select', True)}")
-    print(f"rx_rf_port_select={get_channel_attr(sdr, args.rx_channel, 'rf_port_select', False)}")
-    print(f"tx_hardwaregain_chan{args.tx_channel}={sdr._get_iio_attr(f'voltage{args.tx_channel}', 'hardwaregain', True)}")
-    print(f"rx_hardwaregain_chan{args.rx_channel}={sdr._get_iio_attr(f'voltage{args.rx_channel}', 'hardwaregain', False)}")
-
-    destroy_iio_buffers(sdr)
-
     rx = None
     max_attempts = int(args.rx_level_retries) + 1
     try:
         for capture_attempt in range(1, max_attempts + 1):
-            destroy_iio_buffers(sdr)
-            # Multiple short-frame copies make cyclic TX startup more reliable on this E310.
-            sdr.tx_cyclic_buffer = True
-            sdr.tx(tx_padded)
-            time.sleep(float(args.tx_settle_sec))
-            for _ in range(args.rx_discard_buffers):
-                sdr.rx()
-            raw = sdr.rx()
-            rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
+            sdr = configure_sdr(adi, args, rx_buffer_size)
+            if capture_attempt == 1:
+                print(f"tx_channel={args.tx_channel}")
+                print(f"rx_channel={args.rx_channel}")
+                print(f"tx_rf_port_select={get_channel_attr(sdr, args.tx_channel, 'rf_port_select', True)}")
+                print(f"rx_rf_port_select={get_channel_attr(sdr, args.rx_channel, 'rf_port_select', False)}")
+                print(f"tx_hardwaregain_chan{args.tx_channel}={sdr._get_iio_attr(f'voltage{args.tx_channel}', 'hardwaregain', True)}")
+                print(f"rx_hardwaregain_chan{args.rx_channel}={sdr._get_iio_attr(f'voltage{args.rx_channel}', 'hardwaregain', False)}")
+            else:
+                print(f"rx_context_retry={capture_attempt}")
+            try:
+                destroy_iio_buffers(sdr)
+                # Multiple short-frame copies make cyclic TX startup more reliable on this E310.
+                sdr.tx_cyclic_buffer = True
+                sdr.tx(tx_padded)
+                time.sleep(float(args.tx_settle_sec))
+                for _ in range(args.rx_discard_buffers):
+                    sdr.rx()
+                raw = sdr.rx()
+                rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
+            finally:
+                destroy_iio_buffers(sdr)
             level = rx_level_dbfs(rx, float(args.adc_full_scale))
             if args.min_rx_rms_dbfs is None or level >= float(args.min_rx_rms_dbfs):
                 break
             print(f"rx_level_retry={capture_attempt}")
             print(f"rx_rms_dbfs_attempt={level:.2f}")
-            destroy_iio_buffers(sdr)
-            time.sleep(0.2)
+            time.sleep(0.4)
     except OSError as exc:
         print(f"iio_error={exc}", file=sys.stderr)
         print(
@@ -351,8 +358,6 @@ def main() -> int:
             file=sys.stderr,
         )
         return 3
-    finally:
-        destroy_iio_buffers(sdr)
 
     if rx is None:
         print("rx_capture_failed=true", file=sys.stderr)
