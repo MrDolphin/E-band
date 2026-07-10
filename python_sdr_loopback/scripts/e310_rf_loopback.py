@@ -59,6 +59,71 @@ def get_channel_attr(sdr, channel_index: int, attr_name: str, output: bool):
     return sdr._get_iio_attr_str(f"voltage{channel_index}", attr_name, output)
 
 
+def save_iq_capture(path: Path, tx: np.ndarray, rx: np.ndarray, args, packets_ok: int | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        tx=tx.astype(np.complex64),
+        rx=rx.astype(np.complex64),
+        sample_rate=float(args.sample_rate),
+        symbol_rate=float(args.symbol_rate),
+        lo_hz=int(args.lo_hz),
+        tx_gain_db=float(args.tx_gain_db),
+        rx_gain_db=float(args.rx_gain_db),
+        tx_amplitude=float(args.tx_amplitude),
+        tx_dac_scale=float(args.tx_dac_scale),
+        packet_count=int(args.packet_count),
+        packets_ok=-1 if packets_ok is None else int(packets_ok),
+    )
+    print(f"iq_capture={path}")
+
+
+def save_plots(prefix: Path, modem: QpskLoopbackModem, rx: np.ndarray, sample_rate: float) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    rx_no_dc = rx - np.mean(rx)
+    window = np.hanning(len(rx_no_dc))
+    spectrum = np.fft.fftshift(np.fft.fft(rx_no_dc * window))
+    freq = np.fft.fftshift(np.fft.fftfreq(len(rx_no_dc), d=1.0 / sample_rate))
+    power_db = 20.0 * np.log10(np.maximum(np.abs(spectrum), 1e-12))
+    power_db -= float(np.max(power_db))
+
+    spectrum_path = prefix.with_name(prefix.name + "_spectrum.png")
+    plt.figure(figsize=(9, 4.8))
+    plt.plot(freq / 1e3, power_db, linewidth=1.0)
+    plt.ylim(-90, 3)
+    plt.xlabel("Frequency offset (kHz)")
+    plt.ylabel("Relative power (dB)")
+    plt.title("RX Spectrum")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(spectrum_path, dpi=150)
+    plt.close()
+
+    points = modem.constellation_points(rx, max_points=2500)
+    constellation_path = prefix.with_name(prefix.name + "_constellation.png")
+    plt.figure(figsize=(5.4, 5.4))
+    if len(points):
+        plt.scatter(points.real, points.imag, s=5, alpha=0.35)
+    plt.axhline(0, color="black", linewidth=0.6, alpha=0.4)
+    plt.axvline(0, color="black", linewidth=0.6, alpha=0.4)
+    plt.xlabel("I")
+    plt.ylabel("Q")
+    plt.title("Matched QPSK Constellation")
+    plt.grid(True, alpha=0.3)
+    plt.axis("equal")
+    plt.tight_layout()
+    plt.savefig(constellation_path, dpi=150)
+    plt.close()
+
+    print(f"spectrum_plot={spectrum_path}")
+    print(f"constellation_plot={constellation_path}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Transmit and receive one QPSK packet through E310 RF loopback.")
     parser.add_argument("--uri", default="ip:192.168.1.10")
@@ -78,6 +143,8 @@ def main() -> int:
     parser.add_argument("--tx-port", default="A", help="AD9361 TX RF port, commonly A or B.")
     parser.add_argument("--rx-port", default="A_BALANCED", help="AD9361 RX RF port, commonly A_BALANCED or B_BALANCED.")
     parser.add_argument("--packet-count", type=int, default=1, help="Number of sequenced packets to transmit and verify.")
+    parser.add_argument("--save-iq", type=Path, help="Save TX/RX IQ and run metadata to a compressed .npz file.")
+    parser.add_argument("--plot-prefix", type=Path, help="Save RX spectrum and constellation PNGs with this path prefix.")
     parser.add_argument("--stats-only", action="store_true", help="Capture RX samples and print level stats without decoding.")
     args = parser.parse_args()
 
@@ -166,6 +233,10 @@ def main() -> int:
     rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
     print_rx_stats(rx, float(args.adc_full_scale))
     if args.stats_only:
+        if args.save_iq:
+            save_iq_capture(args.save_iq, tx, rx, args)
+        if args.plot_prefix:
+            save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
         return 0
 
     packets = modem.receive_many(rx, args.packet_count)
@@ -188,6 +259,10 @@ def main() -> int:
     print(f"packet_error_rate={packet_error_rate:.6f}")
     if args.packet_count == 1 and packets_ok == 1:
         print("crc_ok=true")
+    if args.save_iq:
+        save_iq_capture(args.save_iq, tx, rx, args, packets_ok=packets_ok)
+    if args.plot_prefix:
+        save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
     return 0 if packets_ok == args.packet_count else 1
 
 

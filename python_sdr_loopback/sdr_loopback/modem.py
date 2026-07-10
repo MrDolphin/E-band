@@ -73,6 +73,24 @@ class QpskLoopbackModem:
             search_start = max(next_start, search_start + self.sps)
         return packets
 
+    def constellation_points(self, iq: np.ndarray, max_points: int = 2000) -> np.ndarray:
+        if iq.ndim != 1:
+            raise ValueError("iq must be a 1-D complex array")
+        if max_points <= 0:
+            return np.array([], dtype=np.complex64)
+
+        matched = np.convolve(iq.astype(np.complex64), self.rrc, mode="full")
+        best = self._find_preamble(matched, 0, first_match=False)
+        if best is None:
+            return np.array([], dtype=np.complex64)
+
+        start, gain = best
+        available = max(0, (len(matched) - start - 1) // self.sps)
+        count = min(max_points, available)
+        if count == 0:
+            return np.array([], dtype=np.complex64)
+        return (self._sample_symbols(matched, start, count) / (gain if abs(gain) > 1e-12 else 1.0)).astype(np.complex64)
+
     def _try_receive_from_matched(
         self,
         matched: np.ndarray,
