@@ -119,14 +119,21 @@ def main() -> int:
     payload_mode = str(npz_scalar(data, "payload_mode", "message"))
     saved_message = str(npz_scalar(data, "message", "hello rf"))
     saved_payload_bytes = int(npz_scalar(data, "payload_bytes", -1))
-    if payload_mode == "message":
+    if payload_mode == "file" and "expected_payloads" in data.files:
+        expected_payloads = [bytes(row.tolist()) for row in data["expected_payloads"]]
+        payload_size = len(expected_payloads[0])
+    elif payload_mode == "message":
         payload_size = len(saved_message.encode("utf-8"))
+        expected_payloads = [
+            build_payload(sequence, payload_size, payload_mode, saved_message.encode("utf-8"))
+            for sequence in range(1, packet_count + 1)
+        ]
     else:
         payload_size = saved_payload_bytes
-    expected_payloads = [
-        build_payload(sequence, payload_size, payload_mode, saved_message.encode("utf-8"))
-        for sequence in range(1, packet_count + 1)
-    ]
+        expected_payloads = [
+            build_payload(sequence, payload_size, payload_mode, saved_message.encode("utf-8"))
+            for sequence in range(1, packet_count + 1)
+        ]
     encoded_packet_size = len(Packet(sequence=1, payload=expected_payloads[0]).encode())
     preamble_size = 8
     raw_bitrate = raw_bitrate_bps(symbol_rate)

@@ -10,6 +10,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sdr_loopback import ModemConfig, QpskLoopbackModem
+from sdr_loopback.file_payload import build_file_payloads, recover_file
 from sdr_loopback.packet import Packet
 from sdr_loopback.payload import build_payload, payload_efficiency, raw_bitrate_bps
 
@@ -92,25 +93,30 @@ def save_iq_capture(
     args,
     packets_ok: int | None = None,
     payload_size: int | None = None,
+    expected_payloads: list[bytes] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
-        tx=tx.astype(np.complex64),
-        rx=rx.astype(np.complex64),
-        sample_rate=float(args.sample_rate),
-        symbol_rate=float(args.symbol_rate),
-        lo_hz=int(args.lo_hz),
-        tx_gain_db=float(args.tx_gain_db),
-        rx_gain_db=float(args.rx_gain_db),
-        tx_amplitude=float(args.tx_amplitude),
-        tx_dac_scale=float(args.tx_dac_scale),
-        packet_count=int(args.packet_count),
-        packets_ok=-1 if packets_ok is None else int(packets_ok),
-        payload_mode=str(args.payload_pattern),
-        payload_bytes=-1 if payload_size is None else int(payload_size),
-        message=str(args.message),
-    )
+    fields = {
+        "tx": tx.astype(np.complex64),
+        "rx": rx.astype(np.complex64),
+        "sample_rate": float(args.sample_rate),
+        "symbol_rate": float(args.symbol_rate),
+        "lo_hz": int(args.lo_hz),
+        "tx_gain_db": float(args.tx_gain_db),
+        "rx_gain_db": float(args.rx_gain_db),
+        "tx_amplitude": float(args.tx_amplitude),
+        "tx_dac_scale": float(args.tx_dac_scale),
+        "packet_count": int(args.packet_count),
+        "packets_ok": -1 if packets_ok is None else int(packets_ok),
+        "payload_mode": "file" if args.input_file else str(args.payload_pattern),
+        "payload_bytes": -1 if payload_size is None else int(payload_size),
+        "message": str(args.message),
+    }
+    if expected_payloads:
+        fields["expected_payloads"] = np.vstack(
+            [np.frombuffer(payload, dtype=np.uint8) for payload in expected_payloads]
+        )
+    np.savez_compressed(path, **fields)
     print(f"iq_capture={path}")
 
 
@@ -199,6 +205,8 @@ def main() -> int:
     parser.add_argument("--tx-port", default="A", help="AD9361 TX RF port, commonly A or B.")
     parser.add_argument("--rx-port", default="A_BALANCED", help="AD9361 RX RF port, commonly A_BALANCED or B_BALANCED.")
     parser.add_argument("--packet-count", type=int, default=1, help="Number of sequenced packets to transmit and verify.")
+    parser.add_argument("--input-file", type=Path, help="Transmit this file as fixed-size file payload chunks.")
+    parser.add_argument("--output-file", type=Path, help="Write recovered file bytes here when --input-file is used.")
     parser.add_argument(
         "--tx-settle-sec",
         type=float,
@@ -269,6 +277,11 @@ def main() -> int:
     if args.payload_pattern != "message" and args.payload_bytes is None:
         print("--payload-pattern counter/random requires --payload-bytes", file=sys.stderr)
         return 2
+    if args.input_file and args.payload_pattern != "message":
+        print("--input-file cannot be combined with --payload-pattern counter/random", file=sys.stderr)
+        return 2
+    if args.input_file and args.payload_bytes is None:
+        args.payload_bytes = 512
     if args.payload_bytes is not None and not 0 <= args.payload_bytes <= 65535:
         print("--payload-bytes must be in [0, 65535]", file=sys.stderr)
         return 2
@@ -281,11 +294,20 @@ def main() -> int:
         )
     )
     message = args.message.encode("utf-8")
-    payload_size = len(message) if args.payload_pattern == "message" else int(args.payload_bytes)
-    payloads = [
-        build_payload(sequence, payload_size, args.payload_pattern, message)
-        for sequence in range(1, args.packet_count + 1)
-    ]
+    if args.input_file:
+        file_data = args.input_file.read_bytes()
+        payload_size = int(args.payload_bytes)
+        payloads = build_file_payloads(file_data, payload_size)
+        args.packet_count = len(payloads)
+        payload_pattern_label = "file"
+        print(f"input_file={args.input_file}")
+    else:
+        payload_size = len(message) if args.payload_pattern == "message" else int(args.payload_bytes)
+        payloads = [
+            build_payload(sequence, payload_size, args.payload_pattern, message)
+            for sequence in range(1, args.packet_count + 1)
+        ]
+        payload_pattern_label = args.payload_pattern
     tx = np.concatenate(
         [
             modem.transmit(payload, sequence=sequence)
@@ -304,7 +326,7 @@ def main() -> int:
     print_tx_stats(tx)
     print(f"tx_cyclic_samples={len(tx_padded)}")
     print(f"samples_per_packet={samples_per_packet:.1f}")
-    print(f"payload_pattern={args.payload_pattern}")
+    print(f"payload_pattern={payload_pattern_label}")
     print(f"payload_bytes={payload_size}")
     print(f"raw_bitrate_bps={raw_bitrate:.0f}")
     print(f"payload_efficiency={efficiency:.6f}")
@@ -365,7 +387,7 @@ def main() -> int:
     print_rx_stats(rx, float(args.adc_full_scale))
     if args.stats_only:
         if args.save_iq:
-            save_iq_capture(args.save_iq, tx, rx, args, payload_size=payload_size)
+            save_iq_capture(args.save_iq, tx, rx, args, payload_size=payload_size, expected_payloads=payloads)
         if args.plot_prefix:
             save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
         return 0
@@ -377,7 +399,7 @@ def main() -> int:
         if 1 <= packet.sequence <= args.packet_count and packet.payload == payloads[packet.sequence - 1]
     }
     for packet in packets[:10]:
-        print_packet_preview(packet, args.payload_pattern)
+        print_packet_preview(packet, payload_pattern_label)
 
     packets_ok = len(good_sequences)
     capture_capacity = min(args.packet_count, int(len(rx) / samples_per_packet))
@@ -390,10 +412,37 @@ def main() -> int:
     print(f"payload_bytes_ok={packets_ok * payload_size}")
     print(f"payload_bits_ok={packets_ok * payload_size * 8}")
     print(f"payload_bitrate_ok_bps={raw_bitrate * efficiency * packets_ok / max(capture_capacity, 1):.0f}")
+    if args.input_file:
+        recovered_payloads = [
+            packet.payload
+            for packet in packets
+            if 1 <= packet.sequence <= args.packet_count and packet.payload == payloads[packet.sequence - 1]
+        ]
+        if recovered_payloads:
+            recovered, file_report = recover_file(recovered_payloads)
+            for key, value in file_report.items():
+                print(f"{key}={value}")
+            file_ok = file_report.get("file_crc32") == file_report.get("file_crc32_actual")
+        else:
+            recovered = b""
+            file_ok = False
+        print(f"file_ok={str(file_ok).lower()}")
+        if args.output_file and file_ok:
+            args.output_file.parent.mkdir(parents=True, exist_ok=True)
+            args.output_file.write_bytes(recovered)
+            print(f"output_file={args.output_file}")
     if args.packet_count == 1 and packets_ok == 1:
         print("crc_ok=true")
     if args.save_iq:
-        save_iq_capture(args.save_iq, tx, rx, args, packets_ok=packets_ok, payload_size=payload_size)
+        save_iq_capture(
+            args.save_iq,
+            tx,
+            rx,
+            args,
+            packets_ok=packets_ok,
+            payload_size=payload_size,
+            expected_payloads=payloads,
+        )
     if args.plot_prefix:
         save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
     return 0 if packets_ok == args.packet_count else 1

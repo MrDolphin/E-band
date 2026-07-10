@@ -82,3 +82,13 @@ For longer payload runs, keep each TX frame small and run multiple batches:
 ```powershell
 python scripts/run_payload_batches.py --batches 20 --packets-per-batch 5 --payload-bytes 512 --tx-cyclic-copies 2 --artifact-prefix artifacts\payload_512_100_15mbps_batched
 ```
+
+File transfer smoke test over the same RF loopback:
+
+```powershell
+python scripts/e310_rf_loopback.py --uri ip:192.168.1.10 --sample-rate 30000000 --symbol-rate 7500000 --bandwidth 20000000 --tx-gain-db -12 --tx-amplitude 0.5 --tx-dac-scale 8192 --rx-gain-db 10 --tx-channel 0 --rx-channel 0 --tx-port B --rx-port B_BALANCED --input-file artifacts\test_input.bin --output-file artifacts\test_output.bin --payload-bytes 512 --tx-cyclic-copies 3 --rx-discard-buffers 0 --min-rx-rms-dbfs -45 --rx-level-retries 8 --save-iq artifacts\file_transfer_15mbps.npz --plot-prefix artifacts\file_transfer_15mbps
+```
+
+Each 512-byte SDR payload carries a small file-fragment header plus file data.
+Success is reported as `file_ok=true` after all chunks are recovered and the
+whole-file CRC32 matches.
