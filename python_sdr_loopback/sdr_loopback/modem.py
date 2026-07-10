@@ -66,7 +66,9 @@ class QpskLoopbackModem:
         while len(packets) < max_packets and search_start < len(matched):
             try:
                 packet, next_start = self._try_receive_from_matched(matched, search_start, first_match=True)
-            except PacketError:
+            except PacketError as exc:
+                if str(exc) == "preamble not found":
+                    break
                 search_start += self.sps
                 continue
             packets.append(packet)
