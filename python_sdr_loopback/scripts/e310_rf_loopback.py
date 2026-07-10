@@ -77,6 +77,7 @@ def main() -> int:
     parser.add_argument("--rx-channel", type=int, default=0, choices=(0, 1))
     parser.add_argument("--tx-port", default="A", help="AD9361 TX RF port, commonly A or B.")
     parser.add_argument("--rx-port", default="A_BALANCED", help="AD9361 RX RF port, commonly A_BALANCED or B_BALANCED.")
+    parser.add_argument("--packet-count", type=int, default=1, help="Number of sequenced packets to transmit and verify.")
     parser.add_argument("--stats-only", action="store_true", help="Capture RX samples and print level stats without decoding.")
     args = parser.parse_args()
 
@@ -95,6 +96,9 @@ def main() -> int:
     if args.adc_full_scale <= 0.0:
         print("--adc-full-scale must be positive", file=sys.stderr)
         return 2
+    if args.packet_count <= 0:
+        print("--packet-count must be positive", file=sys.stderr)
+        return 2
 
     modem = QpskLoopbackModem(
         ModemConfig(
@@ -103,7 +107,10 @@ def main() -> int:
             tx_amplitude=args.tx_amplitude,
         )
     )
-    tx = modem.transmit(args.message.encode("utf-8"), sequence=1)
+    payload = args.message.encode("utf-8")
+    tx = np.concatenate(
+        [modem.transmit(payload, sequence=sequence) for sequence in range(1, args.packet_count + 1)]
+    )
     tx *= float(args.tx_dac_scale)
     repeat_count = max(2, int(np.ceil(args.rx_buffer / len(tx))) + 1)
     tx_padded = np.tile(tx, repeat_count).astype(np.complex64)
@@ -155,11 +162,25 @@ def main() -> int:
     if args.stats_only:
         return 0
 
-    packet = modem.receive(rx)
-    print(f"sequence={packet.sequence}")
-    print(f"payload={packet.payload.decode('utf-8', errors='replace')}")
-    print("crc_ok=true")
-    return 0
+    packets = modem.receive_many(rx, args.packet_count)
+    good_sequences = {
+        packet.sequence
+        for packet in packets
+        if 1 <= packet.sequence <= args.packet_count and packet.payload == payload
+    }
+    for packet in packets[:10]:
+        print(f"sequence={packet.sequence}")
+        print(f"payload={packet.payload.decode('utf-8', errors='replace')}")
+
+    packets_ok = len(good_sequences)
+    packet_error_rate = 1.0 - packets_ok / args.packet_count
+    print(f"packets_expected={args.packet_count}")
+    print(f"packets_decoded={len(packets)}")
+    print(f"packets_ok={packets_ok}")
+    print(f"packet_error_rate={packet_error_rate:.6f}")
+    if args.packet_count == 1 and packets_ok == 1:
+        print("crc_ok=true")
+    return 0 if packets_ok == args.packet_count else 1
 
 
 if __name__ == "__main__":

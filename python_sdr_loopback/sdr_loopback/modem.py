@@ -51,7 +51,29 @@ class QpskLoopbackModem:
             raise ValueError("iq must be a 1-D complex array")
 
         matched = np.convolve(iq.astype(np.complex64), self.rrc, mode="full")
-        best = self._find_preamble(matched)
+        packet, _next_start = self._try_receive_from_matched(matched, 0)
+        return packet
+
+    def receive_many(self, iq: np.ndarray, max_packets: int) -> list[Packet]:
+        if iq.ndim != 1:
+            raise ValueError("iq must be a 1-D complex array")
+        if max_packets <= 0:
+            return []
+
+        matched = np.convolve(iq.astype(np.complex64), self.rrc, mode="full")
+        packets: list[Packet] = []
+        search_start = 0
+        while len(packets) < max_packets and search_start < len(matched):
+            try:
+                packet, next_start = self._try_receive_from_matched(matched, search_start)
+            except PacketError:
+                break
+            packets.append(packet)
+            search_start = max(next_start, search_start + self.sps)
+        return packets
+
+    def _try_receive_from_matched(self, matched: np.ndarray, search_start: int) -> tuple[Packet, int]:
+        best = self._find_preamble(matched, search_start)
         if best is None:
             raise PacketError("preamble not found")
 
@@ -73,9 +95,10 @@ class QpskLoopbackModem:
         total_symbols = total_bytes * 4
         raw_symbols = self._sample_symbols(matched, start, total_symbols)
         decoded = self._symbols_to_bytes(raw_symbols, gain)
-        return Packet.decode(decoded)
+        packet = Packet.decode(decoded)
+        return packet, start + total_symbols * self.sps
 
-    def _find_preamble(self, matched: np.ndarray) -> tuple[int, complex] | None:
+    def _find_preamble(self, matched: np.ndarray, search_start: int = 0) -> tuple[int, complex] | None:
         best_score = 0.0
         best_start = 0
         best_gain = 1.0 + 0.0j
@@ -83,7 +106,7 @@ class QpskLoopbackModem:
         if search_limit <= 0:
             return None
 
-        for start in range(0, search_limit):
+        for start in range(max(0, search_start), search_limit):
             samples = self._sample_symbols(matched, start, len(self.preamble_symbols))
             gain = np.vdot(self.preamble_symbols, samples) / np.vdot(self.preamble_symbols, self.preamble_symbols)
             aligned = samples / (gain if abs(gain) > 1e-12 else 1.0)
