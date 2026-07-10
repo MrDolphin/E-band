@@ -166,6 +166,18 @@ def main() -> int:
     parser.add_argument("--tx-port", default="A", help="AD9361 TX RF port, commonly A or B.")
     parser.add_argument("--rx-port", default="A_BALANCED", help="AD9361 RX RF port, commonly A_BALANCED or B_BALANCED.")
     parser.add_argument("--packet-count", type=int, default=1, help="Number of sequenced packets to transmit and verify.")
+    parser.add_argument(
+        "--tx-settle-sec",
+        type=float,
+        default=0.25,
+        help="Seconds to wait after starting cyclic TX before RX capture.",
+    )
+    parser.add_argument(
+        "--rx-discard-buffers",
+        type=int,
+        default=1,
+        help="Number of RX buffers to discard before the measured capture.",
+    )
     parser.add_argument("--save-iq", type=Path, help="Save TX/RX IQ and run metadata to a compressed .npz file.")
     parser.add_argument("--plot-prefix", type=Path, help="Save RX spectrum and constellation PNGs with this path prefix.")
     parser.add_argument("--stats-only", action="store_true", help="Capture RX samples and print level stats without decoding.")
@@ -188,6 +200,12 @@ def main() -> int:
         return 2
     if args.packet_count <= 0:
         print("--packet-count must be positive", file=sys.stderr)
+        return 2
+    if args.tx_settle_sec < 0.0:
+        print("--tx-settle-sec must be non-negative", file=sys.stderr)
+        return 2
+    if args.rx_discard_buffers < 0:
+        print("--rx-discard-buffers must be non-negative", file=sys.stderr)
         return 2
     if args.payload_pattern == "message" and args.payload_bytes is not None:
         print("--payload-bytes requires --payload-pattern counter or random", file=sys.stderr)
@@ -236,6 +254,8 @@ def main() -> int:
     print(f"raw_bitrate_bps={raw_bitrate:.0f}")
     print(f"payload_efficiency={efficiency:.6f}")
     print(f"payload_bitrate_est_bps={raw_bitrate * efficiency:.0f}")
+    print(f"tx_settle_sec={args.tx_settle_sec:.3f}")
+    print(f"rx_discard_buffers={args.rx_discard_buffers}")
     print(f"rx_buffer_requested={args.rx_buffer}")
     print(f"rx_buffer_used={rx_buffer_size}")
 
@@ -266,7 +286,9 @@ def main() -> int:
         # Send a cyclic burst long enough for the next RX buffer to contain the frame.
         sdr.tx_cyclic_buffer = True
         sdr.tx(tx_padded)
-        time.sleep(0.1)
+        time.sleep(float(args.tx_settle_sec))
+        for _ in range(args.rx_discard_buffers):
+            sdr.rx()
         raw = sdr.rx()
     except OSError as exc:
         print(f"iio_error={exc}", file=sys.stderr)
