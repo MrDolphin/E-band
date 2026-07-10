@@ -40,3 +40,22 @@ python python_sdr_loopback/scripts/e310_rf_loopback.py --uri ip:192.168.1.10 --m
 
 The first hardware target is a conservative low-rate QPSK link. It is meant to
 measure frame recovery and CRC pass rate before adding higher-layer video or IP.
+
+Known-good RF loopback baseline:
+
+```powershell
+python scripts/e310_rf_loopback.py --uri ip:192.168.1.10 --message "hello rf" --tx-gain-db -25 --tx-amplitude 0.5 --tx-dac-scale 8192 --rx-gain-db 10 --tx-channel 0 --rx-channel 0 --tx-port B --rx-port B_BALANCED --packet-count 100 --save-iq artifacts\baseline_100_ok.npz --plot-prefix artifacts\baseline_100_ok
+```
+
+Analyze a saved capture:
+
+```powershell
+python scripts/analyze_capture.py artifacts\baseline_100_ok.npz
+```
+
+Useful fields:
+
+- `packets_ok` / `packet_error_rate`: packet recovery result.
+- `theoretical_rrc_bandwidth_hz`: expected QPSK/RRC occupied bandwidth.
+- `occupied_bw_99_hz` and `threshold_bw_minus_20db_hz`: measured spectrum width.
+- `evm_rms_percent` and `snr_est_db`: rough constellation quality metrics.
