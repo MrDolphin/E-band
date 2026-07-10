@@ -12,6 +12,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sdr_loopback import ModemConfig, QpskLoopbackModem
 
 
+def print_rx_stats(rx: np.ndarray) -> None:
+    magnitude = np.abs(rx)
+    rms = float(np.sqrt(np.mean(magnitude * magnitude)))
+    peak = float(np.max(magnitude))
+    mean_i = float(np.mean(np.real(rx)))
+    mean_q = float(np.mean(np.imag(rx)))
+    clip_ratio = float(np.mean(magnitude > 0.90))
+    print(f"rx_samples={len(rx)}")
+    print(f"rx_rms={rms:.6f}")
+    print(f"rx_peak={peak:.6f}")
+    print(f"rx_dc_i={mean_i:.6f}")
+    print(f"rx_dc_q={mean_q:.6f}")
+    print(f"rx_clip_ratio={clip_ratio:.6f}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Transmit and receive one QPSK packet through E310 RF loopback.")
     parser.add_argument("--uri", default="ip:192.168.1.10")
@@ -23,6 +38,7 @@ def main() -> int:
     parser.add_argument("--tx-gain-db", type=float, default=-40.0, help="AD9361 TX hardware gain/attenuation value.")
     parser.add_argument("--rx-gain-db", type=float, default=20.0)
     parser.add_argument("--rx-buffer", type=int, default=32768)
+    parser.add_argument("--stats-only", action="store_true", help="Capture RX samples and print level stats without decoding.")
     args = parser.parse_args()
 
     try:
@@ -61,6 +77,10 @@ def main() -> int:
         sdr.tx_destroy_buffer()
 
     rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
+    print_rx_stats(rx)
+    if args.stats_only:
+        return 0
+
     packet = modem.receive(rx)
     print(f"sequence={packet.sequence}")
     print(f"payload={packet.payload.decode('utf-8', errors='replace')}")
