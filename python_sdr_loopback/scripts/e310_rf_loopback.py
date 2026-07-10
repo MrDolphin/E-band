@@ -93,8 +93,10 @@ def main() -> int:
     )
     tx = modem.transmit(args.message.encode("utf-8"), sequence=1)
     tx *= float(args.tx_dac_scale)
-    tx_padded = np.concatenate([tx, np.zeros(args.rx_buffer, dtype=np.complex64)])
+    repeat_count = max(2, int(np.ceil(args.rx_buffer / len(tx))) + 1)
+    tx_padded = np.tile(tx, repeat_count).astype(np.complex64)
     print_tx_stats(tx)
+    print(f"tx_cyclic_samples={len(tx_padded)}")
 
     sdr = adi.ad9361(uri=args.uri)
     sdr.sample_rate = int(args.sample_rate)
