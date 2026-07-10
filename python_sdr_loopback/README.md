@@ -92,3 +92,10 @@ python scripts/e310_rf_loopback.py --uri ip:192.168.1.10 --sample-rate 30000000 
 Each 512-byte SDR payload carries a small file-fragment header plus file data.
 Success is reported as `file_ok=true` after all chunks are recovered and the
 whole-file CRC32 matches.
+
+For larger images or small video files, avoid one huge cyclic TX buffer. Use
+bounded batches and let the script concatenate verified parts:
+
+```powershell
+python scripts/run_file_transfer_batches.py --input-file phone.mp4 --output-file artifacts\recovered_phone.mp4 --batch-bytes 200000 --artifact-prefix artifacts\phone_batched
+```
