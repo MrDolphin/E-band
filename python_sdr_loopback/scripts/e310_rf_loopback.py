@@ -271,10 +271,10 @@ def main() -> int:
     if args.rx_level_retries < 0:
         print("--rx-level-retries must be non-negative", file=sys.stderr)
         return 2
-    if args.payload_pattern == "message" and args.payload_bytes is not None:
+    if not args.input_file and args.payload_pattern == "message" and args.payload_bytes is not None:
         print("--payload-bytes requires --payload-pattern counter or random", file=sys.stderr)
         return 2
-    if args.payload_pattern != "message" and args.payload_bytes is None:
+    if not args.input_file and args.payload_pattern != "message" and args.payload_bytes is None:
         print("--payload-pattern counter/random requires --payload-bytes", file=sys.stderr)
         return 2
     if args.input_file and args.payload_pattern != "message":
