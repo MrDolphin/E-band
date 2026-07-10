@@ -2,6 +2,7 @@
   <PropertyGroup>
     <AssemblyName>remotevideo</AssemblyName>
     <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>False</GenerateTargetFrameworkAttribute>
     <OutputType>WinExe</OutputType>
     <UseWPF>True</UseWPF>
     <TargetFramework>net8.0-windows7.0</TargetFramework>
@@ -14,6 +15,7 @@
     <RootNamespace />
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="obj\**\*.cs" />
     <Compile Remove="video_modem_selftest\**\*.cs" />
     <EmbeddedResource Remove="video_modem_selftest\**\*" />
     <None Remove="video_modem_selftest\**\*" />

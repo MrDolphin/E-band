@@ -97,6 +97,60 @@ static void TestVideoSendSchedulerDropsExpiredFrames()
 	Require(repairs.Count == 0, "expired frame must not stay in repair backlog");
 }
 
+static void TestRealtimeSchedulerLimitsRepairBudget()
+{
+	VideoSendScheduler scheduler = new VideoSendScheduler();
+	byte[] payload = Enumerable.Repeat((byte)0x33, 1080).ToArray();
+
+	bool enqueued = scheduler.TryEnqueueNewFrame(
+		payload,
+		frameId: 10u,
+		nowMs: 0,
+		payloadBytes: 32,
+		out VideoSendWorkItem firstPass);
+
+	Require(enqueued, "real-time frame should be accepted by the scheduler");
+	Require(
+		firstPass.Chunks.Count > VideoRealtimePolicy.GetRepairChunkBudget(firstPass.Chunks.Count),
+		"test payload must exceed one real-time repair budget");
+
+	int repairBudget = VideoRealtimePolicy.GetRepairChunkBudget(firstPass.Chunks.Count);
+	int repairedChunkCount = 0;
+	long nowMs = 10;
+	int cycles = 0;
+	while (repairedChunkCount < firstPass.Chunks.Count && cycles < 16)
+	{
+		IReadOnlyList<VideoSendWorkItem> repairs = scheduler.DrainRepairWork(
+			nowMs++,
+			firstPass.Chunks.Count);
+		int cycleChunkCount = repairs.Sum(item => item.Chunks.Count);
+		if (cycleChunkCount == 0)
+		{
+			break;
+		}
+
+		Require(
+			repairs.All(item => item.IsRepair),
+			"repair backlog must emit repair-tagged work items");
+		Require(
+			cycleChunkCount <= repairBudget,
+			"repair traffic must stay within the configured per-cycle budget");
+		Require(
+			repairs.All(item => item.Chunks.Count <= repairBudget),
+			"each repair work item must fit within the cycle budget");
+
+		repairedChunkCount += cycleChunkCount;
+		cycles++;
+	}
+
+	Require(
+		repairedChunkCount == firstPass.Chunks.Count,
+		"repair backlog must preserve remaining chunks across later cycles");
+	Require(
+		scheduler.DrainRepairWork(nowMs, firstPass.Chunks.Count).Count == 0,
+		"repair backlog should empty after all queued chunks are scheduled");
+}
+
 static void DecodeCapture(string path, string txManifestPath = null)
 {
 	byte[] capture;
@@ -929,6 +983,7 @@ Require(
 	VideoRealtimePolicy.MaxEncodedBytes(32) == 1088,
 	"Real-time WebP byte budget must cap a frame at 34 chunks.");
 TestVideoSendSchedulerDropsExpiredFrames();
+TestRealtimeSchedulerLimitsRepairBudget();
 
 Console.WriteLine("16. RX stream continuity policy...");
 Require(

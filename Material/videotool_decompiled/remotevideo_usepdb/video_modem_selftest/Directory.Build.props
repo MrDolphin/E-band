@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <BaseOutputPath>..\..\..\..\codex_tmp_build25\video_modem_selftest\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>..\..\..\..\codex_tmp_build25\video_modem_selftest\obj\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>..\..\..\..\codex_tmp_build25\video_modem_selftest\obj\</MSBuildProjectExtensionsPath>
+  </PropertyGroup>
+</Project>

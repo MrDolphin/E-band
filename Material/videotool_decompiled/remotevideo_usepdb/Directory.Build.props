@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'remotevideo'">
+    <BaseOutputPath>..\..\..\codex_tmp_build25\remotevideo\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>..\..\..\codex_tmp_build25\remotevideo\obj\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>..\..\..\codex_tmp_build25\remotevideo\obj\</MSBuildProjectExtensionsPath>
+  </PropertyGroup>
+</Project>

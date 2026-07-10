@@ -344,6 +344,8 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 
 	private long m_videoTxManifestSequence;
 
+	private VideoSendScheduler m_videoSendScheduler = new VideoSendScheduler();
+
 	private readonly Dictionary<uint, IReadOnlyList<WirelessVideoFrame>> m_videoRecentChunks =
 		new Dictionary<uint, IReadOnlyList<WirelessVideoFrame>>();
 
@@ -932,6 +934,7 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 				m_videoRxCoarseFrequencyHz = 0.0;
 				m_videoRxClippingPercent = 0.0;
 				m_videoRxZeroPercent = 0.0;
+				m_videoSendScheduler = new VideoSendScheduler();
 				m_videoRecentChunks.Clear();
 				m_videoTxBatchStream?.SetLength(0);
 				m_videoTxBatchChunkCount = 0;
@@ -1558,59 +1561,82 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 		string mediaLabel,
 		bool realtime = false)
 	{
-		uint frameId = m_videoModemFrameId++;
-		m_videoModemSentFrameCount++;
-		uint timestampMs = (uint)(Environment.TickCount64 & uint.MaxValue);
-		IReadOnlyList<WirelessVideoFrame> chunks =
-			WirelessVideoFrame.Fragment(
+		uint frameId;
+		IReadOnlyList<WirelessVideoFrame> chunks;
+		bool frameConfirmed = false;
+		if (realtime)
+		{
+			long nowMs = Environment.TickCount64;
+			if (!m_videoSendScheduler.TryEnqueueNewFrame(
+				imageBytes,
+				m_videoModemFrameId++,
+				nowMs,
+				(ushort)VideoWirelessChunkPayloadBytes,
+				out VideoSendWorkItem firstPass))
+			{
+				return false;
+			}
+
+			frameId = firstPass.FrameId;
+			chunks = firstPass.Chunks;
+			m_videoModemSentFrameCount++;
+			m_videoLastEncodedChunks = chunks.Count;
+			RememberVideoChunks(frameId, chunks);
+			SendVideoWorkItem(firstPass, 0);
+			FlushVideoWirelessBatch();
+			if (m_isSending)
+			{
+				foreach (VideoSendWorkItem repair in m_videoSendScheduler.DrainRepairWork(
+					nowMs,
+					firstPass.Chunks.Count))
+				{
+					SendVideoWorkItem(
+						repair,
+						VideoRealtimePolicy.GetRepairVariant(1, repair.FrameId));
+					FlushVideoWirelessBatch();
+					if (!m_isSending)
+					{
+						break;
+					}
+				}
+			}
+		}
+		else
+		{
+			frameId = m_videoModemFrameId++;
+			m_videoModemSentFrameCount++;
+			uint timestampMs = (uint)(Environment.TickCount64 & uint.MaxValue);
+			chunks = WirelessVideoFrame.Fragment(
 				imageBytes,
 				frameId,
 				timestampMs,
 				VideoWirelessChunkPayloadBytes);
-		m_videoLastEncodedChunks = chunks.Count;
-		RememberVideoChunks(frameId, chunks);
+			m_videoLastEncodedChunks = chunks.Count;
+			RememberVideoChunks(frameId, chunks);
 
-		int repeatCount = realtime ? 1 : VideoChunkRepeatCount;
-		for (int repeat = 0; repeat < repeatCount; repeat++)
-		{
-			for (int position = 0; position < chunks.Count; position++)
+			int repeatCount = VideoChunkRepeatCount;
+			for (int repeat = 0; repeat < repeatCount; repeat++)
 			{
-				int chunkIndex = WirelessChunkSchedule.GetIndex(
-					chunks.Count,
-					repeat,
-					position);
-				WirelessVideoFrame chunk = chunks[chunkIndex];
+				for (int position = 0; position < chunks.Count; position++)
+				{
+					int chunkIndex = WirelessChunkSchedule.GetIndex(
+						chunks.Count,
+						repeat,
+						position);
+					WirelessVideoFrame chunk = chunks[chunkIndex];
+					if (!m_isSending)
+					{
+						break;
+					}
+					SendVideoWirelessChunk(chunk, frameId, repeat, isRepair: false);
+				}
+				FlushVideoWirelessBatch();
 				if (!m_isSending)
 				{
 					break;
 				}
-				SendVideoWirelessChunk(chunk, frameId, repeat, isRepair: false);
 			}
-			FlushVideoWirelessBatch();
-			if (!m_isSending)
-			{
-				break;
-			}
-		}
 
-		bool frameConfirmed = false;
-		if (realtime && m_isSending)
-		{
-			RepairRecentVideoFrames(
-				frameId,
-				VideoRealtimePolicy.GetRepairVariant(repeatCount, frameId),
-				VideoRealtimePolicy.GetRepairChunkBudget(chunks.Count),
-				onlyOlderFrames: true);
-			FlushVideoWirelessBatch();
-			frameConfirmed =
-				m_videoReassembler.TryGetMissingChunkIndices(
-					frameId,
-					out ushort[] missingChunkIndices,
-					out bool completed) &&
-				(completed || missingChunkIndices.Length == 0);
-		}
-		else
-		{
 			for (int repairRound = 0;
 				repairRound < VideoRepairRoundCount && m_isSending;
 				repairRound++)
@@ -1655,6 +1681,15 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 					completed;
 			}
 		}
+		if (realtime && m_isSending)
+		{
+			frameConfirmed =
+				m_videoReassembler.TryGetMissingChunkIndices(
+					frameId,
+					out ushort[] missingChunkIndices,
+					out bool completed) &&
+				(completed || missingChunkIndices.Length == 0);
+		}
 		if (frameConfirmed)
 		{
 			m_videoModemConfirmedFrameCount++;
@@ -1677,6 +1712,27 @@ public class MainWindow : System.Windows.Window, IComponentConnector
 			tbStatus.Text = txStatus;
 		});
 		return frameConfirmed;
+	}
+
+	private void SendVideoWorkItem(VideoSendWorkItem workItem, int variant)
+	{
+		for (int position = 0; position < workItem.Chunks.Count; position++)
+		{
+			if (!m_isSending)
+			{
+				break;
+			}
+			int chunkIndex = WirelessChunkSchedule.GetIndex(
+				workItem.Chunks.Count,
+				variant,
+				position);
+			WirelessVideoFrame chunk = workItem.Chunks[chunkIndex];
+			SendVideoWirelessChunk(
+				chunk,
+				workItem.FrameId,
+				variant,
+				workItem.IsRepair);
+		}
 	}
 
 	private void RememberVideoChunks(
