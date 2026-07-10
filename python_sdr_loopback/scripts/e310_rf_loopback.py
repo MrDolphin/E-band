@@ -23,16 +23,29 @@ def destroy_iio_buffers(sdr) -> None:
             pass
 
 
-def print_rx_stats(rx: np.ndarray) -> None:
+def dbfs(value: float, full_scale: float) -> float:
+    return 20.0 * np.log10(max(value, 1e-12) / full_scale)
+
+
+def print_tx_stats(tx: np.ndarray) -> None:
+    magnitude = np.abs(tx)
+    print(f"tx_samples={len(tx)}")
+    print(f"tx_rms_counts={float(np.sqrt(np.mean(magnitude * magnitude))):.3f}")
+    print(f"tx_peak_counts={float(np.max(magnitude)):.3f}")
+
+
+def print_rx_stats(rx: np.ndarray, adc_full_scale: float) -> None:
     magnitude = np.abs(rx)
     rms = float(np.sqrt(np.mean(magnitude * magnitude)))
     peak = float(np.max(magnitude))
     mean_i = float(np.mean(np.real(rx)))
     mean_q = float(np.mean(np.imag(rx)))
-    clip_ratio = float(np.mean(magnitude > 0.90))
+    clip_ratio = float(np.mean(magnitude > 0.95 * adc_full_scale))
     print(f"rx_samples={len(rx)}")
-    print(f"rx_rms={rms:.6f}")
-    print(f"rx_peak={peak:.6f}")
+    print(f"rx_rms_counts={rms:.3f}")
+    print(f"rx_peak_counts={peak:.3f}")
+    print(f"rx_rms_dbfs={dbfs(rms, adc_full_scale):.2f}")
+    print(f"rx_peak_dbfs={dbfs(peak, adc_full_scale):.2f}")
     print(f"rx_dc_i={mean_i:.6f}")
     print(f"rx_dc_q={mean_q:.6f}")
     print(f"rx_clip_ratio={clip_ratio:.6f}")
@@ -48,6 +61,8 @@ def main() -> int:
     parser.add_argument("--bandwidth", type=int, default=800_000)
     parser.add_argument("--tx-gain-db", type=float, default=-40.0, help="AD9361 TX hardware gain/attenuation value.")
     parser.add_argument("--tx-amplitude", type=float, default=0.25, help="Digital baseband amplitude before AD9361 TX.")
+    parser.add_argument("--tx-dac-scale", type=float, default=8192.0, help="Scale normalized modem IQ to DAC sample counts.")
+    parser.add_argument("--adc-full-scale", type=float, default=2048.0, help="ADC full-scale count used for RX dBFS and clipping stats.")
     parser.add_argument("--rx-gain-db", type=float, default=20.0)
     parser.add_argument("--rx-buffer", type=int, default=32768)
     parser.add_argument("--stats-only", action="store_true", help="Capture RX samples and print level stats without decoding.")
@@ -62,6 +77,12 @@ def main() -> int:
     if not 0.0 < args.tx_amplitude <= 1.0:
         print("--tx-amplitude must be in (0, 1]", file=sys.stderr)
         return 2
+    if args.tx_dac_scale <= 0.0:
+        print("--tx-dac-scale must be positive", file=sys.stderr)
+        return 2
+    if args.adc_full_scale <= 0.0:
+        print("--adc-full-scale must be positive", file=sys.stderr)
+        return 2
 
     modem = QpskLoopbackModem(
         ModemConfig(
@@ -71,7 +92,9 @@ def main() -> int:
         )
     )
     tx = modem.transmit(args.message.encode("utf-8"), sequence=1)
+    tx *= float(args.tx_dac_scale)
     tx_padded = np.concatenate([tx, np.zeros(args.rx_buffer, dtype=np.complex64)])
+    print_tx_stats(tx)
 
     sdr = adi.ad9361(uri=args.uri)
     sdr.sample_rate = int(args.sample_rate)
@@ -106,7 +129,7 @@ def main() -> int:
         destroy_iio_buffers(sdr)
 
     rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
-    print_rx_stats(rx)
+    print_rx_stats(rx, float(args.adc_full_scale))
     if args.stats_only:
         return 0
 
