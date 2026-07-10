@@ -12,6 +12,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sdr_loopback import ModemConfig, QpskLoopbackModem
 
 
+def destroy_iio_buffers(sdr) -> None:
+    for method_name in ("tx_destroy_buffer", "rx_destroy_buffer"):
+        method = getattr(sdr, method_name, None)
+        if method is None:
+            continue
+        try:
+            method()
+        except Exception:
+            pass
+
+
 def print_rx_stats(rx: np.ndarray) -> None:
     magnitude = np.abs(rx)
     rms = float(np.sqrt(np.mean(magnitude * magnitude)))
@@ -64,17 +75,24 @@ def main() -> int:
     sdr.rx_hardwaregain_chan0 = float(args.rx_gain_db)
     sdr.tx_hardwaregain_chan0 = float(args.tx_gain_db)
 
-    if hasattr(sdr, "tx_destroy_buffer"):
-        sdr.tx_destroy_buffer()
+    destroy_iio_buffers(sdr)
 
-    # Send a cyclic burst long enough for the next RX buffer to contain the frame.
-    sdr.tx_cyclic_buffer = True
-    sdr.tx(tx_padded)
-    time.sleep(0.1)
-    raw = sdr.rx()
-
-    if hasattr(sdr, "tx_destroy_buffer"):
-        sdr.tx_destroy_buffer()
+    try:
+        # Send a cyclic burst long enough for the next RX buffer to contain the frame.
+        sdr.tx_cyclic_buffer = True
+        sdr.tx(tx_padded)
+        time.sleep(0.1)
+        raw = sdr.rx()
+    except OSError as exc:
+        print(f"iio_error={exc}", file=sys.stderr)
+        print(
+            "IIO RX buffer is busy. Close GNU Radio/IIO tools/other Python runs, "
+            "then power-cycle or reboot the E310 if the busy state persists.",
+            file=sys.stderr,
+        )
+        return 3
+    finally:
+        destroy_iio_buffers(sdr)
 
     rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
     print_rx_stats(rx)
