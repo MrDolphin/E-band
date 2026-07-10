@@ -74,3 +74,9 @@ accounts for packets that were actually recovered.
 At high sample rates, keep `--tx-cyclic-copies 1` unless you are deliberately
 testing TX DMA buffer limits; the AD9361 cyclic TX path repeats the uploaded
 frame in hardware.
+
+For longer payload runs, keep each TX frame small and run multiple batches:
+
+```powershell
+python scripts/run_payload_batches.py --batches 5 --packets-per-batch 20 --payload-bytes 512 --artifact-prefix artifacts\payload_512_100_15mbps_batched
+```
