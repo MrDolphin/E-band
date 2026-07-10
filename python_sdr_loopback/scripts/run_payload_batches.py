@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -37,7 +38,9 @@ def main() -> int:
     parser.add_argument("--payload-bytes", type=int, default=512)
     parser.add_argument("--tx-settle-sec", type=float, default=0.5)
     parser.add_argument("--rx-discard-buffers", type=int, default=1)
-    parser.add_argument("--tx-cyclic-copies", type=int, default=1)
+    parser.add_argument("--tx-cyclic-copies", type=int, default=3)
+    parser.add_argument("--retries", type=int, default=2, help="Retries per failed batch.")
+    parser.add_argument("--retry-delay-sec", type=float, default=0.5)
     args = parser.parse_args()
 
     if args.batches <= 0:
@@ -46,6 +49,12 @@ def main() -> int:
     if args.packets_per_batch <= 0:
         print("--packets-per-batch must be positive", file=sys.stderr)
         return 2
+    if args.retries < 0:
+        print("--retries must be non-negative", file=sys.stderr)
+        return 2
+    if args.retry_delay_sec < 0.0:
+        print("--retry-delay-sec must be non-negative", file=sys.stderr)
+        return 2
 
     script = Path(__file__).with_name("e310_rf_loopback.py")
     total_expected = args.batches * args.packets_per_batch
@@ -53,60 +62,73 @@ def main() -> int:
     first_payload_bitrate_est = 0.0
 
     for batch_index in range(1, args.batches + 1):
-        batch_prefix = args.artifact_prefix.with_name(f"{args.artifact_prefix.name}_batch{batch_index:03d}")
-        command = [
-            sys.executable,
-            str(script),
-            "--uri",
-            args.uri,
-            "--sample-rate",
-            str(args.sample_rate),
-            "--symbol-rate",
-            str(args.symbol_rate),
-            "--bandwidth",
-            str(args.bandwidth),
-            "--tx-gain-db",
-            str(args.tx_gain_db),
-            "--tx-amplitude",
-            str(args.tx_amplitude),
-            "--tx-dac-scale",
-            str(args.tx_dac_scale),
-            "--rx-gain-db",
-            str(args.rx_gain_db),
-            "--tx-channel",
-            str(args.tx_channel),
-            "--rx-channel",
-            str(args.rx_channel),
-            "--tx-port",
-            args.tx_port,
-            "--rx-port",
-            args.rx_port,
-            "--packet-count",
-            str(args.packets_per_batch),
-            "--payload-pattern",
-            args.payload_pattern,
-            "--payload-bytes",
-            str(args.payload_bytes),
-            "--tx-settle-sec",
-            str(args.tx_settle_sec),
-            "--rx-discard-buffers",
-            str(args.rx_discard_buffers),
-            "--tx-cyclic-copies",
-            str(args.tx_cyclic_copies),
-            "--save-iq",
-            str(batch_prefix.with_suffix(".npz")),
-            "--plot-prefix",
-            str(batch_prefix),
-        ]
-        print(f"batch={batch_index}")
-        result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        print(result.stdout, end="")
-        values = parse_key_values(result.stdout)
-        batch_ok = int(values.get("packets_ok", "0"))
+        batch_ok = 0
+        batch_succeeded = False
+        for attempt in range(1, args.retries + 2):
+            batch_prefix = args.artifact_prefix.with_name(
+                f"{args.artifact_prefix.name}_batch{batch_index:03d}_try{attempt:02d}"
+            )
+            command = [
+                sys.executable,
+                str(script),
+                "--uri",
+                args.uri,
+                "--sample-rate",
+                str(args.sample_rate),
+                "--symbol-rate",
+                str(args.symbol_rate),
+                "--bandwidth",
+                str(args.bandwidth),
+                "--tx-gain-db",
+                str(args.tx_gain_db),
+                "--tx-amplitude",
+                str(args.tx_amplitude),
+                "--tx-dac-scale",
+                str(args.tx_dac_scale),
+                "--rx-gain-db",
+                str(args.rx_gain_db),
+                "--tx-channel",
+                str(args.tx_channel),
+                "--rx-channel",
+                str(args.rx_channel),
+                "--tx-port",
+                args.tx_port,
+                "--rx-port",
+                args.rx_port,
+                "--packet-count",
+                str(args.packets_per_batch),
+                "--payload-pattern",
+                args.payload_pattern,
+                "--payload-bytes",
+                str(args.payload_bytes),
+                "--tx-settle-sec",
+                str(args.tx_settle_sec),
+                "--rx-discard-buffers",
+                str(args.rx_discard_buffers),
+                "--tx-cyclic-copies",
+                str(args.tx_cyclic_copies),
+                "--save-iq",
+                str(batch_prefix.with_suffix(".npz")),
+                "--plot-prefix",
+                str(batch_prefix),
+            ]
+            print(f"batch={batch_index}")
+            print(f"batch_attempt={attempt}")
+            result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            print(result.stdout, end="")
+            values = parse_key_values(result.stdout)
+            batch_ok = int(values.get("packets_ok", "0"))
+            first_payload_bitrate_est = first_payload_bitrate_est or float(values.get("payload_bitrate_est_bps", "0"))
+            print(f"batch_packets_ok={batch_ok}")
+            if result.returncode == 0 and batch_ok == args.packets_per_batch:
+                batch_succeeded = True
+                break
+            if attempt <= args.retries:
+                print(f"batch_retrying={batch_index}")
+                time.sleep(args.retry_delay_sec)
+
         total_ok += batch_ok
-        first_payload_bitrate_est = first_payload_bitrate_est or float(values.get("payload_bitrate_est_bps", "0"))
-        print(f"batch_packets_ok={batch_ok}")
-        if result.returncode != 0:
+        if not batch_succeeded:
             print(f"batch_failed={batch_index}")
             break
 

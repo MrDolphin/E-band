@@ -78,5 +78,5 @@ frame in hardware.
 For longer payload runs, keep each TX frame small and run multiple batches:
 
 ```powershell
-python scripts/run_payload_batches.py --batches 5 --packets-per-batch 20 --payload-bytes 512 --artifact-prefix artifacts\payload_512_100_15mbps_batched
+python scripts/run_payload_batches.py --batches 20 --packets-per-batch 5 --payload-bytes 512 --artifact-prefix artifacts\payload_512_100_15mbps_batched
 ```
