@@ -10,6 +10,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sdr_loopback import ModemConfig, QpskLoopbackModem
+from sdr_loopback.packet import Packet
+from sdr_loopback.payload import build_payload, payload_efficiency, raw_bitrate_bps
 
 
 def db(value: float) -> float:
@@ -93,6 +95,15 @@ def constellation_metrics(points: np.ndarray) -> dict[str, float]:
     }
 
 
+def npz_scalar(data: np.lib.npyio.NpzFile, key: str, default):
+    if key not in data.files:
+        return default
+    value = data[key]
+    if getattr(value, "shape", ()) == ():
+        return value.item()
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Analyze a saved Python SDR RF loopback IQ capture.")
     parser.add_argument("capture", type=Path)
@@ -105,7 +116,21 @@ def main() -> int:
     sample_rate = float(data["sample_rate"])
     symbol_rate = float(data["symbol_rate"])
     packet_count = int(data["packet_count"])
-    expected_payload = b"hello rf"
+    payload_mode = str(npz_scalar(data, "payload_mode", "message"))
+    saved_message = str(npz_scalar(data, "message", "hello rf"))
+    saved_payload_bytes = int(npz_scalar(data, "payload_bytes", -1))
+    if payload_mode == "message":
+        payload_size = len(saved_message.encode("utf-8"))
+    else:
+        payload_size = saved_payload_bytes
+    expected_payloads = [
+        build_payload(sequence, payload_size, payload_mode, saved_message.encode("utf-8"))
+        for sequence in range(1, packet_count + 1)
+    ]
+    encoded_packet_size = len(Packet(sequence=1, payload=expected_payloads[0]).encode())
+    preamble_size = 8
+    raw_bitrate = raw_bitrate_bps(symbol_rate)
+    efficiency = payload_efficiency(payload_size, encoded_packet_size, preamble_size)
 
     modem = QpskLoopbackModem(
         ModemConfig(
@@ -118,7 +143,7 @@ def main() -> int:
     good_sequences = {
         packet.sequence
         for packet in packets
-        if 1 <= packet.sequence <= packet_count and packet.payload == expected_payload
+        if 1 <= packet.sequence <= packet_count and packet.payload == expected_payloads[packet.sequence - 1]
     }
     points = modem.constellation_points(rx, max_points=4000)
     magnitude = np.abs(rx)
@@ -133,6 +158,14 @@ def main() -> int:
         "packets_ok": len(good_sequences),
         "packet_error_rate": 1.0 - len(good_sequences) / max(packet_count, 1),
         "missing_sequences": [i for i in range(1, packet_count + 1) if i not in good_sequences],
+        "payload_pattern": payload_mode,
+        "payload_bytes": payload_size,
+        "payload_bytes_ok": len(good_sequences) * payload_size,
+        "payload_bits_ok": len(good_sequences) * payload_size * 8,
+        "raw_bitrate_bps": raw_bitrate,
+        "payload_efficiency": efficiency,
+        "payload_bitrate_est_bps": raw_bitrate * efficiency,
+        "payload_bitrate_ok_bps": raw_bitrate * efficiency * len(good_sequences) / max(packet_count, 1),
         "sample_rate_hz": sample_rate,
         "symbol_rate_hz": symbol_rate,
         "rrc_alpha": modem.config.rrc_alpha,

@@ -10,6 +10,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sdr_loopback import ModemConfig, QpskLoopbackModem
+from sdr_loopback.packet import Packet
+from sdr_loopback.payload import build_payload, payload_efficiency, raw_bitrate_bps
 
 
 def destroy_iio_buffers(sdr) -> None:
@@ -59,7 +61,14 @@ def get_channel_attr(sdr, channel_index: int, attr_name: str, output: bool):
     return sdr._get_iio_attr_str(f"voltage{channel_index}", attr_name, output)
 
 
-def save_iq_capture(path: Path, tx: np.ndarray, rx: np.ndarray, args, packets_ok: int | None = None) -> None:
+def save_iq_capture(
+    path: Path,
+    tx: np.ndarray,
+    rx: np.ndarray,
+    args,
+    packets_ok: int | None = None,
+    payload_size: int | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
@@ -74,6 +83,9 @@ def save_iq_capture(path: Path, tx: np.ndarray, rx: np.ndarray, args, packets_ok
         tx_dac_scale=float(args.tx_dac_scale),
         packet_count=int(args.packet_count),
         packets_ok=-1 if packets_ok is None else int(packets_ok),
+        payload_mode=str(args.payload_pattern),
+        payload_bytes=-1 if payload_size is None else int(payload_size),
+        message=str(args.message),
     )
     print(f"iq_capture={path}")
 
@@ -128,6 +140,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Transmit and receive one QPSK packet through E310 RF loopback.")
     parser.add_argument("--uri", default="ip:192.168.1.10")
     parser.add_argument("--message", default="hello rf")
+    parser.add_argument(
+        "--payload-bytes",
+        type=int,
+        help="Payload size per packet for counter/random patterns. Omit to send --message.",
+    )
+    parser.add_argument(
+        "--payload-pattern",
+        choices=("message", "counter", "random"),
+        default="message",
+        help="Payload content pattern. Use counter/random with --payload-bytes for data-rate tests.",
+    )
     parser.add_argument("--lo-hz", type=int, default=900_000_000)
     parser.add_argument("--sample-rate", type=int, default=1_000_000)
     parser.add_argument("--symbol-rate", type=int, default=250_000)
@@ -166,6 +189,15 @@ def main() -> int:
     if args.packet_count <= 0:
         print("--packet-count must be positive", file=sys.stderr)
         return 2
+    if args.payload_pattern == "message" and args.payload_bytes is not None:
+        print("--payload-bytes requires --payload-pattern counter or random", file=sys.stderr)
+        return 2
+    if args.payload_pattern != "message" and args.payload_bytes is None:
+        print("--payload-pattern counter/random requires --payload-bytes", file=sys.stderr)
+        return 2
+    if args.payload_bytes is not None and not 0 <= args.payload_bytes <= 65535:
+        print("--payload-bytes must be in [0, 65535]", file=sys.stderr)
+        return 2
 
     modem = QpskLoopbackModem(
         ModemConfig(
@@ -174,10 +206,22 @@ def main() -> int:
             tx_amplitude=args.tx_amplitude,
         )
     )
-    payload = args.message.encode("utf-8")
+    message = args.message.encode("utf-8")
+    payload_size = len(message) if args.payload_pattern == "message" else int(args.payload_bytes)
+    payloads = [
+        build_payload(sequence, payload_size, args.payload_pattern, message)
+        for sequence in range(1, args.packet_count + 1)
+    ]
     tx = np.concatenate(
-        [modem.transmit(payload, sequence=sequence) for sequence in range(1, args.packet_count + 1)]
+        [
+            modem.transmit(payload, sequence=sequence)
+            for sequence, payload in enumerate(payloads, start=1)
+        ]
     )
+    encoded_packet_size = len(Packet(sequence=1, payload=payloads[0]).encode())
+    preamble_size = 8
+    raw_bitrate = raw_bitrate_bps(float(args.symbol_rate))
+    efficiency = payload_efficiency(payload_size, encoded_packet_size, preamble_size)
     samples_per_packet = len(tx) / args.packet_count
     min_rx_buffer = int(np.ceil(len(tx) + samples_per_packet * 2))
     rx_buffer_size = max(args.rx_buffer, min_rx_buffer)
@@ -187,6 +231,11 @@ def main() -> int:
     print_tx_stats(tx)
     print(f"tx_cyclic_samples={len(tx_padded)}")
     print(f"samples_per_packet={samples_per_packet:.1f}")
+    print(f"payload_pattern={args.payload_pattern}")
+    print(f"payload_bytes={payload_size}")
+    print(f"raw_bitrate_bps={raw_bitrate:.0f}")
+    print(f"payload_efficiency={efficiency:.6f}")
+    print(f"payload_bitrate_est_bps={raw_bitrate * efficiency:.0f}")
     print(f"rx_buffer_requested={args.rx_buffer}")
     print(f"rx_buffer_used={rx_buffer_size}")
 
@@ -234,7 +283,7 @@ def main() -> int:
     print_rx_stats(rx, float(args.adc_full_scale))
     if args.stats_only:
         if args.save_iq:
-            save_iq_capture(args.save_iq, tx, rx, args)
+            save_iq_capture(args.save_iq, tx, rx, args, payload_size=payload_size)
         if args.plot_prefix:
             save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
         return 0
@@ -243,7 +292,7 @@ def main() -> int:
     good_sequences = {
         packet.sequence
         for packet in packets
-        if 1 <= packet.sequence <= args.packet_count and packet.payload == payload
+        if 1 <= packet.sequence <= args.packet_count and packet.payload == payloads[packet.sequence - 1]
     }
     for packet in packets[:10]:
         print(f"sequence={packet.sequence}")
@@ -257,10 +306,13 @@ def main() -> int:
     print(f"packets_decoded={len(packets)}")
     print(f"packets_ok={packets_ok}")
     print(f"packet_error_rate={packet_error_rate:.6f}")
+    print(f"payload_bytes_ok={packets_ok * payload_size}")
+    print(f"payload_bits_ok={packets_ok * payload_size * 8}")
+    print(f"payload_bitrate_ok_bps={raw_bitrate * efficiency * packets_ok / max(capture_capacity, 1):.0f}")
     if args.packet_count == 1 and packets_ok == 1:
         print("crc_ok=true")
     if args.save_iq:
-        save_iq_capture(args.save_iq, tx, rx, args, packets_ok=packets_ok)
+        save_iq_capture(args.save_iq, tx, rx, args, packets_ok=packets_ok, payload_size=payload_size)
     if args.plot_prefix:
         save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
     return 0 if packets_ok == args.packet_count else 1
