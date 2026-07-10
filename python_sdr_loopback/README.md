@@ -71,9 +71,10 @@ For payload tests, `payload_bitrate_est_bps` is the estimated usable bitrate
 after preamble, packet header, and CRC overhead. `payload_bitrate_ok_bps` also
 accounts for packets that were actually recovered.
 
-At high sample rates, keep `tx_cyclic_samples` below roughly 100k samples on
-this E310 setup. Larger cyclic TX uploads may fail silently and show up as
-`rx_rms_dbfs` near -62 dBFS.
+At high sample rates, short frames have been most reliable with
+`--tx-cyclic-copies 3`, matching the original 15 Mbps baseline. Long payload
+frames are more sensitive; if TX silently fails, it shows up as `rx_rms_dbfs`
+near -62 dBFS.
 
 For longer payload runs, keep each TX frame small and run multiple batches:
 

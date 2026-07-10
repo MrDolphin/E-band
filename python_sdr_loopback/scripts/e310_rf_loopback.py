@@ -190,7 +190,7 @@ def main() -> int:
     parser.add_argument(
         "--tx-cyclic-copies",
         type=int,
-        default=1,
+        default=3,
         help="Number of frame copies uploaded into the cyclic TX buffer.",
     )
     parser.add_argument("--save-iq", type=Path, help="Save TX/RX IQ and run metadata to a compressed .npz file.")
@@ -301,7 +301,7 @@ def main() -> int:
     destroy_iio_buffers(sdr)
 
     try:
-        # A cyclic TX buffer repeats in hardware, so one frame copy is usually enough.
+        # Multiple short-frame copies make cyclic TX startup more reliable on this E310.
         sdr.tx_cyclic_buffer = True
         sdr.tx(tx_padded)
         time.sleep(float(args.tx_settle_sec))
