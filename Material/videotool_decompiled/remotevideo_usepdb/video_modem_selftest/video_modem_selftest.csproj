@@ -4,12 +4,15 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>False</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\remotevideo\Crc32.cs" Link="Crc32.cs" />
     <Compile Include="..\remotevideo\AppBuildInfo.cs" Link="AppBuildInfo.cs" />
     <Compile Include="..\remotevideo\Mode9TuningProfile.cs" Link="Mode9TuningProfile.cs" />
     <Compile Include="..\remotevideo\VideoRealtimePolicy.cs" Link="VideoRealtimePolicy.cs" />
+    <Compile Include="..\remotevideo\VideoSendScheduler.cs" Link="VideoSendScheduler.cs" />
     <Compile Include="..\remotevideo\VideoFrameDisplayOrder.cs" Link="VideoFrameDisplayOrder.cs" />
     <Compile Include="..\remotevideo\VideoRxContinuityPolicy.cs" Link="VideoRxContinuityPolicy.cs" />
     <Compile Include="..\remotevideo\WirelessVideoFrame.cs" Link="WirelessVideoFrame.cs" />

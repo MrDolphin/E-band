@@ -7,6 +7,7 @@ internal static class VideoRealtimePolicy
 	public const int TargetFrameIntervalMs = 200;
 	public const int MaxFrameAgeMs = 2000;
 	public const int MaxChunksPerFrame = 34;
+	public const double RepairBudgetShare = 0.20;
 
 	public static int GetRepairChunkBudget(int newFrameChunkCount)
 	{
@@ -15,9 +16,7 @@ internal static class VideoRealtimePolicy
 			return 0;
 		}
 
-		// Current hardware measurements recover roughly 40% of a first pass.
-		// Allow one targeted retry per new chunk without blocking the next frame.
-		return newFrameChunkCount;
+		return Math.Max(1, (int)Math.Ceiling(newFrameChunkCount * RepairBudgetShare));
 	}
 
 	public static int GetRepairVariant(int baseVariant, uint schedulingFrameId)

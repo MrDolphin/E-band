@@ -74,6 +74,29 @@ static IReadOnlyList<TxPacket> LoadTxManifest(string path)
 	return packets;
 }
 
+static void TestVideoSendSchedulerDropsExpiredFrames()
+{
+	VideoSendScheduler scheduler = new VideoSendScheduler();
+	byte[] payload = Enumerable.Repeat((byte)0x5A, 900).ToArray();
+
+	bool enqueued = scheduler.TryEnqueueNewFrame(
+		payload,
+		frameId: 1u,
+		nowMs: 0,
+		payloadBytes: 32,
+		out VideoSendWorkItem workItem);
+
+	Require(enqueued, "new frame should be accepted");
+	Require(workItem.Chunks.Count > 0, "new frame should fragment into chunks");
+
+	scheduler.DropExpired(VideoRealtimePolicy.MaxFrameAgeMs + 1L);
+	IReadOnlyList<VideoSendWorkItem> repairs = scheduler.DrainRepairWork(
+		VideoRealtimePolicy.MaxFrameAgeMs + 1L,
+		workItem.Chunks.Count);
+
+	Require(repairs.Count == 0, "expired frame must not stay in repair backlog");
+}
+
 static void DecodeCapture(string path, string txManifestPath = null)
 {
 	byte[] capture;
@@ -890,13 +913,13 @@ Require(
 
 Console.WriteLine("15. Real-time video scheduling policy...");
 Require(
-	VideoRealtimePolicy.GetRepairChunkBudget(34) == 34,
-	"Lossy links must allow one selective repair transmission per new chunk.");
+	VideoRealtimePolicy.GetRepairChunkBudget(34) == 7,
+	"Real-time repair budget must be bounded to 20 percent of first-pass chunks.");
 Require(
 	VideoRealtimePolicy.TargetFrameIntervalMs == 200,
 	"Real-time video must target 5 FPS.");
 Require(
-	VideoRealtimePolicy.GetRepairChunkBudget(100) == 100,
+	VideoRealtimePolicy.GetRepairChunkBudget(100) == 20,
 	"Real-time repair budget did not scale with the new-frame chunk count.");
 Require(
 	!VideoRealtimePolicy.IsExpired(1000, 2999) &&
@@ -905,6 +928,7 @@ Require(
 Require(
 	VideoRealtimePolicy.MaxEncodedBytes(32) == 1088,
 	"Real-time WebP byte budget must cap a frame at 34 chunks.");
+TestVideoSendSchedulerDropsExpiredFrames();
 
 Console.WriteLine("16. RX stream continuity policy...");
 Require(
