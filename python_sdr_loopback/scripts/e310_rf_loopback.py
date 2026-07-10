@@ -111,11 +111,17 @@ def main() -> int:
     tx = np.concatenate(
         [modem.transmit(payload, sequence=sequence) for sequence in range(1, args.packet_count + 1)]
     )
+    samples_per_packet = len(tx) / args.packet_count
+    min_rx_buffer = int(np.ceil(len(tx) + samples_per_packet * 2))
+    rx_buffer_size = max(args.rx_buffer, min_rx_buffer)
     tx *= float(args.tx_dac_scale)
-    repeat_count = max(2, int(np.ceil(args.rx_buffer / len(tx))) + 1)
+    repeat_count = max(2, int(np.ceil(rx_buffer_size / len(tx))) + 1)
     tx_padded = np.tile(tx, repeat_count).astype(np.complex64)
     print_tx_stats(tx)
     print(f"tx_cyclic_samples={len(tx_padded)}")
+    print(f"samples_per_packet={samples_per_packet:.1f}")
+    print(f"rx_buffer_requested={args.rx_buffer}")
+    print(f"rx_buffer_used={rx_buffer_size}")
 
     sdr = adi.ad9361(uri=args.uri)
     sdr.sample_rate = int(args.sample_rate)
@@ -125,7 +131,7 @@ def main() -> int:
     sdr.tx_lo = int(args.lo_hz)
     sdr.rx_enabled_channels = [args.rx_channel]
     sdr.tx_enabled_channels = [args.tx_channel]
-    sdr.rx_buffer_size = int(args.rx_buffer)
+    sdr.rx_buffer_size = int(rx_buffer_size)
     set_channel_attr(sdr, args.rx_channel, "rf_port_select", False, args.rx_port)
     set_channel_attr(sdr, args.tx_channel, "rf_port_select", True, args.tx_port)
     set_channel_attr(sdr, args.rx_channel, "gain_control_mode", False, "manual")
@@ -173,8 +179,10 @@ def main() -> int:
         print(f"payload={packet.payload.decode('utf-8', errors='replace')}")
 
     packets_ok = len(good_sequences)
-    packet_error_rate = 1.0 - packets_ok / args.packet_count
+    capture_capacity = min(args.packet_count, int(len(rx) / samples_per_packet))
+    packet_error_rate = 1.0 - packets_ok / max(capture_capacity, 1)
     print(f"packets_expected={args.packet_count}")
+    print(f"packets_capture_capacity={capture_capacity}")
     print(f"packets_decoded={len(packets)}")
     print(f"packets_ok={packets_ok}")
     print(f"packet_error_rate={packet_error_rate:.6f}")
