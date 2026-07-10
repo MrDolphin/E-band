@@ -38,7 +38,7 @@ def main() -> int:
     parser.add_argument("--payload-bytes", type=int, default=512)
     parser.add_argument("--tx-settle-sec", type=float, default=0.5)
     parser.add_argument("--rx-discard-buffers", type=int, default=1)
-    parser.add_argument("--tx-cyclic-copies", type=int, default=3)
+    parser.add_argument("--tx-cyclic-copies", type=int, default=2)
     parser.add_argument("--retries", type=int, default=2, help="Retries per failed batch.")
     parser.add_argument("--retry-delay-sec", type=float, default=0.5)
     args = parser.parse_args()

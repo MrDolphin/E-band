@@ -71,12 +71,12 @@ For payload tests, `payload_bitrate_est_bps` is the estimated usable bitrate
 after preamble, packet header, and CRC overhead. `payload_bitrate_ok_bps` also
 accounts for packets that were actually recovered.
 
-At high sample rates, keep `--tx-cyclic-copies 1` unless you are deliberately
-testing TX DMA buffer limits; the AD9361 cyclic TX path repeats the uploaded
-frame in hardware.
+At high sample rates, keep `tx_cyclic_samples` below roughly 100k samples on
+this E310 setup. Larger cyclic TX uploads may fail silently and show up as
+`rx_rms_dbfs` near -62 dBFS.
 
 For longer payload runs, keep each TX frame small and run multiple batches:
 
 ```powershell
-python scripts/run_payload_batches.py --batches 20 --packets-per-batch 5 --payload-bytes 512 --artifact-prefix artifacts\payload_512_100_15mbps_batched
+python scripts/run_payload_batches.py --batches 20 --packets-per-batch 5 --payload-bytes 512 --tx-cyclic-copies 2 --artifact-prefix artifacts\payload_512_100_15mbps_batched
 ```
