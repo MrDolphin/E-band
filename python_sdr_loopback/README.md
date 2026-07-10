@@ -70,3 +70,7 @@ python scripts/analyze_capture.py artifacts\payload_512_15mbps.npz
 For payload tests, `payload_bitrate_est_bps` is the estimated usable bitrate
 after preamble, packet header, and CRC overhead. `payload_bitrate_ok_bps` also
 accounts for packets that were actually recovered.
+
+At high sample rates, keep `--tx-cyclic-copies 1` unless you are deliberately
+testing TX DMA buffer limits; the AD9361 cyclic TX path repeats the uploaded
+frame in hardware.

@@ -178,6 +178,12 @@ def main() -> int:
         default=1,
         help="Number of RX buffers to discard before the measured capture.",
     )
+    parser.add_argument(
+        "--tx-cyclic-copies",
+        type=int,
+        default=1,
+        help="Number of frame copies uploaded into the cyclic TX buffer.",
+    )
     parser.add_argument("--save-iq", type=Path, help="Save TX/RX IQ and run metadata to a compressed .npz file.")
     parser.add_argument("--plot-prefix", type=Path, help="Save RX spectrum and constellation PNGs with this path prefix.")
     parser.add_argument("--stats-only", action="store_true", help="Capture RX samples and print level stats without decoding.")
@@ -206,6 +212,9 @@ def main() -> int:
         return 2
     if args.rx_discard_buffers < 0:
         print("--rx-discard-buffers must be non-negative", file=sys.stderr)
+        return 2
+    if args.tx_cyclic_copies <= 0:
+        print("--tx-cyclic-copies must be positive", file=sys.stderr)
         return 2
     if args.payload_pattern == "message" and args.payload_bytes is not None:
         print("--payload-bytes requires --payload-pattern counter or random", file=sys.stderr)
@@ -244,8 +253,7 @@ def main() -> int:
     min_rx_buffer = int(np.ceil(len(tx) + samples_per_packet * 2))
     rx_buffer_size = max(args.rx_buffer, min_rx_buffer)
     tx *= float(args.tx_dac_scale)
-    repeat_count = max(2, int(np.ceil(rx_buffer_size / len(tx))) + 1)
-    tx_padded = np.tile(tx, repeat_count).astype(np.complex64)
+    tx_padded = np.tile(tx, int(args.tx_cyclic_copies)).astype(np.complex64)
     print_tx_stats(tx)
     print(f"tx_cyclic_samples={len(tx_padded)}")
     print(f"samples_per_packet={samples_per_packet:.1f}")
@@ -256,6 +264,7 @@ def main() -> int:
     print(f"payload_bitrate_est_bps={raw_bitrate * efficiency:.0f}")
     print(f"tx_settle_sec={args.tx_settle_sec:.3f}")
     print(f"rx_discard_buffers={args.rx_discard_buffers}")
+    print(f"tx_cyclic_copies={args.tx_cyclic_copies}")
     print(f"rx_buffer_requested={args.rx_buffer}")
     print(f"rx_buffer_used={rx_buffer_size}")
 
@@ -283,7 +292,7 @@ def main() -> int:
     destroy_iio_buffers(sdr)
 
     try:
-        # Send a cyclic burst long enough for the next RX buffer to contain the frame.
+        # A cyclic TX buffer repeats in hardware, so one frame copy is usually enough.
         sdr.tx_cyclic_buffer = True
         sdr.tx(tx_padded)
         time.sleep(float(args.tx_settle_sec))
