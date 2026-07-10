@@ -51,6 +51,19 @@ def print_rx_stats(rx: np.ndarray, adc_full_scale: float) -> None:
     print(f"rx_clip_ratio={clip_ratio:.6f}")
 
 
+def set_if_present(obj, name: str, value) -> bool:
+    if not hasattr(obj, name):
+        return False
+    setattr(obj, name, value)
+    return True
+
+
+def get_if_present(obj, name: str):
+    if not hasattr(obj, name):
+        return "<unsupported>"
+    return getattr(obj, name)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Transmit and receive one QPSK packet through E310 RF loopback.")
     parser.add_argument("--uri", default="ip:192.168.1.10")
@@ -65,6 +78,10 @@ def main() -> int:
     parser.add_argument("--adc-full-scale", type=float, default=2048.0, help="ADC full-scale count used for RX dBFS and clipping stats.")
     parser.add_argument("--rx-gain-db", type=float, default=20.0)
     parser.add_argument("--rx-buffer", type=int, default=32768)
+    parser.add_argument("--tx-channel", type=int, default=0, choices=(0, 1))
+    parser.add_argument("--rx-channel", type=int, default=0, choices=(0, 1))
+    parser.add_argument("--tx-port", default="A", help="AD9361 TX RF port, commonly A or B.")
+    parser.add_argument("--rx-port", default="A_BALANCED", help="AD9361 RX RF port, commonly A_BALANCED or B_BALANCED.")
     parser.add_argument("--stats-only", action="store_true", help="Capture RX samples and print level stats without decoding.")
     args = parser.parse_args()
 
@@ -104,12 +121,20 @@ def main() -> int:
     sdr.tx_rf_bandwidth = int(args.bandwidth)
     sdr.rx_lo = int(args.lo_hz)
     sdr.tx_lo = int(args.lo_hz)
-    sdr.rx_enabled_channels = [0]
-    sdr.tx_enabled_channels = [0]
+    sdr.rx_enabled_channels = [args.rx_channel]
+    sdr.tx_enabled_channels = [args.tx_channel]
     sdr.rx_buffer_size = int(args.rx_buffer)
-    sdr.gain_control_mode_chan0 = "manual"
-    sdr.rx_hardwaregain_chan0 = float(args.rx_gain_db)
-    sdr.tx_hardwaregain_chan0 = float(args.tx_gain_db)
+    set_if_present(sdr, "rx_rf_port_select", args.rx_port)
+    set_if_present(sdr, "tx_rf_port_select", args.tx_port)
+    set_if_present(sdr, f"gain_control_mode_chan{args.rx_channel}", "manual")
+    set_if_present(sdr, f"rx_hardwaregain_chan{args.rx_channel}", float(args.rx_gain_db))
+    set_if_present(sdr, f"tx_hardwaregain_chan{args.tx_channel}", float(args.tx_gain_db))
+    print(f"tx_channel={args.tx_channel}")
+    print(f"rx_channel={args.rx_channel}")
+    print(f"tx_rf_port_select={get_if_present(sdr, 'tx_rf_port_select')}")
+    print(f"rx_rf_port_select={get_if_present(sdr, 'rx_rf_port_select')}")
+    print(f"tx_hardwaregain_chan{args.tx_channel}={get_if_present(sdr, f'tx_hardwaregain_chan{args.tx_channel}')}")
+    print(f"rx_hardwaregain_chan{args.rx_channel}={get_if_present(sdr, f'rx_hardwaregain_chan{args.rx_channel}')}")
 
     destroy_iio_buffers(sdr)
 
