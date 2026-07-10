@@ -319,7 +319,8 @@ def main() -> int:
     raw_bitrate = raw_bitrate_bps(float(args.symbol_rate))
     efficiency = payload_efficiency(payload_size, encoded_packet_size, preamble_size)
     samples_per_packet = len(tx) / args.packet_count
-    min_rx_buffer = int(np.ceil(len(tx) + samples_per_packet * 2))
+    rx_frame_copies = 2 if args.input_file else 1
+    min_rx_buffer = int(np.ceil(len(tx) * rx_frame_copies + samples_per_packet * 2))
     rx_buffer_size = max(args.rx_buffer, min_rx_buffer)
     tx *= float(args.tx_dac_scale)
     tx_padded = np.tile(tx, int(args.tx_cyclic_copies)).astype(np.complex64)
@@ -334,6 +335,7 @@ def main() -> int:
     print(f"tx_settle_sec={args.tx_settle_sec:.3f}")
     print(f"rx_discard_buffers={args.rx_discard_buffers}")
     print(f"tx_cyclic_copies={args.tx_cyclic_copies}")
+    print(f"rx_frame_copies={rx_frame_copies}")
     if args.min_rx_rms_dbfs is not None:
         print(f"min_rx_rms_dbfs={args.min_rx_rms_dbfs:.2f}")
         print(f"rx_level_retries={args.rx_level_retries}")
@@ -392,7 +394,8 @@ def main() -> int:
             save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
         return 0
 
-    packets = modem.receive_many(rx, args.packet_count)
+    max_decode_packets = args.packet_count * rx_frame_copies
+    packets = modem.receive_many(rx, max_decode_packets)
     good_sequences = {
         packet.sequence
         for packet in packets
