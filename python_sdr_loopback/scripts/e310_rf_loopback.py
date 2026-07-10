@@ -136,6 +136,15 @@ def save_plots(prefix: Path, modem: QpskLoopbackModem, rx: np.ndarray, sample_ra
     print(f"constellation_plot={constellation_path}")
 
 
+def print_packet_preview(packet: Packet, payload_pattern: str) -> None:
+    print(f"sequence={packet.sequence}")
+    print(f"payload_len={len(packet.payload)}")
+    if payload_pattern == "message":
+        print(f"payload={packet.payload.decode('utf-8', errors='replace')}")
+    else:
+        print(f"payload_hex_prefix={packet.payload[:16].hex()}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Transmit and receive one QPSK packet through E310 RF loopback.")
     parser.add_argument("--uri", default="ip:192.168.1.10")
@@ -326,8 +335,7 @@ def main() -> int:
         if 1 <= packet.sequence <= args.packet_count and packet.payload == payloads[packet.sequence - 1]
     }
     for packet in packets[:10]:
-        print(f"sequence={packet.sequence}")
-        print(f"payload={packet.payload.decode('utf-8', errors='replace')}")
+        print_packet_preview(packet, args.payload_pattern)
 
     packets_ok = len(good_sequences)
     capture_capacity = min(args.packet_count, int(len(rx) / samples_per_packet))
