@@ -29,6 +29,12 @@ def dbfs(value: float, full_scale: float) -> float:
     return 20.0 * np.log10(max(value, 1e-12) / full_scale)
 
 
+def rx_level_dbfs(rx: np.ndarray, full_scale: float) -> float:
+    magnitude = np.abs(rx)
+    rms = float(np.sqrt(np.mean(magnitude * magnitude)))
+    return dbfs(rms, full_scale)
+
+
 def print_tx_stats(tx: np.ndarray) -> None:
     magnitude = np.abs(tx)
     print(f"tx_samples={len(tx)}")
@@ -193,6 +199,17 @@ def main() -> int:
         default=3,
         help="Number of frame copies uploaded into the cyclic TX buffer.",
     )
+    parser.add_argument(
+        "--min-rx-rms-dbfs",
+        type=float,
+        help="Retry TX/RX capture if RX RMS is below this dBFS threshold.",
+    )
+    parser.add_argument(
+        "--rx-level-retries",
+        type=int,
+        default=0,
+        help="Extra TX/RX capture attempts when --min-rx-rms-dbfs is not met.",
+    )
     parser.add_argument("--save-iq", type=Path, help="Save TX/RX IQ and run metadata to a compressed .npz file.")
     parser.add_argument("--plot-prefix", type=Path, help="Save RX spectrum and constellation PNGs with this path prefix.")
     parser.add_argument("--stats-only", action="store_true", help="Capture RX samples and print level stats without decoding.")
@@ -224,6 +241,9 @@ def main() -> int:
         return 2
     if args.tx_cyclic_copies <= 0:
         print("--tx-cyclic-copies must be positive", file=sys.stderr)
+        return 2
+    if args.rx_level_retries < 0:
+        print("--rx-level-retries must be non-negative", file=sys.stderr)
         return 2
     if args.payload_pattern == "message" and args.payload_bytes is not None:
         print("--payload-bytes requires --payload-pattern counter or random", file=sys.stderr)
@@ -274,6 +294,9 @@ def main() -> int:
     print(f"tx_settle_sec={args.tx_settle_sec:.3f}")
     print(f"rx_discard_buffers={args.rx_discard_buffers}")
     print(f"tx_cyclic_copies={args.tx_cyclic_copies}")
+    if args.min_rx_rms_dbfs is not None:
+        print(f"min_rx_rms_dbfs={args.min_rx_rms_dbfs:.2f}")
+        print(f"rx_level_retries={args.rx_level_retries}")
     print(f"rx_buffer_requested={args.rx_buffer}")
     print(f"rx_buffer_used={rx_buffer_size}")
 
@@ -300,14 +323,26 @@ def main() -> int:
 
     destroy_iio_buffers(sdr)
 
+    rx = None
+    max_attempts = int(args.rx_level_retries) + 1
     try:
-        # Multiple short-frame copies make cyclic TX startup more reliable on this E310.
-        sdr.tx_cyclic_buffer = True
-        sdr.tx(tx_padded)
-        time.sleep(float(args.tx_settle_sec))
-        for _ in range(args.rx_discard_buffers):
-            sdr.rx()
-        raw = sdr.rx()
+        for capture_attempt in range(1, max_attempts + 1):
+            destroy_iio_buffers(sdr)
+            # Multiple short-frame copies make cyclic TX startup more reliable on this E310.
+            sdr.tx_cyclic_buffer = True
+            sdr.tx(tx_padded)
+            time.sleep(float(args.tx_settle_sec))
+            for _ in range(args.rx_discard_buffers):
+                sdr.rx()
+            raw = sdr.rx()
+            rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
+            level = rx_level_dbfs(rx, float(args.adc_full_scale))
+            if args.min_rx_rms_dbfs is None or level >= float(args.min_rx_rms_dbfs):
+                break
+            print(f"rx_level_retry={capture_attempt}")
+            print(f"rx_rms_dbfs_attempt={level:.2f}")
+            destroy_iio_buffers(sdr)
+            time.sleep(0.2)
     except OSError as exc:
         print(f"iio_error={exc}", file=sys.stderr)
         print(
@@ -319,7 +354,9 @@ def main() -> int:
     finally:
         destroy_iio_buffers(sdr)
 
-    rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
+    if rx is None:
+        print("rx_capture_failed=true", file=sys.stderr)
+        return 3
     print_rx_stats(rx, float(args.adc_full_scale))
     if args.stats_only:
         if args.save_iq:

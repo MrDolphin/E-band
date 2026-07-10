@@ -38,7 +38,14 @@ def main() -> int:
     parser.add_argument("--payload-bytes", type=int, default=512)
     parser.add_argument("--tx-settle-sec", type=float, default=0.5)
     parser.add_argument("--rx-discard-buffers", type=int, default=0)
-    parser.add_argument("--tx-cyclic-copies", type=int, default=2)
+    parser.add_argument("--tx-cyclic-copies", type=int, default=3)
+    parser.add_argument(
+        "--min-rx-rms-dbfs",
+        type=float,
+        default=-45.0,
+        help="Retry a capture when RX RMS is below this dBFS threshold. Use a lower value to disable strict level gating.",
+    )
+    parser.add_argument("--rx-level-retries", type=int, default=5)
     parser.add_argument("--retries", type=int, default=2, help="Retries per failed batch.")
     parser.add_argument("--retry-delay-sec", type=float, default=0.5)
     args = parser.parse_args()
@@ -54,6 +61,9 @@ def main() -> int:
         return 2
     if args.retry_delay_sec < 0.0:
         print("--retry-delay-sec must be non-negative", file=sys.stderr)
+        return 2
+    if args.rx_level_retries < 0:
+        print("--rx-level-retries must be non-negative", file=sys.stderr)
         return 2
 
     script = Path(__file__).with_name("e310_rf_loopback.py")
@@ -107,6 +117,10 @@ def main() -> int:
                 str(args.rx_discard_buffers),
                 "--tx-cyclic-copies",
                 str(args.tx_cyclic_copies),
+                "--min-rx-rms-dbfs",
+                str(args.min_rx_rms_dbfs),
+                "--rx-level-retries",
+                str(args.rx_level_retries),
                 "--save-iq",
                 str(batch_prefix.with_suffix(".npz")),
                 "--plot-prefix",
