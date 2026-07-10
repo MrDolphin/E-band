@@ -184,7 +184,7 @@ def main() -> int:
     parser.add_argument(
         "--rx-discard-buffers",
         type=int,
-        default=1,
+        default=0,
         help="Number of RX buffers to discard before the measured capture.",
     )
     parser.add_argument(

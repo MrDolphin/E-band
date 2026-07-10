@@ -75,6 +75,7 @@ At high sample rates, short frames have been most reliable with
 `--tx-cyclic-copies 3`, matching the original 15 Mbps baseline. Long payload
 frames are more sensitive; if TX silently fails, it shows up as `rx_rms_dbfs`
 near -62 dBFS.
+The default `--rx-discard-buffers 0` also matches that baseline.
 
 For longer payload runs, keep each TX frame small and run multiple batches:
 
