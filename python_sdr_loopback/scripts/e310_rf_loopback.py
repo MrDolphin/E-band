@@ -47,6 +47,7 @@ def main() -> int:
     parser.add_argument("--symbol-rate", type=int, default=250_000)
     parser.add_argument("--bandwidth", type=int, default=800_000)
     parser.add_argument("--tx-gain-db", type=float, default=-40.0, help="AD9361 TX hardware gain/attenuation value.")
+    parser.add_argument("--tx-amplitude", type=float, default=0.25, help="Digital baseband amplitude before AD9361 TX.")
     parser.add_argument("--rx-gain-db", type=float, default=20.0)
     parser.add_argument("--rx-buffer", type=int, default=32768)
     parser.add_argument("--stats-only", action="store_true", help="Capture RX samples and print level stats without decoding.")
@@ -58,7 +59,17 @@ def main() -> int:
         print("pyadi-iio is not installed. Install with: python -m pip install pyadi-iio", file=sys.stderr)
         return 2
 
-    modem = QpskLoopbackModem(ModemConfig(sample_rate=args.sample_rate, symbol_rate=args.symbol_rate))
+    if not 0.0 < args.tx_amplitude <= 1.0:
+        print("--tx-amplitude must be in (0, 1]", file=sys.stderr)
+        return 2
+
+    modem = QpskLoopbackModem(
+        ModemConfig(
+            sample_rate=args.sample_rate,
+            symbol_rate=args.symbol_rate,
+            tx_amplitude=args.tx_amplitude,
+        )
+    )
     tx = modem.transmit(args.message.encode("utf-8"), sequence=1)
     tx_padded = np.concatenate([tx, np.zeros(args.rx_buffer, dtype=np.complex64)])
 
