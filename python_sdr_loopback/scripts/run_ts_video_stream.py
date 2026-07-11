@@ -75,7 +75,7 @@ def main() -> int:
     parser.add_argument("--min-rx-rms-dbfs", type=float, default=-45.0)
     parser.add_argument("--rx-level-retries", type=int, default=8)
     parser.add_argument("--watch-timeout-sec", type=float, default=0.0)
-    parser.add_argument("--watch-poll-sec", type=float, default=0.25)
+    parser.add_argument("--watch-poll-sec", type=float, default=0.5)
     parser.add_argument("--watch-file-settle-sec", type=float, default=0.05)
     parser.add_argument(
         "--no-watch-during-transfer",

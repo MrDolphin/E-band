@@ -75,6 +75,8 @@ RX level retries: 8
 Batch bytes: 160000
 Inter-batch delay: 0.25 s
 RX frame copies: 1.0
+Watch during transfer: true
+Watch poll interval: 0.5 s
 ```
 
 For TS mode, keep batch boundaries aligned to 188-byte MPEG-TS packets:
@@ -90,6 +92,7 @@ This 160k work point was selected from RF-loopback measurements:
 ```text
 160k: metrics_ok=true, capture_attempts_avg=1.000, context_recreates_total=0, stream_goodput_bps_avg ~= 619 kbps
 200k: metrics_ok=true, but capture_attempts_avg=1.333, context_recreates_total=1, stream_goodput_bps_avg ~= 439 kbps
+livewatch poll=0.5: metrics_ok=true, capture_attempts_avg=1.000, context_recreates_total=0, stream_goodput_bps_avg ~= 617 kbps
 ```
 
 ## v0.2 Goals
@@ -150,6 +153,7 @@ By default, the segment watcher starts before the SDR transfer. This lets `live.
 
 ```text
 watch_during_transfer=true
+watch_poll_sec=0.5
 playable_file=artifacts\ts_stream_v02_baseline\live.ts
 ```
 
@@ -164,6 +168,8 @@ To reduce watcher polling pressure while still watching during SDR transfer:
 ```powershell
 python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifacts\ts_stream_livewatch_poll05 --watch-poll-sec 0.5
 ```
+
+`--watch-poll-sec 0.5` is the current default because it measured close to post-transfer watcher throughput while keeping live output enabled.
 
 This writes per-batch metrics to:
 
