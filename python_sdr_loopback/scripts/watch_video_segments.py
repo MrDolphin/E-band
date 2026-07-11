@@ -88,6 +88,9 @@ def main() -> int:
     print(f"watch_segment_dir={args.segment_dir}")
     print(f"watch_manifest_file={manifest_file}")
     print(f"watch_output_file={args.output_file}")
+    print("playable_hint=true")
+    print(f"playable_file={args.output_file}")
+    print("playable_format=mpegts")
 
     processed: set[int] = set()
     output_crc = 0
