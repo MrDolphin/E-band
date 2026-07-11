@@ -79,8 +79,10 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    ok_records = [record for record in records if bool(record.get("batch_file_ok"))]
-    failed_records = [record for record in records if not bool(record.get("batch_file_ok"))]
+    ok_key = "chunk_ok" if any("chunk_ok" in record for record in records) else "batch_file_ok"
+    item_label = "chunk" if ok_key == "chunk_ok" else "batch"
+    ok_records = [record for record in records if bool(record.get(ok_key))]
+    failed_records = [record for record in records if not bool(record.get(ok_key))]
     capture_attempts = int_values(records, "capture_attempts")
     context_recreates = int_values(records, "context_recreates_this_batch")
     missing_chunks = [
@@ -90,14 +92,15 @@ def main() -> int:
     ]
 
     print(f"metrics_file={args.metrics_file}")
-    print(f"batch_count={len(records)}")
-    print(f"batch_ok_count={len(ok_records)}")
-    print(f"batch_failed_count={len(failed_records)}")
+    print(f"{item_label}_count={len(records)}")
+    print(f"{item_label}_ok_count={len(ok_records)}")
+    print(f"{item_label}_failed_count={len(failed_records)}")
     print(f"capture_attempts_total={sum(capture_attempts)}")
     print(f"capture_attempts_avg={statistics.mean(capture_attempts) if capture_attempts else 0.0:.3f}")
     print(f"context_recreates_total={sum(context_recreates)}")
     print(f"context_recreates_max={max(context_recreates) if context_recreates else 0}")
     print(f"missing_chunks_total={sum(missing_chunks)}")
+    print_float_summary("chunk_elapsed_sec", numeric_values(records, "chunk_elapsed_sec"))
     print_float_summary("batch_elapsed_sec", numeric_values(records, "batch_elapsed_sec"))
     print_float_summary("sdr_capture_elapsed_sec", numeric_values(records, "sdr_capture_elapsed_sec"))
     print_float_summary("decode_elapsed_sec", numeric_values(records, "decode_elapsed_sec"))

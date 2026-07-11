@@ -313,3 +313,57 @@ v0.2 is complete when one command can:
 5. Save rolling timing metrics.
 6. Verify segment CRCs and final CRC.
 7. Report a stable benchmark summary across at least five runs.
+
+## v0.3 Low-Latency TS Stream Prototype
+
+v0.2 proves reliable TS file transfer. v0.3 changes the operating model:
+
+```text
+ffmpeg low-bitrate MPEG-TS stdout
+-> small TS byte chunks
+-> SDR RF loopback
+-> recovered TS bytes
+-> ffplay stdin
+```
+
+The first target is not maximum throughput. The first target is a real stream-shaped demo:
+
+```text
+video bitrate: 500 kbps
+chunk size: about 40 KB, TS-packet aligned
+player input: pipe:0
+first-screen latency: a few seconds
+```
+
+Start with a bounded smoke test:
+
+```powershell
+python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_20chunks --max-chunks 20
+```
+
+If that opens and keeps playing, remove the chunk limit:
+
+```powershell
+python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_stream
+```
+
+Useful variations:
+
+```powershell
+python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_300k --video-bitrate 300k --video-bufsize 600k --max-chunks 20
+python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_noplayer --no-player --max-chunks 20
+```
+
+Key fields:
+
+```text
+stream_chunk
+stream_chunk_bytes
+chunk_ok
+stream_goodput_bps
+stream_chunks_ok
+stream_chunks_failed
+low_latency_stream_ok
+```
+
+If `low_latency_stream_ok=true`, the RF loopback stream path worked for every processed chunk.
