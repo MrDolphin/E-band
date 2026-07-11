@@ -29,7 +29,7 @@ def main() -> int:
     parser.add_argument("--segment-dir", type=Path, help="Defaults to <work-dir>/segments.")
     parser.add_argument("--manifest-file", type=Path, help="Defaults to <segment-dir>/manifest.json.")
     parser.add_argument("--metrics-file", type=Path, help="Defaults to <work-dir>/metrics.jsonl.")
-    parser.add_argument("--batch-bytes", type=int, default=120_000)
+    parser.add_argument("--batch-bytes", type=int, default=160_000)
     parser.add_argument(
         "--no-ts-packet-align",
         action="store_true",

@@ -72,14 +72,24 @@ TX cyclic copies: 3
 RX discard buffers: 0
 Minimum RX level: -45 dBFS
 RX level retries: 8
+Batch bytes: 160000
+Inter-batch delay: 0.25 s
+RX frame copies: 1.0
 ```
 
 For TS mode, keep batch boundaries aligned to 188-byte MPEG-TS packets:
 
 ```text
-requested batch bytes: 120000
-effective TS-aligned bytes: 119944
-119944 = 188 * 638
+requested batch bytes: 160000
+effective TS-aligned bytes: 159988
+159988 = 188 * 851
+```
+
+This 160k work point was selected from RF-loopback measurements:
+
+```text
+160k: metrics_ok=true, capture_attempts_avg=1.000, context_recreates_total=0, stream_goodput_bps_avg ~= 619 kbps
+200k: metrics_ok=true, but capture_attempts_avg=1.333, context_recreates_total=1, stream_goodput_bps_avg ~= 439 kbps
 ```
 
 ## v0.2 Goals
@@ -151,13 +161,13 @@ python scripts\summarize_stream_metrics.py artifacts\ts_stream_v02_baseline\metr
 Benchmark the TS file produced by the one-command flow. Use the TS-aligned size directly:
 
 ```powershell
-python scripts\benchmark_stream_transfer.py --input-file artifacts\ts_stream_v02_baseline\phone.ts --runs 5 --batch-bytes 119944 --artifact-prefix artifacts\bench_ts_119944 --quiet-run-output
+python scripts\benchmark_stream_transfer.py --input-file artifacts\ts_stream_v02_baseline\phone.ts --runs 5 --batch-bytes 159988 --artifact-prefix artifacts\bench_ts_159988 --quiet-run-output
 ```
 
 If this benchmark is unstable, compare with the non-TS sample command:
 
 ```powershell
-python scripts\benchmark_stream_transfer.py --input-file phone.mp4 --runs 5 --batch-bytes 120000 --artifact-prefix artifacts\bench_mp4_120k --quiet-run-output
+python scripts\benchmark_stream_transfer.py --input-file phone.mp4 --runs 5 --batch-bytes 160000 --artifact-prefix artifacts\bench_mp4_160k --quiet-run-output
 ```
 
 ## Implementation Tasks

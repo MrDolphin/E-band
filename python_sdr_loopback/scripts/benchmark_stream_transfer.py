@@ -45,7 +45,7 @@ def main() -> int:
     parser.add_argument("--input-file", type=Path, required=True)
     parser.add_argument("--artifact-prefix", type=Path, default=Path("artifacts/stream_benchmark"))
     parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--batch-bytes", type=int, default=120_000)
+    parser.add_argument("--batch-bytes", type=int, default=160_000)
     parser.add_argument("--uri", default="ip:192.168.1.10")
     parser.add_argument("--lo-hz", type=int, default=900_000_000)
     parser.add_argument("--sample-rate", type=int, default=30_000_000)

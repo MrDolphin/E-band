@@ -132,7 +132,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Transfer a file over E310 RF loopback with one reusable SDR process.")
     parser.add_argument("--input-file", type=Path, required=True)
     parser.add_argument("--output-file", type=Path, required=True)
-    parser.add_argument("--batch-bytes", type=int, default=120_000)
+    parser.add_argument("--batch-bytes", type=int, default=160_000)
     parser.add_argument("--artifact-prefix", type=Path, default=Path("artifacts/file_stream"))
     parser.add_argument("--uri", default="ip:192.168.1.10")
     parser.add_argument("--lo-hz", type=int, default=900_000_000)

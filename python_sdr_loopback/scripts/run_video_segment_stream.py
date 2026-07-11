@@ -13,7 +13,7 @@ def main() -> int:
     parser.add_argument("--segment-dir", type=Path, default=Path("artifacts/video_segments"))
     parser.add_argument("--manifest-file", type=Path, help="Defaults to <segment-dir>/manifest.json.")
     parser.add_argument("--metrics-file", type=Path, help="Defaults to <segment-dir>/metrics.jsonl.")
-    parser.add_argument("--batch-bytes", type=int, default=120_000)
+    parser.add_argument("--batch-bytes", type=int, default=160_000)
     parser.add_argument("--uri", default="ip:192.168.1.10")
     parser.add_argument("--lo-hz", type=int, default=900_000_000)
     parser.add_argument("--sample-rate", type=int, default=30_000_000)
