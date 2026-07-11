@@ -98,6 +98,8 @@ def main() -> int:
     next_index = 1
     started_at = time.perf_counter()
     last_progress_at = started_at
+    first_segment_elapsed: float | None = None
+    segment_arrival_times: list[float] = []
 
     with args.output_file.open("wb") as output:
         while True:
@@ -113,10 +115,15 @@ def main() -> int:
                 data = candidate.read_bytes()
                 output.write(data)
                 output.flush()
+                now = time.perf_counter()
                 output_crc = zlib.crc32(data, output_crc) & 0xFFFFFFFF
                 output_bytes += len(data)
                 processed.add(next_index)
-                last_progress_at = time.perf_counter()
+                last_progress_at = now
+                elapsed = now - started_at
+                if first_segment_elapsed is None:
+                    first_segment_elapsed = elapsed
+                segment_arrival_times.append(elapsed)
 
                 expected = manifest_segments.get(next_index)
                 crc_ok = True
@@ -150,6 +157,13 @@ def main() -> int:
                     print(f"watch_expected_output_crc32={expected_output_crc}")
                     print(f"watch_output_size_ok={str(output_size_ok).lower()}")
                     print(f"watch_output_crc_ok={str(output_crc_ok).lower()}")
+                    gaps = [
+                        segment_arrival_times[index] - segment_arrival_times[index - 1]
+                        for index in range(1, len(segment_arrival_times))
+                    ]
+                    print(f"watch_first_segment_elapsed_sec={(first_segment_elapsed or 0.0):.3f}")
+                    print(f"watch_inter_segment_gap_avg_sec={(sum(gaps) / len(gaps) if gaps else 0.0):.3f}")
+                    print(f"watch_inter_segment_gap_max_sec={(max(gaps) if gaps else 0.0):.3f}")
                     print(f"watch_elapsed_sec={time.perf_counter() - started_at:.3f}")
                     print(f"watch_ok={str(watch_ok).lower()}")
                     return 0 if watch_ok else 1

@@ -260,10 +260,9 @@ auto-open ffplay/VLC
 Measure timing that matters for video perception:
 
 ```text
-first segment available time
-time between segment arrivals
-max inter-segment gap
-average inter-segment gap
+watch_first_segment_elapsed_sec
+watch_inter_segment_gap_avg_sec
+watch_inter_segment_gap_max_sec
 ```
 
 This tells us whether the system is merely transferring files or approaching a stream-like demo.
