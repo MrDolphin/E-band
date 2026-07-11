@@ -42,9 +42,16 @@ def ffmpeg_command(args, output: str) -> list[str]:
     if args.realtime_input:
         command.append("-re")
     command.extend(["-i", str(args.input_file)])
+    filters: list[str] = []
+    if args.scale_height > 0:
+        filters.append(f"scale=-2:{args.scale_height}")
+    if args.fps > 0:
+        filters.append(f"fps={args.fps}")
     if args.copy_video:
         command.extend(["-c:v", "copy"])
     else:
+        if filters:
+            command.extend(["-vf", ",".join(filters)])
         command.extend(
             [
                 "-c:v",
@@ -73,20 +80,25 @@ def ffmpeg_command(args, output: str) -> list[str]:
     return command
 
 
-def start_player(player: str) -> subprocess.Popen:
+def start_player(player: str, buffered: bool) -> subprocess.Popen:
     command = [
         player,
-        "-fflags",
-        "nobuffer",
         "-flags",
         "low_delay",
         "-probesize",
         "32768",
         "-analyzeduration",
         "0",
+        "-framedrop",
+    ]
+    if not buffered:
+        command.extend(["-fflags", "nobuffer"])
+    command.extend(
+        [
         "-i",
         "pipe:0",
-    ]
+        ]
+    )
     print(f"player_command={' '.join(command)}")
     return subprocess.Popen(command, stdin=subprocess.PIPE)
 
@@ -133,6 +145,9 @@ def main() -> int:
     parser.add_argument("--video-bufsize", default="1000k")
     parser.add_argument("--encoder-preset", default="ultrafast")
     parser.add_argument("--gop", type=int, default=30)
+    parser.add_argument("--scale-height", type=int, default=0, help="0 keeps source height; e.g. 360 reduces artifacts.")
+    parser.add_argument("--fps", type=int, default=0, help="0 keeps source FPS; e.g. 12 or 15 is smoother at low bitrate.")
+    parser.add_argument("--player-buffered", action="store_true", help="Allow a small ffplay buffer instead of strict nobuffer.")
     parser.add_argument("--no-audio", action="store_true", default=True)
     parser.add_argument("--audio", action="store_false", dest="no_audio")
     parser.add_argument("--audio-bitrate", default="64k")
@@ -201,6 +216,9 @@ def main() -> int:
     print(f"chunk_bytes_effective={effective_chunk_bytes}")
     print(f"ts_packet_aligned={str(effective_chunk_bytes % TS_PACKET_SIZE == 0).lower()}")
     print(f"video_bitrate={args.video_bitrate}")
+    print(f"scale_height={args.scale_height}")
+    print(f"fps={args.fps}")
+    print(f"player_buffered={str(bool(args.player_buffered)).lower()}")
     print(f"copy_video={str(bool(args.copy_video)).lower()}")
     print(f"open_player={str(not args.no_player).lower()}")
     print(f"ffmpeg_command={' '.join(encoder_command)}")
@@ -250,7 +268,7 @@ def main() -> int:
         sdr = configure_sdr(adi, args, rx_buffer_size)
         print_sdr_info(sdr, args)
         ffmpeg_process = subprocess.Popen(encoder_command, stdout=subprocess.PIPE)
-        player_process = None if args.no_player else start_player(args.player)
+        player_process = None if args.no_player else start_player(args.player, bool(args.player_buffered))
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_handle = output_file.open("wb")
 

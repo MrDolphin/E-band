@@ -354,6 +354,18 @@ python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir ar
 python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_noplayer --no-player --max-chunks 20
 ```
 
+If playback is complete but visually jumps or shows compression artifacts, the RF bytes are probably intact but the player is receiving bursty chunks and the encoder is too constrained. Use a smoother low-rate profile:
+
+```powershell
+python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_smooth_250k --video-bitrate 250k --video-bufsize 500k --scale-height 360 --fps 12 --chunk-bytes 20000 --player-buffered --max-chunks 20
+```
+
+Then remove `--max-chunks 20` for a longer run:
+
+```powershell
+python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_smooth_250k_full --video-bitrate 250k --video-bufsize 500k --scale-height 360 --fps 12 --chunk-bytes 20000 --player-buffered
+```
+
 Key fields:
 
 ```text
