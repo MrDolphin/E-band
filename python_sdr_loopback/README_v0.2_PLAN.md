@@ -142,6 +142,12 @@ This writes per-batch metrics to:
 artifacts\ts_stream_v02_baseline\metrics.jsonl
 ```
 
+Summarize the metrics:
+
+```powershell
+python scripts\summarize_stream_metrics.py artifacts\ts_stream_v02_baseline\metrics.jsonl
+```
+
 Benchmark the TS file produced by the one-command flow. Use the TS-aligned size directly:
 
 ```powershell
