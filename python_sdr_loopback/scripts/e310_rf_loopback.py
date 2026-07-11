@@ -176,6 +176,7 @@ def print_packet_preview(packet: Packet, payload_pattern: str) -> None:
 
 
 def main() -> int:
+    script_start = time.perf_counter()
     parser = argparse.ArgumentParser(description="Transmit and receive one QPSK packet through E310 RF loopback.")
     parser.add_argument("--uri", default="ip:192.168.1.10")
     parser.add_argument("--message", default="hello rf")
@@ -295,6 +296,7 @@ def main() -> int:
         print("--payload-bytes must be in [0, 65535]", file=sys.stderr)
         return 2
 
+    payload_build_start = time.perf_counter()
     modem = QpskLoopbackModem(
         ModemConfig(
             sample_rate=args.sample_rate,
@@ -321,6 +323,8 @@ def main() -> int:
             for sequence in range(1, args.packet_count + 1)
         ]
         payload_pattern_label = args.payload_pattern
+    payload_build_elapsed = time.perf_counter() - payload_build_start
+    modulate_start = time.perf_counter()
     tx = np.concatenate(
         [
             modem.transmit(payload, sequence=sequence)
@@ -337,6 +341,7 @@ def main() -> int:
     rx_buffer_size = max(args.rx_buffer, min_rx_buffer)
     tx *= float(args.tx_dac_scale)
     tx_padded = np.tile(tx, int(args.tx_cyclic_copies)).astype(np.complex64)
+    modulate_elapsed = time.perf_counter() - modulate_start
     print_tx_stats(tx)
     print(f"tx_cyclic_samples={len(tx_padded)}")
     print(f"samples_per_packet={samples_per_packet:.1f}")
@@ -358,12 +363,19 @@ def main() -> int:
         print(f"rx_level_retries={args.rx_level_retries}")
     print(f"rx_buffer_requested={args.rx_buffer}")
     print(f"rx_buffer_used={rx_buffer_size}")
+    print(f"payload_build_elapsed_sec={payload_build_elapsed:.3f}")
+    print(f"modulate_elapsed_sec={modulate_elapsed:.3f}")
 
     rx = None
     max_attempts = int(args.rx_level_retries) + 1
+    sdr_capture_start = time.perf_counter()
+    capture_attempts_used = 0
     try:
         for capture_attempt in range(1, max_attempts + 1):
+            capture_attempts_used = capture_attempt
+            attempt_start = time.perf_counter()
             sdr = configure_sdr(adi, args, rx_buffer_size)
+            configure_elapsed = time.perf_counter() - attempt_start
             if capture_attempt == 1:
                 print(f"tx_channel={args.tx_channel}")
                 print(f"rx_channel={args.rx_channel}")
@@ -373,6 +385,7 @@ def main() -> int:
                 print(f"rx_hardwaregain_chan{args.rx_channel}={sdr._get_iio_attr(f'voltage{args.rx_channel}', 'hardwaregain', False)}")
             else:
                 print(f"rx_context_retry={capture_attempt}")
+            io_start = time.perf_counter()
             try:
                 destroy_iio_buffers(sdr)
                 # Multiple short-frame copies make cyclic TX startup more reliable on this E310.
@@ -385,6 +398,10 @@ def main() -> int:
                 rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
             finally:
                 destroy_iio_buffers(sdr)
+            io_elapsed = time.perf_counter() - io_start
+            print(f"capture_attempt={capture_attempt}")
+            print(f"sdr_configure_elapsed_sec={configure_elapsed:.3f}")
+            print(f"sdr_io_elapsed_sec={io_elapsed:.3f}")
             level = rx_level_dbfs(rx, float(args.adc_full_scale))
             if args.min_rx_rms_dbfs is None or level >= float(args.min_rx_rms_dbfs):
                 break
@@ -399,10 +416,13 @@ def main() -> int:
             file=sys.stderr,
         )
         return 3
+    sdr_capture_elapsed = time.perf_counter() - sdr_capture_start
 
     if rx is None:
         print("rx_capture_failed=true", file=sys.stderr)
         return 3
+    print(f"sdr_capture_elapsed_sec={sdr_capture_elapsed:.3f}")
+    print(f"capture_attempts_used={capture_attempts_used}")
     print_rx_stats(rx, float(args.adc_full_scale))
     if args.stats_only:
         if args.save_iq:
@@ -411,8 +431,11 @@ def main() -> int:
             save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
         return 0
 
+    decode_start = time.perf_counter()
     max_decode_packets = args.packet_count * rx_frame_copies
     packets = modem.receive_many(rx, max_decode_packets)
+    decode_elapsed = time.perf_counter() - decode_start
+    recover_start = time.perf_counter()
     recovered_payloads: list[bytes] = []
     if args.input_file:
         seen_chunks: set[int] = set()
@@ -436,6 +459,7 @@ def main() -> int:
         }
         packets_ok = len(good_sequences)
         expected_packets = args.packet_count
+    recover_elapsed = time.perf_counter() - recover_start
     for packet in packets[:10]:
         print_packet_preview(packet, payload_pattern_label)
 
@@ -450,7 +474,9 @@ def main() -> int:
     print(f"payload_bits_ok={packets_ok * payload_size * 8}")
     print(f"payload_bitrate_ok_bps={raw_bitrate * efficiency * packets_ok / max(capture_capacity, 1):.0f}")
     file_ok = False
+    file_recover_elapsed = 0.0
     if args.input_file:
+        file_recover_start = time.perf_counter()
         if recovered_payloads:
             recovered, file_report = recover_file(recovered_payloads)
             for key, value in file_report.items():
@@ -459,6 +485,7 @@ def main() -> int:
         else:
             recovered = b""
             file_ok = False
+        file_recover_elapsed = time.perf_counter() - file_recover_start
         print(f"file_ok={str(file_ok).lower()}")
         if args.output_file and file_ok:
             args.output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -478,6 +505,11 @@ def main() -> int:
         )
     if args.plot_prefix:
         save_plots(args.plot_prefix, modem, rx, float(args.sample_rate))
+    print(f"decode_elapsed_sec={decode_elapsed:.3f}")
+    print(f"packet_filter_elapsed_sec={recover_elapsed:.3f}")
+    if args.input_file:
+        print(f"file_recover_elapsed_sec={file_recover_elapsed:.3f}")
+    print(f"script_total_elapsed_sec={time.perf_counter() - script_start:.3f}")
     if args.input_file:
         return 0 if file_ok else 1
     return 0 if packets_ok == args.packet_count else 1
