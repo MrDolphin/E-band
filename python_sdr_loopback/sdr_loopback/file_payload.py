@@ -26,6 +26,23 @@ def file_id_for(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFFFFFF
 
 
+def whitening_mask(size: int) -> bytes:
+    state = 0x6D2B79F5
+    mask = bytearray(size)
+    for offset in range(size):
+        state = (1664525 * state + 1013904223) & 0xFFFFFFFF
+        mask[offset] = (state >> 24) & 0xFF
+    return bytes(mask)
+
+
+def whiten_payload(payload: bytes) -> bytes:
+    return bytes(value ^ mask for value, mask in zip(payload, whitening_mask(len(payload))))
+
+
+def dewhiten_payload(payload: bytes) -> bytes:
+    return whiten_payload(payload)
+
+
 def build_file_payloads(data: bytes, payload_size: int, file_id: int | None = None) -> list[bytes]:
     if payload_size <= FILE_HEADER_SIZE:
         raise ValueError(f"payload_size must be greater than {FILE_HEADER_SIZE}")

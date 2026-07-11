@@ -36,6 +36,7 @@ def main() -> int:
     parser.add_argument("--tx-port", default="B")
     parser.add_argument("--rx-port", default="B_BALANCED")
     parser.add_argument("--payload-bytes", type=int, default=512)
+    parser.add_argument("--file-guard-packets", type=int, default=0)
     parser.add_argument("--tx-cyclic-copies", type=int, default=3)
     parser.add_argument("--rx-discard-buffers", type=int, default=0)
     parser.add_argument("--min-rx-rms-dbfs", type=float, default=-45.0)
@@ -50,6 +51,9 @@ def main() -> int:
         return 2
     if args.retries < 0:
         print("--retries must be non-negative", file=sys.stderr)
+        return 2
+    if args.file_guard_packets < 0:
+        print("--file-guard-packets must be non-negative", file=sys.stderr)
         return 2
 
     data = args.input_file.read_bytes()
@@ -105,6 +109,8 @@ def main() -> int:
                 str(part_output),
                 "--payload-bytes",
                 str(args.payload_bytes),
+                "--file-guard-packets",
+                str(args.file_guard_packets),
                 "--tx-cyclic-copies",
                 str(args.tx_cyclic_copies),
                 "--rx-discard-buffers",

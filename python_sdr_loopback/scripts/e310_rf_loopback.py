@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sdr_loopback import ModemConfig, QpskLoopbackModem
-from sdr_loopback.file_payload import build_file_payloads, parse_file_payload, recover_file
+from sdr_loopback.file_payload import build_file_payloads, dewhiten_payload, parse_file_payload, recover_file, whiten_payload
 from sdr_loopback.packet import Packet
 from sdr_loopback.payload import build_payload, payload_efficiency, raw_bitrate_bps
 
@@ -308,8 +308,9 @@ def main() -> int:
         file_data = args.input_file.read_bytes()
         payload_size = int(args.payload_bytes)
         file_payloads = build_file_payloads(file_data, payload_size)
+        wire_file_payloads = [whiten_payload(payload) for payload in file_payloads]
         guard_payloads = [bytes([0x55]) * payload_size for _ in range(args.file_guard_packets)]
-        payloads = guard_payloads + file_payloads
+        payloads = guard_payloads + wire_file_payloads
         args.packet_count = len(payloads)
         payload_pattern_label = "file"
         print(f"input_file={args.input_file}")
@@ -344,6 +345,7 @@ def main() -> int:
     if args.input_file:
         print(f"file_guard_packets={args.file_guard_packets}")
         print(f"file_chunks_expected={len(file_payloads)}")
+        print("file_whitening=true")
     print(f"raw_bitrate_bps={raw_bitrate:.0f}")
     print(f"payload_efficiency={efficiency:.6f}")
     print(f"payload_bitrate_est_bps={raw_bitrate * efficiency:.0f}")
@@ -415,14 +417,15 @@ def main() -> int:
     if args.input_file:
         seen_chunks: set[int] = set()
         for packet in packets:
+            dewhitened = dewhiten_payload(packet.payload)
             try:
-                chunk = parse_file_payload(packet.payload)
+                chunk = parse_file_payload(dewhitened)
             except ValueError:
                 continue
-            if 0 <= chunk.chunk_index < len(file_payloads) and packet.payload == file_payloads[chunk.chunk_index]:
+            if 0 <= chunk.chunk_index < len(file_payloads) and dewhitened == file_payloads[chunk.chunk_index]:
                 if chunk.chunk_index not in seen_chunks:
                     seen_chunks.add(chunk.chunk_index)
-                    recovered_payloads.append(packet.payload)
+                    recovered_payloads.append(dewhitened)
         packets_ok = len(seen_chunks)
         expected_packets = len(file_payloads)
     else:
