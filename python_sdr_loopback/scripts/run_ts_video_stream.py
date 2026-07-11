@@ -80,6 +80,12 @@ def main() -> int:
     parser.add_argument("--open-player", action="store_true", help="Open ffplay after the first recovered segment is appended.")
     parser.add_argument("--player", default="ffplay")
     parser.add_argument(
+        "--player-input",
+        choices=("pipe", "file"),
+        default="pipe",
+        help="pipe streams TS bytes to ffplay stdin. file opens the growing live TS file directly.",
+    )
+    parser.add_argument(
         "--no-watch-during-transfer",
         action="store_true",
         help="Start the segment watcher after SDR transfer finishes instead of while it is running.",
@@ -183,7 +189,7 @@ def main() -> int:
         str(args.watch_timeout_sec),
     ]
     if args.open_player:
-        watch_command.extend(["--open-player", "--player", args.player])
+        watch_command.extend(["--open-player", "--player", args.player, "--player-input", args.player_input])
     watcher_process = None
     if not args.no_watch_during_transfer:
         watcher_process = start_command(watch_command)

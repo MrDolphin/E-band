@@ -58,10 +58,40 @@ def manifest_by_index(manifest: dict | None) -> dict[int, dict]:
     return by_index
 
 
-def start_player(player: str, output_file: Path) -> subprocess.Popen:
+def start_player(player: str, output_file: Path, input_mode: str) -> subprocess.Popen:
+    if input_mode == "pipe":
+        command = [
+            player,
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-probesize",
+            "32768",
+            "-analyzeduration",
+            "0",
+            "-i",
+            "pipe:0",
+        ]
+        print(f"player_command={' '.join(command)}")
+        return subprocess.Popen(command, stdin=subprocess.PIPE)
+
     command = [player, "-fflags", "nobuffer", "-flags", "low_delay", str(output_file)]
     print(f"player_command={' '.join(command)}")
     return subprocess.Popen(command)
+
+
+def write_player_data(player_process: subprocess.Popen | None, data: bytes) -> bool:
+    if player_process is None or player_process.stdin is None:
+        return True
+    try:
+        player_process.stdin.write(data)
+        player_process.stdin.flush()
+        return True
+    except (BrokenPipeError, OSError) as exc:
+        print(f"player_pipe_closed=true")
+        print(f"player_pipe_error={exc}")
+        return False
 
 
 def main() -> int:
@@ -73,6 +103,12 @@ def main() -> int:
     parser.add_argument("--file-settle-sec", type=float, default=0.05)
     parser.add_argument("--open-player", action="store_true", help="Open ffplay after the first segment is appended.")
     parser.add_argument("--player", default="ffplay")
+    parser.add_argument(
+        "--player-input",
+        choices=("pipe", "file"),
+        default="pipe",
+        help="pipe streams TS bytes to ffplay stdin. file opens the growing output file directly.",
+    )
     parser.add_argument(
         "--timeout-sec",
         type=float,
@@ -101,6 +137,7 @@ def main() -> int:
     print(f"playable_file={args.output_file}")
     print("playable_format=mpegts")
     print(f"open_player={str(bool(args.open_player)).lower()}")
+    print(f"player_input={args.player_input}")
 
     processed: set[int] = set()
     output_crc = 0
@@ -136,7 +173,10 @@ def main() -> int:
                     first_segment_elapsed = elapsed
                 segment_arrival_times.append(elapsed)
                 if args.open_player and player_process is None:
-                    player_process = start_player(str(args.player), args.output_file)
+                    player_process = start_player(str(args.player), args.output_file, str(args.player_input))
+                if args.open_player and args.player_input == "pipe":
+                    if not write_player_data(player_process, data):
+                        player_process = None
 
                 expected = manifest_segments.get(next_index)
                 crc_ok = True

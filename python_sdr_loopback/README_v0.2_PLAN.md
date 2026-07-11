@@ -177,6 +177,14 @@ To open ffplay automatically after the first recovered TS segment is appended:
 python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifacts\ts_stream_player_demo --open-player
 ```
 
+`--open-player` uses `--player-input pipe` by default. The watcher still writes `live.ts`
+for verification, but ffplay receives TS bytes through stdin so it does not stall on a
+temporarily short growing file. To compare with the old behavior:
+
+```powershell
+python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifacts\ts_stream_player_file --open-player --player-input file
+```
+
 This writes per-batch metrics to:
 
 ```text
