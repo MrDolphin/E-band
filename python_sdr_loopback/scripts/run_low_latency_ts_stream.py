@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -89,7 +90,15 @@ def player_size_args(width: int, height: int) -> list[str]:
     return args
 
 
-def start_player(player: str, buffered: bool, width: int, height: int) -> subprocess.Popen:
+def player_environment(window_id: str) -> dict[str, str] | None:
+    if not window_id:
+        return None
+    env = os.environ.copy()
+    env["SDL_WINDOWID"] = str(window_id)
+    return env
+
+
+def start_player(player: str, buffered: bool, width: int, height: int, window_id: str) -> subprocess.Popen:
     command = [
         player,
         "-flags",
@@ -110,10 +119,12 @@ def start_player(player: str, buffered: bool, width: int, height: int) -> subpro
         ]
     )
     print(f"player_command={' '.join(command)}")
-    return subprocess.Popen(command, stdin=subprocess.PIPE)
+    if window_id:
+        print(f"player_window_id={window_id}")
+    return subprocess.Popen(command, stdin=subprocess.PIPE, env=player_environment(window_id))
 
 
-def start_source_preview(player: str, input_file: Path, width: int, height: int) -> subprocess.Popen:
+def start_source_preview(player: str, input_file: Path, width: int, height: int, window_id: str) -> subprocess.Popen:
     command = [
         player,
         "-flags",
@@ -123,7 +134,9 @@ def start_source_preview(player: str, input_file: Path, width: int, height: int)
     command.extend(player_size_args(width, height))
     command.append(str(input_file))
     print(f"source_player_command={' '.join(command)}")
-    return subprocess.Popen(command)
+    if window_id:
+        print(f"source_player_window_id={window_id}")
+    return subprocess.Popen(command, env=player_environment(window_id))
 
 
 def write_pipe(process: subprocess.Popen | None, data: bytes, label: str) -> bool:
@@ -163,6 +176,8 @@ def main() -> int:
     parser.add_argument("--source-preview", action="store_true", help="Open a source-side preview near receiver start.")
     parser.add_argument("--source-player-width", type=int, default=0, help="Source preview width. 0 reuses --player-width.")
     parser.add_argument("--source-player-height", type=int, default=0, help="Source preview height. 0 reuses --player-height.")
+    parser.add_argument("--player-window-id", default="", help="Embed receiver ffplay into this native window id.")
+    parser.add_argument("--source-player-window-id", default="", help="Embed source ffplay into this native window id.")
     parser.add_argument("--no-player", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--realtime-input", action="store_true", default=True)
@@ -252,6 +267,8 @@ def main() -> int:
     print(f"player_width={args.player_width}")
     print(f"player_height={args.player_height}")
     print(f"source_preview={str(bool(args.source_preview)).lower()}")
+    print(f"player_window_id={args.player_window_id}")
+    print(f"source_player_window_id={args.source_player_window_id}")
     print(f"copy_video={str(bool(args.copy_video)).lower()}")
     print(f"open_player={str(not args.no_player).lower()}")
     print(f"ffmpeg_command={' '.join(encoder_command)}")
@@ -307,6 +324,7 @@ def main() -> int:
             bool(args.player_buffered),
             int(args.player_width),
             int(args.player_height),
+            str(args.player_window_id),
         )
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_handle = output_file.open("wb")
@@ -398,7 +416,13 @@ def main() -> int:
                 if args.source_preview and source_process is None:
                     source_width = int(args.source_player_width or args.player_width)
                     source_height = int(args.source_player_height or args.player_height)
-                    source_process = start_source_preview(args.player, args.input_file, source_width, source_height)
+                    source_process = start_source_preview(
+                        args.player,
+                        args.input_file,
+                        source_width,
+                        source_height,
+                        str(args.source_player_window_id),
+                    )
                     print("source_preview_started=true")
             else:
                 chunks_failed += 1

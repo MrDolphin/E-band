@@ -406,6 +406,7 @@ Stable demo / Smoke test / Conservative / Quality try / No player debug presets
 Start / Stop controls
 source preview and receiver playback comparison
 receiver player window sizing
+embedded source/receiver playback panes in the GUI
 live log output
 chunk, goodput, OK/failed, context recreate, elapsed status
 ```
@@ -429,3 +430,7 @@ encoded video size: changes --scale-height; RF bitrate pressure increases
 For demos, prefer enlarging only the player window first. Raising encoded
 resolution should be tested separately because it can cause stutter on the
 current Python chunked SDR path.
+
+The GUI embeds the sender preview and receiver playback into two side-by-side
+panes by passing native window IDs to ffplay. This keeps the demo inside one
+upper-computer window and avoids overlapping standalone player windows.
