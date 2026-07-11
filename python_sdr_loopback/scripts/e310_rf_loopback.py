@@ -86,6 +86,17 @@ def configure_sdr(adi_module, args, rx_buffer_size: int):
     return sdr
 
 
+def capture_once(sdr, tx_samples: np.ndarray, settle_sec: float, discard_buffers: int) -> np.ndarray:
+    destroy_iio_buffers(sdr)
+    sdr.tx_cyclic_buffer = True
+    sdr.tx(tx_samples)
+    time.sleep(float(settle_sec))
+    for _ in range(discard_buffers):
+        sdr.rx()
+    raw = sdr.rx()
+    return np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
+
+
 def save_iq_capture(
     path: Path,
     tx: np.ndarray,
@@ -341,6 +352,11 @@ def main() -> int:
     rx_buffer_size = max(args.rx_buffer, min_rx_buffer)
     tx *= float(args.tx_dac_scale)
     tx_padded = np.tile(tx, int(args.tx_cyclic_copies)).astype(np.complex64)
+    preflight_enabled = bool(args.input_file and args.min_rx_rms_dbfs is not None)
+    preflight_payload = build_payload(1, min(payload_size, 512), "random")
+    preflight_tx = modem.transmit(preflight_payload, sequence=1) * float(args.tx_dac_scale)
+    preflight_tx_padded = np.tile(preflight_tx, int(args.tx_cyclic_copies)).astype(np.complex64)
+    preflight_rx_buffer_size = max(args.rx_buffer, int(np.ceil(len(preflight_tx) * 2)))
     modulate_elapsed = time.perf_counter() - modulate_start
     print_tx_stats(tx)
     print(f"tx_cyclic_samples={len(tx_padded)}")
@@ -363,6 +379,9 @@ def main() -> int:
         print(f"rx_level_retries={args.rx_level_retries}")
     print(f"rx_buffer_requested={args.rx_buffer}")
     print(f"rx_buffer_used={rx_buffer_size}")
+    if preflight_enabled:
+        print(f"preflight_enabled=true")
+        print(f"preflight_rx_buffer_used={preflight_rx_buffer_size}")
     print(f"payload_build_elapsed_sec={payload_build_elapsed:.3f}")
     print(f"modulate_elapsed_sec={modulate_elapsed:.3f}")
 
@@ -374,7 +393,7 @@ def main() -> int:
         for capture_attempt in range(1, max_attempts + 1):
             capture_attempts_used = capture_attempt
             attempt_start = time.perf_counter()
-            sdr = configure_sdr(adi, args, rx_buffer_size)
+            sdr = configure_sdr(adi, args, preflight_rx_buffer_size if preflight_enabled else rx_buffer_size)
             configure_elapsed = time.perf_counter() - attempt_start
             if capture_attempt == 1:
                 print(f"tx_channel={args.tx_channel}")
@@ -387,15 +406,22 @@ def main() -> int:
                 print(f"rx_context_retry={capture_attempt}")
             io_start = time.perf_counter()
             try:
-                destroy_iio_buffers(sdr)
-                # Multiple short-frame copies make cyclic TX startup more reliable on this E310.
-                sdr.tx_cyclic_buffer = True
-                sdr.tx(tx_padded)
-                time.sleep(float(args.tx_settle_sec))
-                for _ in range(args.rx_discard_buffers):
-                    sdr.rx()
-                raw = sdr.rx()
-                rx = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
+                if preflight_enabled:
+                    preflight_start = time.perf_counter()
+                    preflight_rx = capture_once(sdr, preflight_tx_padded, float(args.tx_settle_sec), args.rx_discard_buffers)
+                    preflight_level = rx_level_dbfs(preflight_rx, float(args.adc_full_scale))
+                    print(f"preflight_elapsed_sec={time.perf_counter() - preflight_start:.3f}")
+                    print(f"preflight_rx_rms_dbfs={preflight_level:.2f}")
+                    if preflight_level < float(args.min_rx_rms_dbfs):
+                        rx = preflight_rx
+                    else:
+                        real_start = time.perf_counter()
+                        destroy_iio_buffers(sdr)
+                        sdr.rx_buffer_size = int(rx_buffer_size)
+                        rx = capture_once(sdr, tx_padded, float(args.tx_settle_sec), args.rx_discard_buffers)
+                        print(f"real_capture_elapsed_sec={time.perf_counter() - real_start:.3f}")
+                else:
+                    rx = capture_once(sdr, tx_padded, float(args.tx_settle_sec), args.rx_discard_buffers)
             finally:
                 destroy_iio_buffers(sdr)
             io_elapsed = time.perf_counter() - io_start
