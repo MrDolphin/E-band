@@ -60,9 +60,6 @@ class SdrVideoGui(tk.Tk):
         self.preset_var = tk.StringVar(value=PRESETS[0].label)
         self.extra_args_var = tk.StringVar(value="")
         self.source_preview_var = tk.BooleanVar(value=True)
-        self.embed_player_var = tk.BooleanVar(value=False)
-        self.player_width_var = tk.StringVar(value="360")
-        self.player_height_var = tk.StringVar(value="640")
 
         self.status_var = tk.StringVar(value="就绪")
         self.chunk_var = tk.StringVar(value="-")
@@ -82,8 +79,7 @@ class SdrVideoGui(tk.Tk):
         root = ttk.Frame(self, padding=14)
         root.pack(fill=tk.BOTH, expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(4, weight=3)
-        root.rowconfigure(5, weight=2)
+        root.rowconfigure(4, weight=1)
 
         file_frame = ttk.LabelFrame(root, text="输入")
         file_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -116,15 +112,8 @@ class SdrVideoGui(tk.Tk):
         ttk.Checkbutton(preset_frame, text="打开发送端预览", variable=self.source_preview_var).grid(
             row=3, column=0, padx=8, pady=8, sticky="w"
         )
-        size_frame = ttk.Frame(preset_frame)
-        size_frame.grid(row=3, column=1, padx=8, pady=8, sticky="w")
-        ttk.Label(size_frame, text="播放窗口").pack(side=tk.LEFT)
-        ttk.Entry(size_frame, textvariable=self.player_width_var, width=6).pack(side=tk.LEFT, padx=(8, 2))
-        ttk.Label(size_frame, text="x").pack(side=tk.LEFT)
-        ttk.Entry(size_frame, textvariable=self.player_height_var, width=6).pack(side=tk.LEFT, padx=(2, 8))
-        ttk.Label(size_frame, text="只放大播放窗口，不提高 RF 码率").pack(side=tk.LEFT)
-        ttk.Checkbutton(preset_frame, text="尝试嵌入上位机播放区域", variable=self.embed_player_var).grid(
-            row=4, column=0, columnspan=2, padx=8, pady=(0, 8), sticky="w"
+        ttk.Label(preset_frame, text="播放窗口会按视频实际尺寸自动显示").grid(
+            row=3, column=1, padx=8, pady=8, sticky="w"
         )
 
         controls = ttk.Frame(root)
@@ -148,16 +137,8 @@ class SdrVideoGui(tk.Tk):
         self._metric(metrics, 6, "接收播放", self.receiver_status_var)
         self._metric(metrics, 7, "对照延迟", self.delay_status_var)
 
-        preview_frame = ttk.LabelFrame(root, text="视频对照")
-        preview_frame.grid(row=4, column=0, sticky="nsew", pady=(0, 10))
-        preview_frame.columnconfigure(0, weight=1)
-        preview_frame.columnconfigure(1, weight=1)
-        preview_frame.rowconfigure(0, weight=1)
-        self.source_video_host = self._video_panel(preview_frame, 0, "发送视频")
-        self.receiver_video_host = self._video_panel(preview_frame, 1, "接收视频")
-
         log_frame = ttk.LabelFrame(root, text="运行日志")
-        log_frame.grid(row=5, column=0, sticky="nsew")
+        log_frame.grid(row=4, column=0, sticky="nsew")
         log_frame.rowconfigure(0, weight=1)
         log_frame.columnconfigure(0, weight=1)
         self.log_text = tk.Text(log_frame, wrap=tk.NONE, height=18, font=("Consolas", 10))
@@ -172,17 +153,6 @@ class SdrVideoGui(tk.Tk):
         cell.grid(row=0, column=column, sticky="ew")
         ttk.Label(cell, text=label).pack(anchor="w")
         ttk.Label(cell, textvariable=variable, font=("Segoe UI", 11, "bold")).pack(anchor="w")
-
-    @staticmethod
-    def _video_panel(parent: ttk.Frame, column: int, title: str) -> tk.Frame:
-        outer = ttk.LabelFrame(parent, text=title)
-        outer.grid(row=0, column=column, sticky="nsew", padx=6, pady=6)
-        outer.rowconfigure(0, weight=1)
-        outer.columnconfigure(0, weight=1)
-        host = tk.Frame(outer, bg="black", width=360, height=300, highlightthickness=1, highlightbackground="#333333")
-        host.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-        host.grid_propagate(False)
-        return host
 
     def browse_input(self) -> None:
         path = filedialog.askopenfilename(
@@ -216,20 +186,10 @@ class SdrVideoGui(tk.Tk):
             self.work_dir_var.get(),
         ]
         command.extend(preset.args)
-        width = self.player_width_var.get().strip()
-        height = self.player_height_var.get().strip()
-        if width and width != "0":
-            command.extend(["--player-width", width])
-        if height and height != "0":
-            command.extend(["--player-height", height])
         command.extend(["--player-title", "接收视频"])
         if self.source_preview_var.get() and not no_player:
             command.extend(["--source-player-title", "发送视频"])
-        if self.embed_player_var.get() and not no_player:
-            command.extend(["--player-window-id", str(self.receiver_video_host.winfo_id())])
-            if self.source_preview_var.get():
-                command.extend(["--source-player-window-id", str(self.source_video_host.winfo_id())])
-        elif not no_player:
+        if not no_player:
             positions = self.player_positions()
             command.extend(["--player-left", str(positions["receiver_left"])])
             command.extend(["--player-top", str(positions["receiver_top"])])
@@ -244,25 +204,19 @@ class SdrVideoGui(tk.Tk):
         return command
 
     def player_positions(self) -> dict[str, int]:
-        try:
-            width = max(240, int(self.player_width_var.get().strip() or "360"))
-            height = max(180, int(self.player_height_var.get().strip() or "640"))
-        except ValueError:
-            width = 360
-            height = 640
         screen_width = self.winfo_screenwidth()
         base_left = max(0, self.winfo_rootx() + 40)
         base_top = max(0, self.winfo_rooty() + 80)
         gap = 32
-        total_width = width * 2 + gap
+        estimated_width = 420
+        total_width = estimated_width * 2 + gap
         if base_left + total_width > screen_width:
             base_left = max(0, screen_width - total_width - 20)
         return {
             "source_left": base_left,
             "source_top": base_top,
-            "receiver_left": base_left + width + gap,
+            "receiver_left": base_left + estimated_width + gap,
             "receiver_top": base_top,
-            "height": height,
         }
 
     def start_stream(self) -> None:
