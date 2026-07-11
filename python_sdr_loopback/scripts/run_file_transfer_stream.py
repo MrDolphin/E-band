@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 import zlib
@@ -148,6 +149,8 @@ def main() -> int:
         action="store_true",
         help="Append each recovered batch to --output-file immediately instead of only writing at the end.",
     )
+    parser.add_argument("--segment-dir", type=Path, help="Write each recovered batch as segment_XXXX.bin.")
+    parser.add_argument("--manifest-file", type=Path, help="Write JSON metadata for recovered segments.")
     args = parser.parse_args()
 
     if args.batch_bytes <= 0:
@@ -202,8 +205,13 @@ def main() -> int:
     print(f"samples_per_packet={samples_per_packet:.1f}")
     print("stream_context_reuse=true")
     print(f"write_progressive={str(bool(args.write_progressive)).lower()}")
+    if args.segment_dir:
+        print(f"segment_dir={args.segment_dir}")
+    if args.manifest_file:
+        print(f"manifest_file={args.manifest_file}")
 
     recovered_parts: list[bytes] = []
+    manifest_segments: list[dict[str, int | str | float]] = []
     progressive_bytes = 0
     capture_attempts_total = 0
     context_recreates = 0
@@ -221,6 +229,8 @@ def main() -> int:
         if args.write_progressive:
             args.output_file.parent.mkdir(parents=True, exist_ok=True)
             output_handle = args.output_file.open("wb")
+        if args.segment_dir:
+            args.segment_dir.mkdir(parents=True, exist_ok=True)
         context_start = time.perf_counter()
         sdr = configure_sdr(adi, args, rx_buffer_size)
         print(f"initial_sdr_context_elapsed_sec={time.perf_counter() - context_start:.3f}")
@@ -307,6 +317,21 @@ def main() -> int:
 
             recovered_parts.append(recovered)
             progressive_bytes += len(recovered)
+            segment_path = None
+            if args.segment_dir is not None:
+                segment_path = args.segment_dir / f"segment_{batch_index + 1:04d}.bin"
+                segment_path.write_bytes(recovered)
+                print(f"segment_file={segment_path}")
+            manifest_segments.append(
+                {
+                    "index": batch_index + 1,
+                    "path": "" if segment_path is None else str(segment_path),
+                    "offset": int(start),
+                    "size": len(recovered),
+                    "crc32": zlib.crc32(recovered) & 0xFFFFFFFF,
+                    "elapsed_sec": time.perf_counter() - batch_start,
+                }
+            )
             if output_handle is not None:
                 output_handle.write(recovered)
                 output_handle.flush()
@@ -334,6 +359,31 @@ def main() -> int:
         recovered_file = args.output_file.read_bytes()
         output_crc = zlib.crc32(recovered_file) & 0xFFFFFFFF
         file_ok = recovered_file == data
+    manifest_path = args.manifest_file
+    if manifest_path is None and args.segment_dir is not None:
+        manifest_path = args.segment_dir / "manifest.json"
+    if manifest_path is not None:
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "input_file": str(args.input_file),
+            "output_file": str(args.output_file if file_ok else ""),
+            "input_bytes": len(data),
+            "output_bytes": len(recovered_file),
+            "input_crc32": input_crc,
+            "output_crc32": output_crc,
+            "batch_bytes": int(args.batch_bytes),
+            "payload_bytes": int(args.payload_bytes),
+            "file_batches_total": total_batches,
+            "file_batches_ok": len(recovered_parts),
+            "file_ok": file_ok,
+            "total_elapsed_sec": total_elapsed,
+            "file_goodput_bps": len(recovered_file) * 8.0 / max(total_elapsed, 1e-9),
+            "profile_context_recreates": context_recreates,
+            "profile_capture_attempts_total": capture_attempts_total,
+            "segments": manifest_segments,
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        print(f"manifest_output={manifest_path}")
 
     print(f"output_file={args.output_file if file_ok else ''}")
     print(f"output_bytes={len(recovered_file)}")
