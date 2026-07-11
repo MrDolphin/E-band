@@ -77,6 +77,8 @@ def main() -> int:
     parser.add_argument("--watch-timeout-sec", type=float, default=0.0)
     parser.add_argument("--watch-poll-sec", type=float, default=0.5)
     parser.add_argument("--watch-file-settle-sec", type=float, default=0.05)
+    parser.add_argument("--open-player", action="store_true", help="Open ffplay after the first recovered segment is appended.")
+    parser.add_argument("--player", default="ffplay")
     parser.add_argument(
         "--no-watch-during-transfer",
         action="store_true",
@@ -180,6 +182,8 @@ def main() -> int:
         "--timeout-sec",
         str(args.watch_timeout_sec),
     ]
+    if args.open_player:
+        watch_command.extend(["--open-player", "--player", args.player])
     watcher_process = None
     if not args.no_watch_during_transfer:
         watcher_process = start_command(watch_command)

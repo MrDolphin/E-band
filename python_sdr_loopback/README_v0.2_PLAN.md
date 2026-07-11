@@ -171,6 +171,12 @@ python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifact
 
 `--watch-poll-sec 0.5` is the current default because it measured close to post-transfer watcher throughput while keeping live output enabled.
 
+To open ffplay automatically after the first recovered TS segment is appended:
+
+```powershell
+python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifacts\ts_stream_player_demo --open-player
+```
+
 This writes per-batch metrics to:
 
 ```text

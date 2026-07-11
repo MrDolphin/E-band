@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 import zlib
@@ -57,6 +58,12 @@ def manifest_by_index(manifest: dict | None) -> dict[int, dict]:
     return by_index
 
 
+def start_player(player: str, output_file: Path) -> subprocess.Popen:
+    command = [player, "-fflags", "nobuffer", "-flags", "low_delay", str(output_file)]
+    print(f"player_command={' '.join(command)}")
+    return subprocess.Popen(command)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Watch recovered SDR video segments and build a growing output file.")
     parser.add_argument("--segment-dir", type=Path, default=Path("artifacts/video_segments"))
@@ -64,6 +71,8 @@ def main() -> int:
     parser.add_argument("--output-file", type=Path, default=Path("artifacts/video_segments_live.mp4"))
     parser.add_argument("--poll-sec", type=float, default=0.25)
     parser.add_argument("--file-settle-sec", type=float, default=0.05)
+    parser.add_argument("--open-player", action="store_true", help="Open ffplay after the first segment is appended.")
+    parser.add_argument("--player", default="ffplay")
     parser.add_argument(
         "--timeout-sec",
         type=float,
@@ -91,6 +100,7 @@ def main() -> int:
     print("playable_hint=true")
     print(f"playable_file={args.output_file}")
     print("playable_format=mpegts")
+    print(f"open_player={str(bool(args.open_player)).lower()}")
 
     processed: set[int] = set()
     output_crc = 0
@@ -100,6 +110,7 @@ def main() -> int:
     last_progress_at = started_at
     first_segment_elapsed: float | None = None
     segment_arrival_times: list[float] = []
+    player_process = None
 
     with args.output_file.open("wb") as output:
         while True:
@@ -124,6 +135,8 @@ def main() -> int:
                 if first_segment_elapsed is None:
                     first_segment_elapsed = elapsed
                 segment_arrival_times.append(elapsed)
+                if args.open_player and player_process is None:
+                    player_process = start_player(str(args.player), args.output_file)
 
                 expected = manifest_segments.get(next_index)
                 crc_ok = True
