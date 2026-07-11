@@ -18,6 +18,20 @@ def parse_key_values(output: str) -> dict[str, str]:
     return values
 
 
+def float_value(values: dict[str, str], key: str) -> float:
+    try:
+        return float(values.get(key, "0"))
+    except ValueError:
+        return 0.0
+
+
+def int_value(values: dict[str, str], key: str) -> int:
+    try:
+        return int(float(values.get(key, "0")))
+    except ValueError:
+        return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Transfer a file over E310 RF loopback in bounded-size batches.")
     parser.add_argument("--input-file", type=Path, required=True)
@@ -66,6 +80,16 @@ def main() -> int:
 
     recovered_parts: list[bytes] = []
     first_payload_bitrate_est = 0.0
+    stage_totals = {
+        "payload_build_elapsed_sec": 0.0,
+        "modulate_elapsed_sec": 0.0,
+        "sdr_capture_elapsed_sec": 0.0,
+        "decode_elapsed_sec": 0.0,
+        "packet_filter_elapsed_sec": 0.0,
+        "file_recover_elapsed_sec": 0.0,
+        "script_total_elapsed_sec": 0.0,
+    }
+    capture_attempts_total = 0
     transfer_start = time.perf_counter()
     for batch_index in range(total_batches):
         batch_start = time.perf_counter()
@@ -143,6 +167,9 @@ def main() -> int:
             values = parse_key_values(result.stdout)
             first_payload_bitrate_est = first_payload_bitrate_est or float(values.get("payload_bitrate_est_bps", "0"))
             if result.returncode == 0 and values.get("file_ok") == "true" and part_output.exists():
+                for key in stage_totals:
+                    stage_totals[key] += float_value(values, key)
+                capture_attempts_total += int_value(values, "capture_attempts_used")
                 recovered_parts.append(part_output.read_bytes())
                 batch_ok = True
                 print(f"file_batch_ok={batch_index + 1}")
@@ -174,6 +201,12 @@ def main() -> int:
     print(f"payload_bitrate_est_bps={first_payload_bitrate_est:.0f}")
     print(f"total_elapsed_sec={total_elapsed:.3f}")
     print(f"file_goodput_bps={len(recovered) * 8.0 / max(total_elapsed, 1e-9):.0f}")
+    print(f"profile_batches={len(recovered_parts)}")
+    for key, value in stage_totals.items():
+        print(f"profile_sum_{key}={value:.3f}")
+    profile_batches = max(len(recovered_parts), 1)
+    print(f"profile_capture_attempts_total={capture_attempts_total}")
+    print(f"profile_capture_attempts_avg={capture_attempts_total / profile_batches:.3f}")
     print(f"file_ok={str(file_ok).lower()}")
     return 0 if file_ok else 1
 
