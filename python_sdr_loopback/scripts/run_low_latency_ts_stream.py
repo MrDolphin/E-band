@@ -90,15 +90,30 @@ def player_size_args(width: int, height: int) -> list[str]:
     return args
 
 
-def player_environment(window_id: str) -> dict[str, str] | None:
-    if not window_id:
-        return None
+def player_environment(window_id: str, left: int, top: int) -> dict[str, str] | None:
     env = os.environ.copy()
-    env["SDL_WINDOWID"] = str(window_id)
-    return env
+    has_value = False
+    if not window_id:
+        pass
+    else:
+        env["SDL_WINDOWID"] = str(window_id)
+        has_value = True
+    if left >= 0 and top >= 0:
+        env["SDL_VIDEO_WINDOW_POS"] = f"{left},{top}"
+        has_value = True
+    return env if has_value else None
 
 
-def start_player(player: str, buffered: bool, width: int, height: int, window_id: str) -> subprocess.Popen:
+def start_player(
+    player: str,
+    buffered: bool,
+    width: int,
+    height: int,
+    window_id: str,
+    title: str,
+    left: int,
+    top: int,
+) -> subprocess.Popen:
     command = [
         player,
         "-flags",
@@ -108,6 +123,8 @@ def start_player(player: str, buffered: bool, width: int, height: int, window_id
         "-analyzeduration",
         "0",
         "-framedrop",
+        "-window_title",
+        title,
     ]
     command.extend(player_size_args(width, height))
     if not buffered:
@@ -121,22 +138,39 @@ def start_player(player: str, buffered: bool, width: int, height: int, window_id
     print(f"player_command={' '.join(command)}")
     if window_id:
         print(f"player_window_id={window_id}")
-    return subprocess.Popen(command, stdin=subprocess.PIPE, env=player_environment(window_id))
+    print(f"player_title={title}")
+    print(f"player_left={left}")
+    print(f"player_top={top}")
+    return subprocess.Popen(command, stdin=subprocess.PIPE, env=player_environment(window_id, left, top))
 
 
-def start_source_preview(player: str, input_file: Path, width: int, height: int, window_id: str) -> subprocess.Popen:
+def start_source_preview(
+    player: str,
+    input_file: Path,
+    width: int,
+    height: int,
+    window_id: str,
+    title: str,
+    left: int,
+    top: int,
+) -> subprocess.Popen:
     command = [
         player,
         "-flags",
         "low_delay",
         "-framedrop",
+        "-window_title",
+        title,
     ]
     command.extend(player_size_args(width, height))
     command.append(str(input_file))
     print(f"source_player_command={' '.join(command)}")
     if window_id:
         print(f"source_player_window_id={window_id}")
-    return subprocess.Popen(command, env=player_environment(window_id))
+    print(f"source_player_title={title}")
+    print(f"source_player_left={left}")
+    print(f"source_player_top={top}")
+    return subprocess.Popen(command, env=player_environment(window_id, left, top))
 
 
 def write_pipe(process: subprocess.Popen | None, data: bytes, label: str) -> bool:
@@ -178,6 +212,12 @@ def main() -> int:
     parser.add_argument("--source-player-height", type=int, default=0, help="Source preview height. 0 reuses --player-height.")
     parser.add_argument("--player-window-id", default="", help="Embed receiver ffplay into this native window id.")
     parser.add_argument("--source-player-window-id", default="", help="Embed source ffplay into this native window id.")
+    parser.add_argument("--player-title", default="接收视频")
+    parser.add_argument("--source-player-title", default="发送视频")
+    parser.add_argument("--player-left", type=int, default=-1, help="Receiver player window left position. -1 lets OS choose.")
+    parser.add_argument("--player-top", type=int, default=-1, help="Receiver player window top position. -1 lets OS choose.")
+    parser.add_argument("--source-player-left", type=int, default=-1, help="Source player window left position. -1 lets OS choose.")
+    parser.add_argument("--source-player-top", type=int, default=-1, help="Source player window top position. -1 lets OS choose.")
     parser.add_argument("--no-player", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--realtime-input", action="store_true", default=True)
@@ -269,6 +309,12 @@ def main() -> int:
     print(f"source_preview={str(bool(args.source_preview)).lower()}")
     print(f"player_window_id={args.player_window_id}")
     print(f"source_player_window_id={args.source_player_window_id}")
+    print(f"player_title={args.player_title}")
+    print(f"source_player_title={args.source_player_title}")
+    print(f"player_left={args.player_left}")
+    print(f"player_top={args.player_top}")
+    print(f"source_player_left={args.source_player_left}")
+    print(f"source_player_top={args.source_player_top}")
     print(f"copy_video={str(bool(args.copy_video)).lower()}")
     print(f"open_player={str(not args.no_player).lower()}")
     print(f"ffmpeg_command={' '.join(encoder_command)}")
@@ -325,6 +371,9 @@ def main() -> int:
             int(args.player_width),
             int(args.player_height),
             str(args.player_window_id),
+            str(args.player_title),
+            int(args.player_left),
+            int(args.player_top),
         )
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_handle = output_file.open("wb")
@@ -422,6 +471,9 @@ def main() -> int:
                         source_width,
                         source_height,
                         str(args.source_player_window_id),
+                        str(args.source_player_title),
+                        int(args.source_player_left),
+                        int(args.source_player_top),
                     )
                     print("source_preview_started=true")
             else:
