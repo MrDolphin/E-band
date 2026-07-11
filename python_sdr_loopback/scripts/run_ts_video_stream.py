@@ -15,8 +15,24 @@ def run_command(command: list[str]) -> int:
     return subprocess.run(command).returncode
 
 
+def start_command(command: list[str]) -> subprocess.Popen:
+    print(f"command={' '.join(command)}")
+    return subprocess.Popen(command)
+
+
 def ts_aligned_batch_bytes(value: int) -> int:
     return max(TS_PACKET_SIZE, (value // TS_PACKET_SIZE) * TS_PACKET_SIZE)
+
+
+def clear_previous_outputs(segment_dir: Path, manifest_file: Path, recovered_ts: Path, live_ts: Path, metrics_file: Path) -> None:
+    for path in (manifest_file, recovered_ts, live_ts, metrics_file):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    if segment_dir.exists():
+        for path in segment_dir.glob("segment_*.bin"):
+            path.unlink()
 
 
 def main() -> int:
@@ -58,7 +74,12 @@ def main() -> int:
     parser.add_argument("--rx-frame-copies", type=float, default=1.0)
     parser.add_argument("--min-rx-rms-dbfs", type=float, default=-45.0)
     parser.add_argument("--rx-level-retries", type=int, default=8)
-    parser.add_argument("--watch-timeout-sec", type=float, default=30.0)
+    parser.add_argument("--watch-timeout-sec", type=float, default=0.0)
+    parser.add_argument(
+        "--no-watch-during-transfer",
+        action="store_true",
+        help="Start the segment watcher after SDR transfer finishes instead of while it is running.",
+    )
     args = parser.parse_args()
 
     if args.batch_bytes <= 0:
@@ -98,6 +119,7 @@ def main() -> int:
     print("playable_hint=true")
     print(f"playable_file={live_ts}")
     print("playable_format=mpegts")
+    print(f"watch_during_transfer={str(not args.no_watch_during_transfer).lower()}")
     print(f"ts_packet_size={TS_PACKET_SIZE}")
     print(f"batch_bytes_requested={args.batch_bytes}")
     print(f"batch_bytes_effective={effective_batch_bytes}")
@@ -130,6 +152,25 @@ def main() -> int:
             print("ts_convert_ok=false")
             return 3
         print("ts_convert_ok=true")
+
+    clear_previous_outputs(segment_dir, manifest_file, recovered_ts, live_ts, metrics_file)
+
+    watcher_script = Path(__file__).with_name("watch_video_segments.py")
+    watch_command = [
+        sys.executable,
+        str(watcher_script),
+        "--segment-dir",
+        str(segment_dir),
+        "--manifest-file",
+        str(manifest_file),
+        "--output-file",
+        str(live_ts),
+        "--timeout-sec",
+        str(args.watch_timeout_sec),
+    ]
+    watcher_process = None
+    if not args.no_watch_during_transfer:
+        watcher_process = start_command(watch_command)
 
     video_stream_script = Path(__file__).with_name("run_video_segment_stream.py")
     send_command = [
@@ -190,25 +231,21 @@ def main() -> int:
         "--rx-level-retries",
         str(args.rx_level_retries),
     ]
-    if run_command(send_command) != 0:
+    send_status = run_command(send_command)
+    if send_status != 0:
+        if watcher_process is not None:
+            watcher_process.terminate()
+            try:
+                watcher_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                watcher_process.kill()
+                watcher_process.wait()
         print("sdr_video_stream_ok=false")
         return 4
     print("sdr_video_stream_ok=true")
 
-    watcher_script = Path(__file__).with_name("watch_video_segments.py")
-    watch_command = [
-        sys.executable,
-        str(watcher_script),
-        "--segment-dir",
-        str(segment_dir),
-        "--manifest-file",
-        str(manifest_file),
-        "--output-file",
-        str(live_ts),
-        "--timeout-sec",
-        str(args.watch_timeout_sec),
-    ]
-    if run_command(watch_command) != 0:
+    watch_status = watcher_process.wait() if watcher_process is not None else run_command(watch_command)
+    if watch_status != 0:
         print("ts_watch_ok=false")
         return 5
     print("ts_watch_ok=true")

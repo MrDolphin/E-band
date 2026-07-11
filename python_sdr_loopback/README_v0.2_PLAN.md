@@ -146,6 +146,19 @@ One-command TS stream:
 python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifacts\ts_stream_v02_baseline
 ```
 
+By default, the segment watcher starts before the SDR transfer. This lets `live.ts` grow while segments arrive:
+
+```text
+watch_during_transfer=true
+playable_file=artifacts\ts_stream_v02_baseline\live.ts
+```
+
+To force the older post-transfer watcher behavior:
+
+```powershell
+python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifacts\ts_stream_v02_post --no-watch-during-transfer
+```
+
 This writes per-batch metrics to:
 
 ```text
