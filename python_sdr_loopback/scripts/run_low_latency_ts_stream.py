@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
 import os
 import shutil
 import subprocess
@@ -28,63 +27,6 @@ from sdr_loopback.payload import payload_efficiency, raw_bitrate_bps  # noqa: E4
 
 
 TS_PACKET_SIZE = 188
-
-
-def embed_process_window(process: subprocess.Popen, parent_window_id: str, width: int, height: int, label: str) -> bool:
-    if not parent_window_id or os.name != "nt":
-        return False
-    try:
-        parent_hwnd = int(parent_window_id)
-    except ValueError:
-        print(f"{label}_embed_ok=false")
-        print(f"{label}_embed_error=invalid_window_id")
-        return False
-
-    user32 = ctypes.windll.user32
-    enum_windows_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-    hwnds: list[int] = []
-
-    def callback(hwnd, _lparam):
-        pid = ctypes.c_ulong()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value == process.pid and user32.IsWindowVisible(hwnd):
-            hwnds.append(int(hwnd))
-            return False
-        return True
-
-    deadline = time.perf_counter() + 3.0
-    while time.perf_counter() < deadline and not hwnds and process.poll() is None:
-        user32.EnumWindows(enum_windows_proc(callback), 0)
-        if not hwnds:
-            time.sleep(0.05)
-
-    if not hwnds:
-        print(f"{label}_embed_ok=false")
-        print(f"{label}_embed_error=window_not_found")
-        return False
-
-    hwnd = hwnds[0]
-    gwl_style = -16
-    ws_child = 0x40000000
-    ws_popup = 0x80000000
-    ws_caption = 0x00C00000
-    ws_thickframe = 0x00040000
-    ws_minimizebox = 0x00020000
-    ws_maximizebox = 0x00010000
-    ws_sysmenu = 0x00080000
-    swp_nozorder = 0x0004
-    swp_framechanged = 0x0020
-    set_window_long = user32.SetWindowLongPtrW if ctypes.sizeof(ctypes.c_void_p) == 8 else user32.SetWindowLongW
-    get_window_long = user32.GetWindowLongPtrW if ctypes.sizeof(ctypes.c_void_p) == 8 else user32.GetWindowLongW
-
-    style = get_window_long(hwnd, gwl_style)
-    style = (style & ~ws_popup & ~ws_caption & ~ws_thickframe & ~ws_minimizebox & ~ws_maximizebox & ~ws_sysmenu) | ws_child
-    set_window_long(hwnd, gwl_style, style)
-    user32.SetParent(hwnd, parent_hwnd)
-    user32.MoveWindow(hwnd, 0, 0, max(1, int(width or 360)), max(1, int(height or 300)), True)
-    user32.SetWindowPos(hwnd, 0, 0, 0, max(1, int(width or 360)), max(1, int(height or 300)), swp_nozorder | swp_framechanged)
-    print(f"{label}_embed_ok=true")
-    return True
 
 
 def ts_aligned_bytes(value: int) -> int:
@@ -166,7 +108,6 @@ def start_player(player: str, buffered: bool, width: int, height: int, window_id
         "-analyzeduration",
         "0",
         "-framedrop",
-        "-noborder",
     ]
     command.extend(player_size_args(width, height))
     if not buffered:
@@ -189,7 +130,6 @@ def start_source_preview(player: str, input_file: Path, width: int, height: int,
         "-flags",
         "low_delay",
         "-framedrop",
-        "-noborder",
     ]
     command.extend(player_size_args(width, height))
     command.append(str(input_file))
@@ -373,7 +313,6 @@ def main() -> int:
     sdr = None
     ffmpeg_process = None
     player_process = None
-    player_embedded = False
     source_process = None
     output_handle = None
     try:
@@ -474,14 +413,6 @@ def main() -> int:
                 output_handle.flush()
                 output_bytes += len(recovered)
                 write_pipe(player_process, recovered, "player")
-                if player_process is not None and args.player_window_id and not player_embedded:
-                    player_embedded = embed_process_window(
-                        player_process,
-                        str(args.player_window_id),
-                        int(args.player_width),
-                        int(args.player_height),
-                        "player",
-                    )
                 if args.source_preview and source_process is None:
                     source_width = int(args.source_player_width or args.player_width)
                     source_height = int(args.source_player_height or args.player_height)
@@ -492,14 +423,6 @@ def main() -> int:
                         source_height,
                         str(args.source_player_window_id),
                     )
-                    if args.source_player_window_id:
-                        embed_process_window(
-                            source_process,
-                            str(args.source_player_window_id),
-                            source_width,
-                            source_height,
-                            "source_player",
-                        )
                     print("source_preview_started=true")
             else:
                 chunks_failed += 1

@@ -341,13 +341,8 @@ class SdrVideoGui(tk.Tk):
             self.elapsed_var.set(f"{float(value):.1f}s")
         elif key == "player_command":
             self.receiver_status_var.set("已启动")
-        elif key == "player_embed_ok":
-            self.receiver_status_var.set("已嵌入" if value.lower() == "true" else "外部窗口")
-        elif key == "source_player_embed_ok":
-            self.source_status_var.set("已嵌入" if value.lower() == "true" else "外部窗口")
         elif key == "source_preview_started":
-            if self.source_status_var.get() not in ("已嵌入", "外部窗口"):
-                self.source_status_var.set("已启动")
+            self.source_status_var.set("已启动")
             self.delay_status_var.set("首块后启动")
         elif key == "low_latency_stream_ok":
             self.status_var.set("完成" if value.lower() == "true" else "失败")
