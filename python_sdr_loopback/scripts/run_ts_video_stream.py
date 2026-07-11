@@ -75,6 +75,8 @@ def main() -> int:
     parser.add_argument("--min-rx-rms-dbfs", type=float, default=-45.0)
     parser.add_argument("--rx-level-retries", type=int, default=8)
     parser.add_argument("--watch-timeout-sec", type=float, default=0.0)
+    parser.add_argument("--watch-poll-sec", type=float, default=0.25)
+    parser.add_argument("--watch-file-settle-sec", type=float, default=0.05)
     parser.add_argument(
         "--no-watch-during-transfer",
         action="store_true",
@@ -93,6 +95,12 @@ def main() -> int:
         return 2
     if args.watch_timeout_sec < 0.0:
         print("--watch-timeout-sec must be non-negative", file=sys.stderr)
+        return 2
+    if args.watch_poll_sec <= 0.0:
+        print("--watch-poll-sec must be positive", file=sys.stderr)
+        return 2
+    if args.watch_file_settle_sec < 0.0:
+        print("--watch-file-settle-sec must be non-negative", file=sys.stderr)
         return 2
     if not args.input_file.exists():
         print(f"input_exists=false")
@@ -165,6 +173,10 @@ def main() -> int:
         str(manifest_file),
         "--output-file",
         str(live_ts),
+        "--poll-sec",
+        str(args.watch_poll_sec),
+        "--file-settle-sec",
+        str(args.watch_file_settle_sec),
         "--timeout-sec",
         str(args.watch_timeout_sec),
     ]

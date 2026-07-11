@@ -159,6 +159,12 @@ To force the older post-transfer watcher behavior:
 python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifacts\ts_stream_v02_post --no-watch-during-transfer
 ```
 
+To reduce watcher polling pressure while still watching during SDR transfer:
+
+```powershell
+python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifacts\ts_stream_livewatch_poll05 --watch-poll-sec 0.5
+```
+
 This writes per-batch metrics to:
 
 ```text
