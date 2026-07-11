@@ -7,9 +7,16 @@ import sys
 from pathlib import Path
 
 
+TS_PACKET_SIZE = 188
+
+
 def run_command(command: list[str]) -> int:
     print(f"command={' '.join(command)}")
     return subprocess.run(command).returncode
+
+
+def ts_aligned_batch_bytes(value: int) -> int:
+    return max(TS_PACKET_SIZE, (value // TS_PACKET_SIZE) * TS_PACKET_SIZE)
 
 
 def main() -> int:
@@ -22,6 +29,11 @@ def main() -> int:
     parser.add_argument("--segment-dir", type=Path, help="Defaults to <work-dir>/segments.")
     parser.add_argument("--manifest-file", type=Path, help="Defaults to <segment-dir>/manifest.json.")
     parser.add_argument("--batch-bytes", type=int, default=120_000)
+    parser.add_argument(
+        "--no-ts-packet-align",
+        action="store_true",
+        help="Do not round --batch-bytes down to an MPEG-TS 188-byte packet boundary.",
+    )
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--skip-convert", action="store_true", help="Treat --input-file as an existing MPEG-TS file.")
     parser.add_argument("--uri", default="ip:192.168.1.10")
@@ -60,6 +72,7 @@ def main() -> int:
         print(f"input_exists=false")
         print(f"input_file={args.input_file}")
         return 2
+    effective_batch_bytes = args.batch_bytes if args.no_ts_packet_align else ts_aligned_batch_bytes(args.batch_bytes)
 
     args.work_dir.mkdir(parents=True, exist_ok=True)
     ts_input = args.ts_input_file or args.work_dir / f"{args.input_file.stem}.ts"
@@ -75,6 +88,10 @@ def main() -> int:
     print(f"live_ts={live_ts}")
     print(f"segment_dir={segment_dir}")
     print(f"manifest_file={manifest_file}")
+    print(f"ts_packet_size={TS_PACKET_SIZE}")
+    print(f"batch_bytes_requested={args.batch_bytes}")
+    print(f"batch_bytes_effective={effective_batch_bytes}")
+    print(f"ts_packet_aligned={str(effective_batch_bytes % TS_PACKET_SIZE == 0).lower()}")
 
     if args.skip_convert or args.input_file.suffix.lower() == ".ts":
         if args.input_file.resolve() != ts_input.resolve():
@@ -117,7 +134,7 @@ def main() -> int:
         "--manifest-file",
         str(manifest_file),
         "--batch-bytes",
-        str(args.batch_bytes),
+        str(effective_batch_bytes),
         "--uri",
         args.uri,
         "--lo-hz",
