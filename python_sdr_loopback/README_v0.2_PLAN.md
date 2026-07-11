@@ -326,12 +326,14 @@ ffmpeg low-bitrate MPEG-TS stdout
 -> ffplay stdin
 ```
 
-The first target is not maximum throughput. The first target is a real stream-shaped demo:
+The first target is not maximum throughput. The first target is a real stream-shaped demo. Current default demo profile:
 
 ```text
-video bitrate: 500 kbps
-chunk size: about 40 KB, TS-packet aligned
-player input: pipe:0
+video bitrate: 250 kbps
+scale height: 360
+fps: 12
+chunk size: about 20 KB, TS-packet aligned
+player input: pipe:0 with a small ffplay buffer
 first-screen latency: a few seconds
 ```
 
@@ -350,20 +352,20 @@ python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir ar
 Useful variations:
 
 ```powershell
-python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_300k --video-bitrate 300k --video-bufsize 600k --max-chunks 20
+python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_300k --video-bitrate 300k --video-bufsize 600k --fps 15 --gop 15 --max-chunks 20
 python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_noplayer --no-player --max-chunks 20
 ```
 
-If playback is complete but visually jumps or shows compression artifacts, the RF bytes are probably intact but the player is receiving bursty chunks and the encoder is too constrained. Use a smoother low-rate profile:
+If playback is complete but visually jumps or shows compression artifacts, the RF bytes are probably intact but the player is receiving bursty chunks and the encoder is too constrained. The default profile is already the smoother low-rate profile:
 
 ```powershell
-python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_smooth_250k --video-bitrate 250k --video-bufsize 500k --scale-height 360 --fps 12 --chunk-bytes 20000 --player-buffered --max-chunks 20
+python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_smooth_250k --max-chunks 20
 ```
 
 Then remove `--max-chunks 20` for a longer run:
 
 ```powershell
-python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_smooth_250k_full --video-bitrate 250k --video-bufsize 500k --scale-height 360 --fps 12 --chunk-bytes 20000 --player-buffered
+python scripts\run_low_latency_ts_stream.py --input-file small.mp4 --work-dir artifacts\v03_small_smooth_250k_full
 ```
 
 Key fields:
