@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import time
 import zlib
 from pathlib import Path
 
@@ -64,7 +65,9 @@ def main() -> int:
 
     recovered_parts: list[bytes] = []
     first_payload_bitrate_est = 0.0
+    transfer_start = time.perf_counter()
     for batch_index in range(total_batches):
+        batch_start = time.perf_counter()
         start = batch_index * args.batch_bytes
         part = data[start : start + args.batch_bytes]
         part_input = args.artifact_prefix.with_name(f"{args.artifact_prefix.name}_part{batch_index + 1:04d}_input.bin")
@@ -129,14 +132,18 @@ def main() -> int:
             print(f"file_batches_total={total_batches}")
             print(f"batch_attempt={attempt}")
             print(f"batch_bytes={len(part)}")
+            attempt_start = time.perf_counter()
             result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            attempt_elapsed = time.perf_counter() - attempt_start
             print(result.stdout, end="")
+            print(f"attempt_elapsed_sec={attempt_elapsed:.3f}")
             values = parse_key_values(result.stdout)
             first_payload_bitrate_est = first_payload_bitrate_est or float(values.get("payload_bitrate_est_bps", "0"))
             if result.returncode == 0 and values.get("file_ok") == "true" and part_output.exists():
                 recovered_parts.append(part_output.read_bytes())
                 batch_ok = True
                 print(f"file_batch_ok={batch_index + 1}")
+                print(f"batch_elapsed_sec={time.perf_counter() - batch_start:.3f}")
                 break
             if attempt <= args.retries:
                 print(f"file_batch_retrying={batch_index + 1}")
@@ -146,6 +153,7 @@ def main() -> int:
             break
 
     recovered = b"".join(recovered_parts)
+    total_elapsed = time.perf_counter() - transfer_start
     output_crc = zlib.crc32(recovered) & 0xFFFFFFFF
     file_ok = recovered == data
     if file_ok:
@@ -161,6 +169,8 @@ def main() -> int:
     print(f"file_batches_total={total_batches}")
     print(f"file_batches_ok={len(recovered_parts)}")
     print(f"payload_bitrate_est_bps={first_payload_bitrate_est:.0f}")
+    print(f"total_elapsed_sec={total_elapsed:.3f}")
+    print(f"file_goodput_bps={len(recovered) * 8.0 / max(total_elapsed, 1e-9):.0f}")
     print(f"file_ok={str(file_ok).lower()}")
     return 0 if file_ok else 1
 
