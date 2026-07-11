@@ -332,10 +332,15 @@ The first target is not maximum throughput. The first target is a real stream-sh
 video bitrate: 250 kbps
 scale height: 360
 fps: 12
+encoder preset: veryfast
 chunk size: about 20 KB, TS-packet aligned
 player input: pipe:0 with a small ffplay buffer
 first-screen latency: a few seconds
 ```
+
+This profile was selected from RF loopback testing: `veryfast` looked better than
+`ultrafast` at the same bitrate and stayed smooth, while `superfast` showed
+stutter in the local test run.
 
 Start with a bounded smoke test:
 

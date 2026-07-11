@@ -143,7 +143,7 @@ def main() -> int:
     parser.add_argument("--video-codec", default="libx264")
     parser.add_argument("--video-bitrate", default="250k")
     parser.add_argument("--video-bufsize", default="500k")
-    parser.add_argument("--encoder-preset", default="ultrafast")
+    parser.add_argument("--encoder-preset", default="veryfast")
     parser.add_argument("--gop", type=int, default=12)
     parser.add_argument("--scale-height", type=int, default=360, help="0 keeps source height; e.g. 360 reduces artifacts.")
     parser.add_argument("--fps", type=int, default=12, help="0 keeps source FPS; e.g. 12 or 15 is smoother at low bitrate.")
