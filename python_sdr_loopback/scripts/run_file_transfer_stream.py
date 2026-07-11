@@ -137,6 +137,11 @@ def main() -> int:
     )
     parser.add_argument("--min-rx-rms-dbfs", type=float, default=-45.0)
     parser.add_argument("--rx-level-retries", type=int, default=8)
+    parser.add_argument(
+        "--write-progressive",
+        action="store_true",
+        help="Append each recovered batch to --output-file immediately instead of only writing at the end.",
+    )
     args = parser.parse_args()
 
     if args.batch_bytes <= 0:
@@ -186,8 +191,10 @@ def main() -> int:
     print(f"rx_frame_copies={args.rx_frame_copies:.2f}")
     print(f"samples_per_packet={samples_per_packet:.1f}")
     print("stream_context_reuse=true")
+    print(f"write_progressive={str(bool(args.write_progressive)).lower()}")
 
     recovered_parts: list[bytes] = []
+    progressive_bytes = 0
     capture_attempts_total = 0
     context_recreates = 0
     stage_totals = {
@@ -199,7 +206,11 @@ def main() -> int:
     }
 
     sdr = None
+    output_handle = None
     try:
+        if args.write_progressive:
+            args.output_file.parent.mkdir(parents=True, exist_ok=True)
+            output_handle = args.output_file.open("wb")
         context_start = time.perf_counter()
         sdr = configure_sdr(adi, args, rx_buffer_size)
         print(f"initial_sdr_context_elapsed_sec={time.perf_counter() - context_start:.3f}")
@@ -253,7 +264,7 @@ def main() -> int:
                     context_recreates += 1
                     sdr = configure_sdr(adi, args, rx_buffer_size)
                     print(f"stream_context_retry={context_recreates}")
-            time.sleep(0.25)
+                    time.sleep(0.25)
 
             capture_elapsed = time.perf_counter() - capture_start
             stage_totals["sdr_capture_elapsed_sec"] += capture_elapsed
@@ -285,8 +296,18 @@ def main() -> int:
                 break
 
             recovered_parts.append(recovered)
+            progressive_bytes += len(recovered)
+            if output_handle is not None:
+                output_handle.write(recovered)
+                output_handle.flush()
+            elapsed_so_far = time.perf_counter() - transfer_start
+            print(f"stream_output_bytes={progressive_bytes}")
+            print(f"stream_elapsed_sec={elapsed_so_far:.3f}")
+            print(f"stream_goodput_bps={progressive_bytes * 8.0 / max(elapsed_so_far, 1e-9):.0f}")
             print(f"file_batch_ok={batch_index + 1}")
     finally:
+        if output_handle is not None:
+            output_handle.close()
         if sdr is not None:
             destroy_iio_buffers(sdr)
 
@@ -294,9 +315,13 @@ def main() -> int:
     total_elapsed = time.perf_counter() - transfer_start
     output_crc = zlib.crc32(recovered_file) & 0xFFFFFFFF
     file_ok = recovered_file == data
-    if file_ok:
+    if file_ok and not args.write_progressive:
         args.output_file.parent.mkdir(parents=True, exist_ok=True)
         args.output_file.write_bytes(recovered_file)
+    if args.write_progressive and args.output_file.exists():
+        recovered_file = args.output_file.read_bytes()
+        output_crc = zlib.crc32(recovered_file) & 0xFFFFFFFF
+        file_ok = recovered_file == data
 
     print(f"output_file={args.output_file if file_ok else ''}")
     print(f"output_bytes={len(recovered_file)}")
