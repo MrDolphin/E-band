@@ -81,6 +81,17 @@ def ffmpeg_command(args, output: str) -> list[str]:
     return command
 
 
+def video_filter_args(args) -> list[str]:
+    if args.copy_video:
+        return []
+    filters: list[str] = []
+    if args.scale_height > 0:
+        filters.append(f"scale=-2:{args.scale_height}")
+    if args.fps > 0:
+        filters.append(f"fps={args.fps}")
+    return ["-vf", ",".join(filters)] if filters else []
+
+
 def player_size_args(width: int, height: int) -> list[str]:
     args: list[str] = []
     if width > 0:
@@ -113,6 +124,7 @@ def start_player(
     title: str,
     left: int,
     top: int,
+    filters: list[str],
 ) -> subprocess.Popen:
     command = [
         player,
@@ -163,6 +175,7 @@ def start_source_preview(
         title,
     ]
     command.extend(player_size_args(width, height))
+    command.extend(filters)
     command.append(str(input_file))
     print(f"source_player_command={' '.join(command)}")
     if window_id:
@@ -170,6 +183,8 @@ def start_source_preview(
     print(f"source_player_title={title}")
     print(f"source_player_left={left}")
     print(f"source_player_top={top}")
+    if filters:
+        print(f"source_player_filter={' '.join(filters)}")
     return subprocess.Popen(command, env=player_environment(window_id, left, top))
 
 
@@ -315,6 +330,7 @@ def main() -> int:
     print(f"player_top={args.player_top}")
     print(f"source_player_left={args.source_player_left}")
     print(f"source_player_top={args.source_player_top}")
+    print(f"source_preview_filter={' '.join(video_filter_args(args))}")
     print(f"copy_video={str(bool(args.copy_video)).lower()}")
     print(f"open_player={str(not args.no_player).lower()}")
     print(f"ffmpeg_command={' '.join(encoder_command)}")
@@ -474,6 +490,7 @@ def main() -> int:
                         str(args.source_player_title),
                         int(args.source_player_left),
                         int(args.source_player_top),
+                        video_filter_args(args),
                     )
                     print("source_preview_started=true")
             else:
