@@ -32,6 +32,7 @@ def main() -> int:
     parser.add_argument("--tx-cyclic-copies", type=int, default=3)
     parser.add_argument("--rx-discard-buffers", type=int, default=0)
     parser.add_argument("--inter-batch-sec", type=float, default=0.25)
+    parser.add_argument("--rx-frame-copies", type=float, default=1.0)
     parser.add_argument("--min-rx-rms-dbfs", type=float, default=-45.0)
     parser.add_argument("--rx-level-retries", type=int, default=8)
     args = parser.parse_args()
@@ -41,6 +42,9 @@ def main() -> int:
         return 2
     if args.inter_batch_sec < 0.0:
         print("--inter-batch-sec must be non-negative", file=sys.stderr)
+        return 2
+    if args.rx_frame_copies <= 0.0:
+        print("--rx-frame-copies must be positive", file=sys.stderr)
         return 2
 
     script = Path(__file__).with_name("run_file_transfer_stream.py")
@@ -91,6 +95,8 @@ def main() -> int:
         str(args.rx_discard_buffers),
         "--inter-batch-sec",
         str(args.inter_batch_sec),
+        "--rx-frame-copies",
+        str(args.rx_frame_copies),
         "--min-rx-rms-dbfs",
         str(args.min_rx_rms_dbfs),
         "--rx-level-retries",
