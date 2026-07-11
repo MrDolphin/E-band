@@ -226,6 +226,11 @@ def main() -> int:
         help="Dummy packets placed before file chunks to absorb cyclic TX boundary transients.",
     )
     parser.add_argument(
+        "--preflight-rx-level",
+        action="store_true",
+        help="Probe RX level with a small packet before uploading a large file batch.",
+    )
+    parser.add_argument(
         "--tx-settle-sec",
         type=float,
         default=0.25,
@@ -352,7 +357,7 @@ def main() -> int:
     rx_buffer_size = max(args.rx_buffer, min_rx_buffer)
     tx *= float(args.tx_dac_scale)
     tx_padded = np.tile(tx, int(args.tx_cyclic_copies)).astype(np.complex64)
-    preflight_enabled = bool(args.input_file and args.min_rx_rms_dbfs is not None)
+    preflight_enabled = bool(args.preflight_rx_level and args.input_file and args.min_rx_rms_dbfs is not None)
     preflight_payload = build_payload(1, min(payload_size, 512), "random")
     preflight_tx = modem.transmit(preflight_payload, sequence=1) * float(args.tx_dac_scale)
     preflight_tx_padded = np.tile(preflight_tx, int(args.tx_cyclic_copies)).astype(np.complex64)

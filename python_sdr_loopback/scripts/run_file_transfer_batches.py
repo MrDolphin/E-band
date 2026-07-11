@@ -42,6 +42,7 @@ def main() -> int:
     parser.add_argument("--rx-discard-buffers", type=int, default=0)
     parser.add_argument("--min-rx-rms-dbfs", type=float, default=-45.0)
     parser.add_argument("--rx-level-retries", type=int, default=8)
+    parser.add_argument("--preflight-rx-level", action="store_true")
     parser.add_argument("--retries", type=int, default=1)
     parser.add_argument("--save-batch-iq", action="store_true")
     parser.add_argument("--plot-batches", action="store_true")
@@ -127,6 +128,8 @@ def main() -> int:
                 command.extend(["--save-iq", str(attempt_prefix.with_suffix(".npz"))])
             if args.plot_batches:
                 command.extend(["--plot-prefix", str(attempt_prefix)])
+            if args.preflight_rx_level:
+                command.append("--preflight-rx-level")
 
             print(f"file_batch={batch_index + 1}")
             print(f"file_batches_total={total_batches}")
