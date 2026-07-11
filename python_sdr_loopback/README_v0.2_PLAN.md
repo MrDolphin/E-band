@@ -136,6 +136,12 @@ One-command TS stream:
 python scripts\run_ts_video_stream.py --input-file phone.mp4 --work-dir artifacts\ts_stream_v02_baseline
 ```
 
+This writes per-batch metrics to:
+
+```text
+artifacts\ts_stream_v02_baseline\metrics.jsonl
+```
+
 Benchmark the TS file produced by the one-command flow. Use the TS-aligned size directly:
 
 ```powershell
@@ -253,4 +259,3 @@ v0.2 is complete when one command can:
 5. Save rolling timing metrics.
 6. Verify segment CRCs and final CRC.
 7. Report a stable benchmark summary across at least five runs.
-

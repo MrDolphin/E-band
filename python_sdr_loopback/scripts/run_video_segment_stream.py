@@ -12,6 +12,7 @@ def main() -> int:
     parser.add_argument("--output-file", type=Path, default=Path("artifacts/video_stream_recovered.mp4"))
     parser.add_argument("--segment-dir", type=Path, default=Path("artifacts/video_segments"))
     parser.add_argument("--manifest-file", type=Path, help="Defaults to <segment-dir>/manifest.json.")
+    parser.add_argument("--metrics-file", type=Path, help="Defaults to <segment-dir>/metrics.jsonl.")
     parser.add_argument("--batch-bytes", type=int, default=120_000)
     parser.add_argument("--uri", default="ip:192.168.1.10")
     parser.add_argument("--lo-hz", type=int, default=900_000_000)
@@ -44,6 +45,7 @@ def main() -> int:
 
     script = Path(__file__).with_name("run_file_transfer_stream.py")
     manifest_file = args.manifest_file or args.segment_dir / "manifest.json"
+    metrics_file = args.metrics_file or args.segment_dir / "metrics.jsonl"
     command = [
         sys.executable,
         str(script),
@@ -98,12 +100,15 @@ def main() -> int:
         str(args.segment_dir),
         "--manifest-file",
         str(manifest_file),
+        "--metrics-file",
+        str(metrics_file),
     ]
     print(f"video_segment_mode=true")
     print(f"video_input_file={args.input_file}")
     print(f"video_output_file={args.output_file}")
     print(f"video_segment_dir={args.segment_dir}")
     print(f"video_manifest_file={manifest_file}")
+    print(f"video_metrics_file={metrics_file}")
     return subprocess.run(command).returncode
 
 

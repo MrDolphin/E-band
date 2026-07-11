@@ -28,6 +28,7 @@ def main() -> int:
     parser.add_argument("--live-ts", type=Path, help="Watcher rebuilt TS path. Defaults to <work-dir>/live.ts.")
     parser.add_argument("--segment-dir", type=Path, help="Defaults to <work-dir>/segments.")
     parser.add_argument("--manifest-file", type=Path, help="Defaults to <segment-dir>/manifest.json.")
+    parser.add_argument("--metrics-file", type=Path, help="Defaults to <work-dir>/metrics.jsonl.")
     parser.add_argument("--batch-bytes", type=int, default=120_000)
     parser.add_argument(
         "--no-ts-packet-align",
@@ -80,6 +81,7 @@ def main() -> int:
     live_ts = args.live_ts or args.work_dir / "live.ts"
     segment_dir = args.segment_dir or args.work_dir / "segments"
     manifest_file = args.manifest_file or segment_dir / "manifest.json"
+    metrics_file = args.metrics_file or args.work_dir / "metrics.jsonl"
 
     print(f"ts_video_stream=true")
     print(f"source_input_file={args.input_file}")
@@ -88,6 +90,7 @@ def main() -> int:
     print(f"live_ts={live_ts}")
     print(f"segment_dir={segment_dir}")
     print(f"manifest_file={manifest_file}")
+    print(f"metrics_file={metrics_file}")
     print("playable_hint=true")
     print(f"playable_file={live_ts}")
     print("playable_format=mpegts")
@@ -136,6 +139,8 @@ def main() -> int:
         str(segment_dir),
         "--manifest-file",
         str(manifest_file),
+        "--metrics-file",
+        str(metrics_file),
         "--batch-bytes",
         str(effective_batch_bytes),
         "--uri",

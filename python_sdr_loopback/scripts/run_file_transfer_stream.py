@@ -38,6 +38,30 @@ def rx_level_dbfs(rx: np.ndarray, full_scale: float) -> float:
     return dbfs(rms, full_scale)
 
 
+def rx_stats_dict(rx: np.ndarray, full_scale: float) -> dict[str, float | int]:
+    magnitude = np.abs(rx)
+    rms = float(np.sqrt(np.mean(magnitude * magnitude)))
+    peak = float(np.max(magnitude))
+    return {
+        "rx_samples": int(len(rx)),
+        "rx_rms_counts": rms,
+        "rx_peak_counts": peak,
+        "rx_rms_dbfs": dbfs(rms, full_scale),
+        "rx_peak_dbfs": dbfs(peak, full_scale),
+        "rx_dc_i": float(np.mean(np.real(rx))),
+        "rx_dc_q": float(np.mean(np.imag(rx))),
+        "rx_clip_ratio": float(np.mean(magnitude > 0.95 * full_scale)),
+    }
+
+
+def append_jsonl(path: Path | None, record: dict) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+
+
 def max_rx_buffer_size(modem: QpskLoopbackModem, args, max_part_bytes: int) -> tuple[int, float, int]:
     chunk_capacity = int(args.payload_bytes) - FILE_HEADER_SIZE
     if chunk_capacity <= 0:
@@ -151,6 +175,7 @@ def main() -> int:
     )
     parser.add_argument("--segment-dir", type=Path, help="Write each recovered batch as segment_XXXX.bin.")
     parser.add_argument("--manifest-file", type=Path, help="Write JSON metadata for recovered segments.")
+    parser.add_argument("--metrics-file", type=Path, help="Write per-batch stream metrics as JSON Lines.")
     args = parser.parse_args()
 
     if args.batch_bytes <= 0:
@@ -209,6 +234,10 @@ def main() -> int:
         print(f"segment_dir={args.segment_dir}")
     if args.manifest_file:
         print(f"manifest_file={args.manifest_file}")
+    if args.metrics_file:
+        args.metrics_file.parent.mkdir(parents=True, exist_ok=True)
+        args.metrics_file.write_text("", encoding="utf-8")
+        print(f"metrics_file={args.metrics_file}")
 
     recovered_parts: list[bytes] = []
     manifest_segments: list[dict[str, int | str | float]] = []
@@ -242,6 +271,8 @@ def main() -> int:
             part = data[start : start + args.batch_bytes]
             print(f"file_batch={batch_index + 1}")
             print(f"current_batch_bytes={len(part)}")
+            batch_capture_attempts = 0
+            batch_context_recreates_start = context_recreates
 
             payload_start = time.perf_counter()
             file_payloads, payloads = build_batch_payloads(part, args)
@@ -258,9 +289,11 @@ def main() -> int:
 
             rx = None
             level = -999.0
+            stats: dict[str, float | int] = {}
             capture_start = time.perf_counter()
             for attempt in range(1, int(args.rx_level_retries) + 2):
                 capture_attempts_total += 1
+                batch_capture_attempts += 1
                 try:
                     rx = capture_once(sdr, tx_padded, float(args.tx_settle_sec), int(args.rx_discard_buffers))
                 except OSError as exc:
@@ -293,6 +326,7 @@ def main() -> int:
                 break
 
             print_rx_stats(rx, float(args.adc_full_scale))
+            stats = rx_stats_dict(rx, float(args.adc_full_scale))
             decode_start = time.perf_counter()
             max_packets = (len(file_payloads) + int(args.file_guard_packets)) * max(2, int(np.ceil(args.rx_frame_copies)) + 1)
             packets = modem.receive_many(rx, max_packets)
@@ -309,9 +343,33 @@ def main() -> int:
             print(f"batch_sdr_capture_elapsed_sec={capture_elapsed:.3f}")
             print(f"batch_decode_elapsed_sec={decode_elapsed:.3f}")
             print(f"batch_file_recover_elapsed_sec={recover_elapsed:.3f}")
-            print(f"batch_elapsed_sec={time.perf_counter() - batch_start:.3f}")
+            batch_elapsed = time.perf_counter() - batch_start
+            print(f"batch_elapsed_sec={batch_elapsed:.3f}")
 
             if not report.get("file_ok") or recovered != part:
+                append_jsonl(
+                    args.metrics_file,
+                    {
+                        "batch_index": batch_index + 1,
+                        "batch_bytes": int(args.batch_bytes),
+                        "current_batch_bytes": len(part),
+                        "batch_file_ok": False,
+                        "batch_elapsed_sec": batch_elapsed,
+                        "sdr_capture_elapsed_sec": capture_elapsed,
+                        "decode_elapsed_sec": decode_elapsed,
+                        "file_recover_elapsed_sec": recover_elapsed,
+                        "capture_attempts": batch_capture_attempts,
+                        "context_recreates_so_far": context_recreates,
+                        "context_recreates_this_batch": context_recreates - batch_context_recreates_start,
+                        "packets_decoded": int(report.get("packets_decoded", 0)),
+                        "chunks_ok": int(report.get("chunks_ok", 0)),
+                        "missing_chunks": report.get("missing_chunks", []),
+                        "stream_output_bytes": progressive_bytes,
+                        "stream_elapsed_sec": time.perf_counter() - transfer_start,
+                        "stream_goodput_bps": progressive_bytes * 8.0 / max(time.perf_counter() - transfer_start, 1e-9),
+                        **stats,
+                    },
+                )
                 print(f"file_batch_failed={batch_index + 1}")
                 break
 
@@ -336,9 +394,35 @@ def main() -> int:
                 output_handle.write(recovered)
                 output_handle.flush()
             elapsed_so_far = time.perf_counter() - transfer_start
+            stream_goodput = progressive_bytes * 8.0 / max(elapsed_so_far, 1e-9)
             print(f"stream_output_bytes={progressive_bytes}")
             print(f"stream_elapsed_sec={elapsed_so_far:.3f}")
-            print(f"stream_goodput_bps={progressive_bytes * 8.0 / max(elapsed_so_far, 1e-9):.0f}")
+            print(f"stream_goodput_bps={stream_goodput:.0f}")
+            append_jsonl(
+                args.metrics_file,
+                {
+                    "batch_index": batch_index + 1,
+                    "batch_bytes": int(args.batch_bytes),
+                    "current_batch_bytes": len(part),
+                    "batch_file_ok": True,
+                    "batch_elapsed_sec": time.perf_counter() - batch_start,
+                    "sdr_capture_elapsed_sec": capture_elapsed,
+                    "decode_elapsed_sec": decode_elapsed,
+                    "file_recover_elapsed_sec": recover_elapsed,
+                    "payload_build_elapsed_sec": payload_elapsed,
+                    "modulate_elapsed_sec": modulate_elapsed,
+                    "capture_attempts": batch_capture_attempts,
+                    "context_recreates_so_far": context_recreates,
+                    "context_recreates_this_batch": context_recreates - batch_context_recreates_start,
+                    "packets_decoded": int(report.get("packets_decoded", 0)),
+                    "chunks_ok": int(report.get("chunks_ok", 0)),
+                    "missing_chunks": report.get("missing_chunks", []),
+                    "stream_output_bytes": progressive_bytes,
+                    "stream_elapsed_sec": elapsed_so_far,
+                    "stream_goodput_bps": stream_goodput,
+                    **stats,
+                },
+            )
             print(f"file_batch_ok={batch_index + 1}")
             if batch_index + 1 < total_batches and args.inter_batch_sec > 0.0:
                 time.sleep(float(args.inter_batch_sec))
