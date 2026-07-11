@@ -386,3 +386,32 @@ low_latency_stream_ok
 ```
 
 If `low_latency_stream_ok=true`, the RF loopback stream path worked for every processed chunk.
+
+## v0.4 Minimal PC GUI Shell
+
+The first GUI keeps the proven Python SDR pipeline unchanged and wraps it with a
+small Tkinter control panel:
+
+```powershell
+python scripts\sdr_video_gui.py
+```
+
+The GUI provides:
+
+```text
+video file picker
+work directory picker
+Stable demo / Smoke test / Conservative / Quality try / No player debug presets
+Start / Stop controls
+live log output
+chunk, goodput, OK/failed, context recreate, elapsed status
+```
+
+The default `Stable demo` preset calls the current v0.3 best stream profile:
+
+```text
+250k, 360p, 12fps, veryfast, 20 KB chunks, buffered ffplay pipe
+```
+
+This is intentionally a thin shell. It is the bridge from command-line RF proof
+of concept to a real upper-computer application without disturbing the SDR link.
