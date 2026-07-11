@@ -130,6 +130,12 @@ def main() -> int:
     parser.add_argument("--rx-discard-buffers", type=int, default=0)
     parser.add_argument("--tx-cyclic-copies", type=int, default=3)
     parser.add_argument(
+        "--inter-batch-sec",
+        type=float,
+        default=0.25,
+        help="Seconds to wait between successful batches so the IIO buffers settle.",
+    )
+    parser.add_argument(
         "--rx-frame-copies",
         type=float,
         default=1.0,
@@ -158,6 +164,9 @@ def main() -> int:
         return 2
     if args.rx_frame_copies <= 0.0:
         print("--rx-frame-copies must be positive", file=sys.stderr)
+        return 2
+    if args.inter_batch_sec < 0.0:
+        print("--inter-batch-sec must be non-negative", file=sys.stderr)
         return 2
 
     try:
@@ -189,6 +198,7 @@ def main() -> int:
     print(f"rx_buffer_requested={args.rx_buffer}")
     print(f"rx_buffer_used={rx_buffer_size}")
     print(f"rx_frame_copies={args.rx_frame_copies:.2f}")
+    print(f"inter_batch_sec={args.inter_batch_sec:.3f}")
     print(f"samples_per_packet={samples_per_packet:.1f}")
     print("stream_context_reuse=true")
     print(f"write_progressive={str(bool(args.write_progressive)).lower()}")
@@ -305,6 +315,8 @@ def main() -> int:
             print(f"stream_elapsed_sec={elapsed_so_far:.3f}")
             print(f"stream_goodput_bps={progressive_bytes * 8.0 / max(elapsed_so_far, 1e-9):.0f}")
             print(f"file_batch_ok={batch_index + 1}")
+            if batch_index + 1 < total_batches and args.inter_batch_sec > 0.0:
+                time.sleep(float(args.inter_batch_sec))
     finally:
         if output_handle is not None:
             output_handle.close()
