@@ -124,7 +124,6 @@ def start_player(
     title: str,
     left: int,
     top: int,
-    filters: list[str],
 ) -> subprocess.Popen:
     command = [
         player,
@@ -165,6 +164,7 @@ def start_source_preview(
     title: str,
     left: int,
     top: int,
+    filters: list[str],
 ) -> subprocess.Popen:
     command = [
         player,
