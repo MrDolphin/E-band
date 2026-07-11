@@ -28,76 +28,50 @@ class Preset:
 
 
 PRESETS: tuple[Preset, ...] = (
+    Preset("稳定演示", "250k, 360p, 12fps, veryfast, 接收端缓冲播放", ()),
+    Preset("快速测试", "稳定演示参数，但 20 个 chunk 后停止", ("--max-chunks", "20")),
     Preset(
-        "Stable demo",
-        "250k, 360p, 12fps, veryfast, buffered player",
-        (),
+        "保守链路",
+        "更低码率和帧率，用于较弱链路",
+        ("--video-bitrate", "200k", "--video-bufsize", "400k", "--fps", "10", "--gop", "10", "--chunk-bytes", "15000"),
     ),
     Preset(
-        "Smoke test",
-        "Stable demo, but stops after 20 chunks",
-        ("--max-chunks", "20"),
+        "画质尝试",
+        "尝试更高码率，可能卡顿",
+        ("--video-bitrate", "300k", "--video-bufsize", "600k", "--fps", "12", "--gop", "12"),
     ),
-    Preset(
-        "Conservative",
-        "Lower bitrate/fps for weaker links",
-        (
-            "--video-bitrate",
-            "200k",
-            "--video-bufsize",
-            "400k",
-            "--fps",
-            "10",
-            "--gop",
-            "10",
-            "--chunk-bytes",
-            "15000",
-        ),
-    ),
-    Preset(
-        "Quality try",
-        "Higher bitrate attempt; may stutter",
-        (
-            "--video-bitrate",
-            "300k",
-            "--video-bufsize",
-            "600k",
-            "--fps",
-            "12",
-            "--gop",
-            "12",
-        ),
-    ),
-    Preset(
-        "No player debug",
-        "Runs RF stream without ffplay, stops after 20 chunks",
-        ("--no-player", "--max-chunks", "20"),
-    ),
+    Preset("无播放调试", "不打开 ffplay，只跑 RF 流，20 个 chunk 后停止", ("--no-player", "--max-chunks", "20")),
 )
 
 
 class SdrVideoGui(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("ANTSDR E310 Video Stream Demo")
-        self.geometry("980x680")
-        self.minsize(820, 560)
+        self.title("ANTSDR E310 实时视频回环演示")
+        self.geometry("1080x760")
+        self.minsize(900, 620)
 
         self.process: subprocess.Popen | None = None
         self.reader_thread: threading.Thread | None = None
         self.output_queue: queue.Queue[str] = queue.Queue()
-        self.started_at: float | None = None
 
         self.input_var = tk.StringVar(value=str(PROJECT_DIR / "small.mp4"))
         self.work_dir_var = tk.StringVar(value=str(PROJECT_DIR / "artifacts" / "gui_stream_demo"))
         self.preset_var = tk.StringVar(value=PRESETS[0].label)
         self.extra_args_var = tk.StringVar(value="")
-        self.status_var = tk.StringVar(value="Ready")
+        self.source_preview_var = tk.BooleanVar(value=True)
+        self.player_width_var = tk.StringVar(value="360")
+        self.player_height_var = tk.StringVar(value="640")
+
+        self.status_var = tk.StringVar(value="就绪")
         self.chunk_var = tk.StringVar(value="-")
         self.goodput_var = tk.StringVar(value="-")
         self.ok_var = tk.StringVar(value="-")
         self.context_var = tk.StringVar(value="-")
         self.elapsed_var = tk.StringVar(value="-")
+        self.source_status_var = tk.StringVar(value="未启动")
+        self.receiver_status_var = tk.StringVar(value="未启动")
+        self.delay_status_var = tk.StringVar(value="-")
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -109,20 +83,20 @@ class SdrVideoGui(tk.Tk):
         root.columnconfigure(0, weight=1)
         root.rowconfigure(4, weight=1)
 
-        file_frame = ttk.LabelFrame(root, text="Input")
+        file_frame = ttk.LabelFrame(root, text="输入")
         file_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         file_frame.columnconfigure(1, weight=1)
-        ttk.Label(file_frame, text="Video file").grid(row=0, column=0, padx=8, pady=8, sticky="w")
+        ttk.Label(file_frame, text="视频文件").grid(row=0, column=0, padx=8, pady=8, sticky="w")
         ttk.Entry(file_frame, textvariable=self.input_var).grid(row=0, column=1, padx=8, pady=8, sticky="ew")
-        ttk.Button(file_frame, text="Browse", command=self.browse_input).grid(row=0, column=2, padx=8, pady=8)
-        ttk.Label(file_frame, text="Work dir").grid(row=1, column=0, padx=8, pady=8, sticky="w")
+        ttk.Button(file_frame, text="浏览", command=self.browse_input).grid(row=0, column=2, padx=8, pady=8)
+        ttk.Label(file_frame, text="工作目录").grid(row=1, column=0, padx=8, pady=8, sticky="w")
         ttk.Entry(file_frame, textvariable=self.work_dir_var).grid(row=1, column=1, padx=8, pady=8, sticky="ew")
-        ttk.Button(file_frame, text="Browse", command=self.browse_work_dir).grid(row=1, column=2, padx=8, pady=8)
+        ttk.Button(file_frame, text="浏览", command=self.browse_work_dir).grid(row=1, column=2, padx=8, pady=8)
 
-        preset_frame = ttk.LabelFrame(root, text="Stream Profile")
+        preset_frame = ttk.LabelFrame(root, text="传输配置")
         preset_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         preset_frame.columnconfigure(1, weight=1)
-        ttk.Label(preset_frame, text="Preset").grid(row=0, column=0, padx=8, pady=8, sticky="w")
+        ttk.Label(preset_frame, text="预设").grid(row=0, column=0, padx=8, pady=8, sticky="w")
         preset_box = ttk.Combobox(
             preset_frame,
             textvariable=self.preset_var,
@@ -133,28 +107,43 @@ class SdrVideoGui(tk.Tk):
         preset_box.bind("<<ComboboxSelected>>", lambda _event: self.update_preset_description())
         self.preset_description = ttk.Label(preset_frame, text=PRESETS[0].description)
         self.preset_description.grid(row=1, column=0, columnspan=2, padx=8, pady=(0, 8), sticky="w")
-        ttk.Label(preset_frame, text="Extra args").grid(row=2, column=0, padx=8, pady=8, sticky="w")
+
+        ttk.Label(preset_frame, text="附加参数").grid(row=2, column=0, padx=8, pady=8, sticky="w")
         ttk.Entry(preset_frame, textvariable=self.extra_args_var).grid(row=2, column=1, padx=8, pady=8, sticky="ew")
+
+        ttk.Checkbutton(preset_frame, text="打开发送端预览", variable=self.source_preview_var).grid(
+            row=3, column=0, padx=8, pady=8, sticky="w"
+        )
+        size_frame = ttk.Frame(preset_frame)
+        size_frame.grid(row=3, column=1, padx=8, pady=8, sticky="w")
+        ttk.Label(size_frame, text="播放窗口").pack(side=tk.LEFT)
+        ttk.Entry(size_frame, textvariable=self.player_width_var, width=6).pack(side=tk.LEFT, padx=(8, 2))
+        ttk.Label(size_frame, text="x").pack(side=tk.LEFT)
+        ttk.Entry(size_frame, textvariable=self.player_height_var, width=6).pack(side=tk.LEFT, padx=(2, 8))
+        ttk.Label(size_frame, text="只放大播放窗口，不提高 RF 码率").pack(side=tk.LEFT)
 
         controls = ttk.Frame(root)
         controls.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        self.start_button = ttk.Button(controls, text="Start", command=self.start_stream)
+        self.start_button = ttk.Button(controls, text="开始", command=self.start_stream)
         self.start_button.pack(side=tk.LEFT, padx=(0, 8))
-        self.stop_button = ttk.Button(controls, text="Stop", command=self.stop_stream, state=tk.DISABLED)
+        self.stop_button = ttk.Button(controls, text="停止", command=self.stop_stream, state=tk.DISABLED)
         self.stop_button.pack(side=tk.LEFT)
         ttk.Label(controls, textvariable=self.status_var).pack(side=tk.RIGHT)
 
-        metrics = ttk.LabelFrame(root, text="Live Metrics")
+        metrics = ttk.LabelFrame(root, text="实时状态")
         metrics.grid(row=3, column=0, sticky="ew", pady=(0, 10))
-        for col in range(5):
+        for col in range(8):
             metrics.columnconfigure(col, weight=1)
-        self._metric(metrics, 0, "Chunk", self.chunk_var)
-        self._metric(metrics, 1, "Goodput", self.goodput_var)
-        self._metric(metrics, 2, "OK / Failed", self.ok_var)
-        self._metric(metrics, 3, "Context", self.context_var)
-        self._metric(metrics, 4, "Elapsed", self.elapsed_var)
+        self._metric(metrics, 0, "块序号", self.chunk_var)
+        self._metric(metrics, 1, "吞吐", self.goodput_var)
+        self._metric(metrics, 2, "成功/失败", self.ok_var)
+        self._metric(metrics, 3, "重建", self.context_var)
+        self._metric(metrics, 4, "接收耗时", self.elapsed_var)
+        self._metric(metrics, 5, "发送预览", self.source_status_var)
+        self._metric(metrics, 6, "接收播放", self.receiver_status_var)
+        self._metric(metrics, 7, "对照延迟", self.delay_status_var)
 
-        log_frame = ttk.LabelFrame(root, text="Log")
+        log_frame = ttk.LabelFrame(root, text="运行日志")
         log_frame.grid(row=4, column=0, sticky="nsew")
         log_frame.rowconfigure(0, weight=1)
         log_frame.columnconfigure(0, weight=1)
@@ -169,12 +158,12 @@ class SdrVideoGui(tk.Tk):
         cell = ttk.Frame(parent, padding=8)
         cell.grid(row=0, column=column, sticky="ew")
         ttk.Label(cell, text=label).pack(anchor="w")
-        ttk.Label(cell, textvariable=variable, font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(cell, textvariable=variable, font=("Segoe UI", 11, "bold")).pack(anchor="w")
 
     def browse_input(self) -> None:
         path = filedialog.askopenfilename(
             initialdir=str(PROJECT_DIR),
-            filetypes=[("Video files", "*.mp4 *.ts *.mov *.mkv *.avi"), ("All files", "*.*")],
+            filetypes=[("视频文件", "*.mp4 *.ts *.mov *.mkv *.avi"), ("所有文件", "*.*")],
         )
         if path:
             self.input_var.set(path)
@@ -202,6 +191,14 @@ class SdrVideoGui(tk.Tk):
             self.work_dir_var.get(),
         ]
         command.extend(preset.args)
+        width = self.player_width_var.get().strip()
+        height = self.player_height_var.get().strip()
+        if width and width != "0":
+            command.extend(["--player-width", width])
+        if height and height != "0":
+            command.extend(["--player-height", height])
+        if self.source_preview_var.get():
+            command.append("--source-preview")
         extra = self.extra_args_var.get().strip()
         if extra:
             command.extend(shlex.split(extra))
@@ -212,22 +209,23 @@ class SdrVideoGui(tk.Tk):
             return
         input_path = Path(self.input_var.get())
         if not input_path.exists():
-            messagebox.showerror("Input missing", f"Video file does not exist:\n{input_path}")
+            messagebox.showerror("文件不存在", f"视频文件不存在:\n{input_path}")
             return
 
         command = self.build_command()
         self.log_text.delete("1.0", tk.END)
         self.append_log("command=" + " ".join(command))
-        self.status_var.set("Starting")
+        self.status_var.set("启动中")
         self.chunk_var.set("-")
         self.goodput_var.set("-")
         self.ok_var.set("-")
         self.context_var.set("-")
         self.elapsed_var.set("-")
+        self.source_status_var.set("等待首块")
+        self.receiver_status_var.set("启动中")
+        self.delay_status_var.set("-")
 
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         self.process = subprocess.Popen(
             command,
             cwd=str(PROJECT_DIR),
@@ -237,17 +235,16 @@ class SdrVideoGui(tk.Tk):
             bufsize=1,
             creationflags=creationflags,
         )
-        self.started_at = time.perf_counter()
         self.start_button.configure(state=tk.DISABLED)
         self.stop_button.configure(state=tk.NORMAL)
-        self.status_var.set("Running")
+        self.status_var.set("运行中")
         self.reader_thread = threading.Thread(target=self.read_process_output, daemon=True)
         self.reader_thread.start()
 
     def stop_stream(self) -> None:
         if self.process is None:
             return
-        self.status_var.set("Stopping")
+        self.status_var.set("停止中")
         try:
             if os.name == "nt":
                 self.process.send_signal(signal.CTRL_BREAK_EVENT)
@@ -311,16 +308,21 @@ class SdrVideoGui(tk.Tk):
             self.context_var.set(value)
         elif key == "stream_elapsed_sec":
             self.elapsed_var.set(f"{float(value):.1f}s")
+        elif key == "player_command":
+            self.receiver_status_var.set("已启动")
+        elif key == "source_preview_started":
+            self.source_status_var.set("已启动")
+            self.delay_status_var.set("首块后启动")
         elif key == "low_latency_stream_ok":
-            self.status_var.set("OK" if value.lower() == "true" else "Failed")
+            self.status_var.set("完成" if value.lower() == "true" else "失败")
 
     def on_process_done(self) -> None:
         self.start_button.configure(state=tk.NORMAL)
         self.stop_button.configure(state=tk.DISABLED)
         if self.process is not None and self.process.returncode == 0:
-            self.status_var.set("Finished")
-        elif self.status_var.get() not in ("OK", "Failed"):
-            self.status_var.set("Stopped")
+            self.status_var.set("已完成")
+        elif self.status_var.get() not in ("完成", "失败"):
+            self.status_var.set("已停止")
         self.process = None
         self.reader_thread = None
 

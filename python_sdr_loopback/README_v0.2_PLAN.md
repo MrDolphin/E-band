@@ -399,10 +399,13 @@ python scripts\sdr_video_gui.py
 The GUI provides:
 
 ```text
+Chinese labels
 video file picker
 work directory picker
 Stable demo / Smoke test / Conservative / Quality try / No player debug presets
 Start / Stop controls
+source preview and receiver playback comparison
+receiver player window sizing
 live log output
 chunk, goodput, OK/failed, context recreate, elapsed status
 ```
@@ -415,3 +418,14 @@ The default `Stable demo` preset calls the current v0.3 best stream profile:
 
 This is intentionally a thin shell. It is the bridge from command-line RF proof
 of concept to a real upper-computer application without disturbing the SDR link.
+
+Two display-size concepts are intentionally separated:
+
+```text
+player window size: enlarges the ffplay window only; RF bitrate is unchanged
+encoded video size: changes --scale-height; RF bitrate pressure increases
+```
+
+For demos, prefer enlarging only the player window first. Raising encoded
+resolution should be tested separately because it can cause stutter on the
+current Python chunked SDR path.
