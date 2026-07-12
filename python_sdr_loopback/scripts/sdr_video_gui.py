@@ -91,29 +91,64 @@ class VideoPane(ttk.Frame):
 class LinkStatsPane(ttk.LabelFrame):
     def __init__(self, parent: tk.Widget) -> None:
         super().__init__(parent, text="链路质量 / 发送状态", padding=12)
-        self.columnconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
         self.values: dict[str, tk.StringVar] = {}
+        self.canvas = tk.Canvas(self, highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.content = ttk.Frame(self.canvas)
+        self.content.columnconfigure(1, weight=1)
+        self.window_id = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind(
+            "<Configure>",
+            lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+        )
+        self.canvas.bind(
+            "<Configure>",
+            lambda event: self.canvas.itemconfigure(self.window_id, width=event.width),
+        )
         rows = (
+            ("input", "输入文件"),
+            ("output", "输出文件"),
             ("profile", "视频配置"),
+            ("player_buffered", "播放缓冲"),
+            ("chunk_effective", "有效块大小"),
+            ("ts_aligned", "TS 包对齐"),
             ("raw_bitrate", "QPSK 原始速率"),
             ("payload_bitrate", "有效载荷估计"),
             ("chunk_bytes", "当前块大小"),
             ("output_bytes", "已恢复数据"),
+            ("lo_hz", "中心频率 LO"),
+            ("sample_rate", "采样率"),
+            ("symbol_rate", "符号率"),
+            ("rf_bandwidth", "模拟带宽"),
+            ("tx_gain", "TX 增益"),
+            ("rx_gain", "RX 增益"),
+            ("rx_samples", "RX 样点数"),
             ("rx_rms", "接收电平 RMS"),
             ("rx_peak", "接收峰值"),
+            ("rx_clip", "削顶比例"),
             ("packets_decoded", "已解包分组"),
+            ("chunks_in_chunk", "块内有效分片"),
+            ("missing_chunks", "缺失分片"),
             ("chunk_elapsed", "单块耗时"),
             ("capture_attempts", "采集尝试"),
             ("context_recreates", "IIO 重建"),
             ("chunks", "块成功/失败"),
+            ("goodput", "当前吞吐"),
+            ("stream_elapsed", "链路运行时间"),
+            ("stream_ok", "运行结果"),
             ("receiver", "接收播放"),
             ("delay", "对照说明"),
         )
         for row, (key, label) in enumerate(rows):
-            ttk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=3)
+            ttk.Label(self.content, text=label).grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=3)
             variable = tk.StringVar(value="-")
             self.values[key] = variable
-            ttk.Label(self, textvariable=variable, font=("Segoe UI", 10, "bold")).grid(
+            ttk.Label(self.content, textvariable=variable, font=("Segoe UI", 10, "bold"), wraplength=520).grid(
                 row=row, column=1, sticky="w", pady=3
             )
 
@@ -139,8 +174,6 @@ class SdrVideoGui(tk.Tk):
         self.preview_process: subprocess.Popen | None = None
         self.preview_thread: threading.Thread | None = None
         self.receiver_output_path: Path | None = None
-        self.pending_source_preview_path: Path | None = None
-        self.source_preview_started = False
 
         self.input_var = tk.StringVar(value=str(PROJECT_DIR / "small.mp4"))
         self.work_dir_var = tk.StringVar(value=str(PROJECT_DIR / "artifacts" / "gui_stream_demo"))
@@ -180,7 +213,6 @@ class SdrVideoGui(tk.Tk):
         self.config_tab.columnconfigure(0, weight=1)
         self.stream_tab.columnconfigure(0, weight=1)
         self.stream_tab.rowconfigure(2, weight=2)
-        self.stream_tab.rowconfigure(4, weight=1)
 
         file_frame = ttk.LabelFrame(self.config_tab, text="输入")
         file_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -248,17 +280,18 @@ class SdrVideoGui(tk.Tk):
         video_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
         video_frame.columnconfigure(0, weight=1)
         video_frame.columnconfigure(1, weight=1)
-        video_frame.rowconfigure(0, weight=1)
+        video_frame.rowconfigure(0, weight=3)
+        video_frame.rowconfigure(1, weight=2)
         self.source_pane = VideoPane(video_frame, "发送视频")
         self.source_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         self.link_stats = LinkStatsPane(video_frame)
-        self.link_stats.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.link_stats.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(8, 0))
 
-        log_frame = ttk.LabelFrame(self.stream_tab, text="运行日志")
-        log_frame.grid(row=4, column=0, sticky="nsew")
+        log_frame = ttk.LabelFrame(video_frame, text="运行日志")
+        log_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(10, 0))
         log_frame.rowconfigure(0, weight=1)
         log_frame.columnconfigure(0, weight=1)
-        self.log_text = tk.Text(log_frame, wrap=tk.NONE, height=18, font=("Consolas", 10))
+        self.log_text = tk.Text(log_frame, wrap=tk.NONE, height=10, font=("Consolas", 10))
         self.log_text.grid(row=0, column=0, sticky="nsew")
         yscroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         yscroll.grid(row=0, column=1, sticky="ns")
@@ -352,15 +385,15 @@ class SdrVideoGui(tk.Tk):
         self.context_var.set("-")
         self.elapsed_var.set("-")
         self.link_stats.reset()
-        self.source_preview_started = False
-        self.pending_source_preview_path = input_path if self.source_preview_var.get() else None
-        self.source_pane.show_placeholder("等待首块接收后同步预览" if self.source_preview_var.get() else "发送预览关闭")
-        self.source_status_var.set("关闭" if not self.source_preview_var.get() else "等待首块")
+        self.source_pane.show_placeholder("发送预览启动中" if self.source_preview_var.get() else "发送预览关闭")
+        self.source_status_var.set("关闭" if not self.source_preview_var.get() else "启动中")
         self.receiver_status_var.set("外部播放器")
-        self.delay_status_var.set("首块后同步")
+        self.delay_status_var.set("RF链路延迟")
         self.profile_parts = {}
+        self.link_stats.set_value("input", str(input_path))
+        self.link_stats.set_value("output", str(self.receiver_ts_path()))
         self.link_stats.set_value("receiver", "外部 ffplay 低延迟播放")
-        self.link_stats.set_value("delay", "发送预览在首块接收后启动，减少肉眼时差")
+        self.link_stats.set_value("delay", "发送预览是本地参考；接收视频经过编码、RF、解包和播放器缓冲")
 
         self.receiver_output_path = self.receiver_ts_path()
         self.receiver_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -368,6 +401,9 @@ class SdrVideoGui(tk.Tk):
             self.receiver_output_path.unlink()
         except FileNotFoundError:
             pass
+
+        if self.source_preview_var.get():
+            self.start_source_preview(input_path)
 
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         self.process = subprocess.Popen(
@@ -447,6 +483,7 @@ class SdrVideoGui(tk.Tk):
             try:
                 goodput = f"{int(float(value)) // 1000} kbps"
                 self.goodput_var.set(goodput)
+                self.link_stats.set_value("goodput", goodput)
             except ValueError:
                 self.goodput_var.set(value)
         elif key == "stream_chunks_ok":
@@ -462,14 +499,13 @@ class SdrVideoGui(tk.Tk):
             self.link_stats.set_value("context_recreates", value)
         elif key == "stream_elapsed_sec":
             self.elapsed_var.set(f"{float(value):.1f}s")
+            self.link_stats.set_value("stream_elapsed", f"{float(value):.1f} s")
         elif key == "player_command":
             self.receiver_status_var.set("已启动")
             self.link_stats.set_value("receiver", "外部 ffplay 已启动")
         elif key == "source_preview_started":
             self.source_status_var.set("已启动")
-            self.delay_status_var.set("首块后启动")
         elif key == "stream_output_bytes":
-            self.start_pending_source_preview(value)
             self.receiver_status_var.set("已接收 TS 数据")
             self.link_stats.set_value("output_bytes", f"{int(float(value)) // 1024} KB")
         elif key == "packets_decoded":
@@ -489,36 +525,50 @@ class SdrVideoGui(tk.Tk):
             self.set_profile_part("编码", value)
         elif key == "player_buffered":
             self.set_profile_part("播放缓冲", "开启" if value.lower() == "true" else "低延迟")
+            self.link_stats.set_value("player_buffered", "开启" if value.lower() == "true" else "低延迟")
+        elif key == "output_file":
+            self.link_stats.set_value("output", value)
+        elif key == "chunk_bytes_effective":
+            self.link_stats.set_value("chunk_effective", f"{int(float(value)) // 1024} KB")
+        elif key == "ts_packet_aligned":
+            self.link_stats.set_value("ts_aligned", "是" if value.lower() == "true" else "否")
         elif key == "raw_bitrate_bps":
             self.link_stats.set_value("raw_bitrate", f"{int(float(value)) / 1_000_000:.2f} Mbps")
         elif key == "payload_bitrate_est_bps":
             self.link_stats.set_value("payload_bitrate", f"{int(float(value)) / 1_000_000:.2f} Mbps")
         elif key == "stream_chunk_bytes":
             self.link_stats.set_value("chunk_bytes", f"{int(float(value)) // 1024} KB")
+        elif key == "lo_hz":
+            self.link_stats.set_value("lo_hz", f"{int(float(value)) / 1_000_000:.2f} MHz")
+        elif key == "sample_rate":
+            self.link_stats.set_value("sample_rate", f"{int(float(value)) / 1_000_000:.2f} MSPS")
+        elif key == "symbol_rate":
+            self.link_stats.set_value("symbol_rate", f"{int(float(value)) / 1_000_000:.2f} Msym/s")
+        elif key == "bandwidth":
+            self.link_stats.set_value("rf_bandwidth", f"{int(float(value)) / 1_000_000:.2f} MHz")
+        elif key.startswith("tx_hardwaregain"):
+            self.link_stats.set_value("tx_gain", value)
+        elif key.startswith("rx_hardwaregain"):
+            self.link_stats.set_value("rx_gain", value)
+        elif key == "rx_samples":
+            self.link_stats.set_value("rx_samples", value)
         elif key == "rx_rms_dbfs":
             self.link_stats.set_value("rx_rms", f"{float(value):.2f} dBFS")
         elif key == "rx_peak_dbfs":
             self.link_stats.set_value("rx_peak", f"{float(value):.2f} dBFS")
+        elif key == "rx_clip_ratio":
+            self.link_stats.set_value("rx_clip", f"{float(value) * 100:.3f}%")
         elif key == "chunk_elapsed_sec":
             self.link_stats.set_value("chunk_elapsed", f"{float(value):.3f} s")
         elif key == "capture_attempt":
             self.link_stats.set_value("capture_attempts", value)
+        elif key == "chunks_ok_in_chunk":
+            self.link_stats.set_value("chunks_in_chunk", value)
+        elif key == "missing_chunks":
+            self.link_stats.set_value("missing_chunks", value)
         elif key == "low_latency_stream_ok":
             self.status_var.set("完成" if value.lower() == "true" else "失败")
-
-    def start_pending_source_preview(self, output_bytes: str) -> None:
-        if self.source_preview_started or self.pending_source_preview_path is None:
-            return
-        try:
-            if int(float(output_bytes)) <= 0:
-                return
-        except ValueError:
-            return
-        self.source_preview_started = True
-        self.source_status_var.set("同步启动")
-        self.delay_status_var.set("首块后同步")
-        self.link_stats.set_value("delay", "发送预览已在首块接收后启动；接收端仍包含RF和解码延迟")
-        self.start_source_preview(self.pending_source_preview_path)
+            self.link_stats.set_value("stream_ok", "成功" if value.lower() == "true" else "失败")
 
     def set_profile_part(self, key: str, value: str) -> None:
         self.profile_parts[key] = value
