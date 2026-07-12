@@ -100,6 +100,10 @@ class SdrVideoGui(tk.Tk):
         self.output_queue: queue.Queue[object] = queue.Queue()
         self.preview_process: subprocess.Popen | None = None
         self.preview_thread: threading.Thread | None = None
+        self.receiver_decoder_process: subprocess.Popen | None = None
+        self.receiver_tail_thread: threading.Thread | None = None
+        self.receiver_reader_thread: threading.Thread | None = None
+        self.receiver_output_path: Path | None = None
 
         self.input_var = tk.StringVar(value=str(PROJECT_DIR / "small.mp4"))
         self.work_dir_var = tk.StringVar(value=str(PROJECT_DIR / "artifacts" / "gui_stream_demo"))
@@ -252,6 +256,7 @@ class SdrVideoGui(tk.Tk):
 
     def build_command(self) -> list[str]:
         preset = self.selected_preset()
+        output_file = self.receiver_ts_path()
         command = [
             sys.executable,
             str(STREAM_SCRIPT),
@@ -259,6 +264,8 @@ class SdrVideoGui(tk.Tk):
             self.input_var.get(),
             "--work-dir",
             self.work_dir_var.get(),
+            "--output-file",
+            str(output_file),
         ]
         command.extend(preset.args)
         if "--no-player" not in command:
@@ -267,6 +274,9 @@ class SdrVideoGui(tk.Tk):
         if extra:
             command.extend(shlex.split(extra))
         return command
+
+    def receiver_ts_path(self) -> Path:
+        return Path(self.work_dir_var.get()) / "gui_recovered.ts"
 
     def start_stream(self) -> None:
         if self.process is not None:
@@ -293,8 +303,16 @@ class SdrVideoGui(tk.Tk):
         self.receiver_status_var.set("链路运行中")
         self.delay_status_var.set("-")
 
+        self.receiver_output_path = self.receiver_ts_path()
+        self.receiver_output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.receiver_output_path.unlink()
+        except FileNotFoundError:
+            pass
+
         if self.source_preview_var.get():
             self.start_source_preview(input_path)
+        self.start_receiver_preview(self.receiver_output_path)
 
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         self.process = subprocess.Popen(
@@ -314,6 +332,7 @@ class SdrVideoGui(tk.Tk):
 
     def stop_stream(self) -> None:
         self.stop_source_preview()
+        self.stop_receiver_preview()
         if self.process is None:
             return
         self.status_var.set("停止中")
@@ -349,6 +368,10 @@ class SdrVideoGui(tk.Tk):
                 if isinstance(item, tuple) and item and item[0] == "source_frame":
                     self.source_pane.show_image(item[1])
                     self.source_status_var.set("预览中")
+                    continue
+                if isinstance(item, tuple) and item and item[0] == "receiver_frame":
+                    self.receiver_pane.show_image(item[1])
+                    self.receiver_status_var.set("播放中")
                     continue
                 line = str(item)
                 if line == "__PROCESS_DONE__":
@@ -436,8 +459,13 @@ class SdrVideoGui(tk.Tk):
         process = self.preview_process
         if process is None or process.stdout is None:
             return
+        self.read_mjpeg_frames(process, "source_frame")
+
+    def read_mjpeg_frames(self, process: subprocess.Popen, queue_key: str) -> None:
         buffer = bytearray()
         while process.poll() is None:
+            if process.stdout is None:
+                return
             chunk = process.stdout.read(4096)
             if not chunk:
                 break
@@ -455,13 +483,130 @@ class SdrVideoGui(tk.Tk):
                     image = Image.open(io.BytesIO(frame)).convert("RGB")
                 except Exception:
                     continue
-                self.output_queue.put(("source_frame", image.copy()))
+                self.output_queue.put((queue_key, image.copy()))
 
     def stop_source_preview(self) -> None:
         process = self.preview_process
         self.preview_process = None
         if process is None:
             return
+        try:
+            if os.name == "nt":
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                process.terminate()
+        except Exception:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        try:
+            process.wait(timeout=1.0)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+    def start_receiver_preview(self, ts_path: Path) -> None:
+        self.stop_receiver_preview()
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-probesize",
+            "32768",
+            "-analyzeduration",
+            "0",
+            "-i",
+            "pipe:0",
+            "-vf",
+            "fps=12",
+            "-an",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "pipe:1",
+        ]
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        try:
+            self.receiver_decoder_process = subprocess.Popen(
+                command,
+                cwd=str(PROJECT_DIR),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+        except FileNotFoundError:
+            self.receiver_status_var.set("ffmpeg 未找到")
+            self.receiver_pane.show_placeholder("未找到 ffmpeg")
+            return
+        self.receiver_status_var.set("等待数据")
+        self.receiver_tail_thread = threading.Thread(target=self.tail_receiver_ts, args=(ts_path,), daemon=True)
+        self.receiver_reader_thread = threading.Thread(target=self.read_receiver_preview, daemon=True)
+        self.receiver_tail_thread.start()
+        self.receiver_reader_thread.start()
+
+    def tail_receiver_ts(self, ts_path: Path) -> None:
+        decoder = self.receiver_decoder_process
+        if decoder is None or decoder.stdin is None:
+            return
+        offset = 0
+        idle_count = 0
+        while self.process is not None or idle_count < 200:
+            if decoder.poll() is not None:
+                return
+            if not ts_path.exists():
+                time.sleep(0.05)
+                idle_count += 1
+                continue
+            size = ts_path.stat().st_size
+            if size < offset:
+                offset = 0
+            if size == offset:
+                time.sleep(0.05)
+                idle_count += 1
+                continue
+            idle_count = 0
+            with ts_path.open("rb") as handle:
+                handle.seek(offset)
+                data = handle.read(size - offset)
+            offset = size
+            if not data:
+                continue
+            try:
+                decoder.stdin.write(data)
+                decoder.stdin.flush()
+            except (BrokenPipeError, OSError):
+                return
+        try:
+            decoder.stdin.close()
+        except Exception:
+            pass
+
+    def read_receiver_preview(self) -> None:
+        process = self.receiver_decoder_process
+        if process is None or process.stdout is None:
+            return
+        self.read_mjpeg_frames(process, "receiver_frame")
+
+    def stop_receiver_preview(self) -> None:
+        process = self.receiver_decoder_process
+        self.receiver_decoder_process = None
+        if process is None:
+            return
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except Exception:
+                pass
         try:
             if os.name == "nt":
                 process.send_signal(signal.CTRL_BREAK_EVENT)
@@ -490,9 +635,11 @@ class SdrVideoGui(tk.Tk):
         self.process = None
         self.reader_thread = None
         self.stop_source_preview()
+        self.stop_receiver_preview()
 
     def on_close(self) -> None:
         self.stop_source_preview()
+        self.stop_receiver_preview()
         if self.process is not None:
             self.stop_stream()
         self.destroy()
