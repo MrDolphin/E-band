@@ -33,13 +33,18 @@ class Preset:
 PRESETS: tuple[Preset, ...] = (
     Preset(
         "稳定演示",
-        "250k, 360p, 12fps, veryfast, 较小传输块，接收端低延迟播放",
-        ("--player-nobuffer", "--chunk-bytes", "12000"),
+        "250k, 360p, 12fps, veryfast, 接收端小缓冲，优先流畅播放",
+        ("--chunk-bytes", "16000"),
     ),
     Preset(
         "快速测试",
         "稳定演示参数，但 20 个 chunk 后停止",
-        ("--player-nobuffer", "--chunk-bytes", "12000", "--max-chunks", "20"),
+        ("--chunk-bytes", "16000", "--max-chunks", "20"),
+    ),
+    Preset(
+        "低延迟测试",
+        "更小块和 nobuffer，延迟更低但可能卡顿",
+        ("--player-nobuffer", "--chunk-bytes", "12000"),
     ),
     Preset(
         "保守链路",
@@ -49,7 +54,7 @@ PRESETS: tuple[Preset, ...] = (
     Preset(
         "画质尝试",
         "尝试更高码率，可能卡顿",
-        ("--player-nobuffer", "--video-bitrate", "300k", "--video-bufsize", "600k", "--fps", "12", "--gop", "12"),
+        ("--video-bitrate", "300k", "--video-bufsize", "600k", "--fps", "12", "--gop", "12"),
     ),
     Preset("无播放调试", "不打开 ffplay，只跑 RF 流，20 个 chunk 后停止", ("--no-player", "--max-chunks", "20")),
 )
