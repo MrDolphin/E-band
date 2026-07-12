@@ -31,8 +31,8 @@ class Preset:
 
 
 PRESETS: tuple[Preset, ...] = (
-    Preset("稳定演示", "250k, 360p, 12fps, veryfast, 接收端缓冲播放", ()),
-    Preset("快速测试", "稳定演示参数，但 20 个 chunk 后停止", ("--max-chunks", "20")),
+    Preset("稳定演示", "250k, 360p, 12fps, veryfast, 接收端低延迟播放", ("--player-nobuffer",)),
+    Preset("快速测试", "稳定演示参数，但 20 个 chunk 后停止", ("--player-nobuffer", "--max-chunks", "20")),
     Preset(
         "保守链路",
         "更低码率和帧率，用于较弱链路",
@@ -41,7 +41,7 @@ PRESETS: tuple[Preset, ...] = (
     Preset(
         "画质尝试",
         "尝试更高码率，可能卡顿",
-        ("--video-bitrate", "300k", "--video-bufsize", "600k", "--fps", "12", "--gop", "12"),
+        ("--player-nobuffer", "--video-bitrate", "300k", "--video-bufsize", "600k", "--fps", "12", "--gop", "12"),
     ),
     Preset("无播放调试", "不打开 ffplay，只跑 RF 流，20 个 chunk 后停止", ("--no-player", "--max-chunks", "20")),
 )
@@ -88,6 +88,44 @@ class VideoPane(ttk.Frame):
         self.canvas.create_image(x, y, anchor="nw", image=self.photo)
 
 
+class LinkStatsPane(ttk.LabelFrame):
+    def __init__(self, parent: tk.Widget) -> None:
+        super().__init__(parent, text="链路质量 / 发送状态", padding=12)
+        self.columnconfigure(1, weight=1)
+        self.values: dict[str, tk.StringVar] = {}
+        rows = (
+            ("profile", "视频配置"),
+            ("raw_bitrate", "QPSK 原始速率"),
+            ("payload_bitrate", "有效载荷估计"),
+            ("chunk_bytes", "当前块大小"),
+            ("output_bytes", "已恢复数据"),
+            ("rx_rms", "接收电平 RMS"),
+            ("rx_peak", "接收峰值"),
+            ("packets_decoded", "已解包分组"),
+            ("chunk_elapsed", "单块耗时"),
+            ("capture_attempts", "采集尝试"),
+            ("context_recreates", "IIO 重建"),
+            ("chunks", "块成功/失败"),
+            ("receiver", "接收播放"),
+            ("delay", "对照说明"),
+        )
+        for row, (key, label) in enumerate(rows):
+            ttk.Label(self, text=label).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=3)
+            variable = tk.StringVar(value="-")
+            self.values[key] = variable
+            ttk.Label(self, textvariable=variable, font=("Segoe UI", 10, "bold")).grid(
+                row=row, column=1, sticky="w", pady=3
+            )
+
+    def set_value(self, key: str, value: str) -> None:
+        if key in self.values:
+            self.values[key].set(value)
+
+    def reset(self) -> None:
+        for variable in self.values.values():
+            variable.set("-")
+
+
 class SdrVideoGui(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -101,6 +139,8 @@ class SdrVideoGui(tk.Tk):
         self.preview_process: subprocess.Popen | None = None
         self.preview_thread: threading.Thread | None = None
         self.receiver_output_path: Path | None = None
+        self.pending_source_preview_path: Path | None = None
+        self.source_preview_started = False
 
         self.input_var = tk.StringVar(value=str(PROJECT_DIR / "small.mp4"))
         self.work_dir_var = tk.StringVar(value=str(PROJECT_DIR / "artifacts" / "gui_stream_demo"))
@@ -117,6 +157,7 @@ class SdrVideoGui(tk.Tk):
         self.source_status_var = tk.StringVar(value="未启动")
         self.receiver_status_var = tk.StringVar(value="未启动")
         self.delay_status_var = tk.StringVar(value="-")
+        self.profile_parts: dict[str, str] = {}
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -203,16 +244,15 @@ class SdrVideoGui(tk.Tk):
         self._metric(metrics, 6, "接收播放", self.receiver_status_var)
         self._metric(metrics, 7, "对照延迟", self.delay_status_var)
 
-        video_frame = ttk.LabelFrame(self.stream_tab, text="视频对照")
+        video_frame = ttk.LabelFrame(self.stream_tab, text="发送预览与链路质量")
         video_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
         video_frame.columnconfigure(0, weight=1)
         video_frame.columnconfigure(1, weight=1)
         video_frame.rowconfigure(0, weight=1)
         self.source_pane = VideoPane(video_frame, "发送视频")
         self.source_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        self.receiver_pane = VideoPane(video_frame, "接收视频")
-        self.receiver_pane.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-        self.receiver_pane.show_placeholder("接收视频显示下一步接入")
+        self.link_stats = LinkStatsPane(video_frame)
+        self.link_stats.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
 
         log_frame = ttk.LabelFrame(self.stream_tab, text="运行日志")
         log_frame.grid(row=4, column=0, sticky="nsew")
@@ -311,11 +351,16 @@ class SdrVideoGui(tk.Tk):
         self.ok_var.set("-")
         self.context_var.set("-")
         self.elapsed_var.set("-")
-        self.source_pane.show_placeholder("发送预览启动中" if self.source_preview_var.get() else "发送预览关闭")
-        self.receiver_pane.show_placeholder("接收视频使用外部流畅播放器")
-        self.source_status_var.set("关闭" if not self.source_preview_var.get() else "启动中")
+        self.link_stats.reset()
+        self.source_preview_started = False
+        self.pending_source_preview_path = input_path if self.source_preview_var.get() else None
+        self.source_pane.show_placeholder("等待首块接收后同步预览" if self.source_preview_var.get() else "发送预览关闭")
+        self.source_status_var.set("关闭" if not self.source_preview_var.get() else "等待首块")
         self.receiver_status_var.set("外部播放器")
-        self.delay_status_var.set("-")
+        self.delay_status_var.set("首块后同步")
+        self.profile_parts = {}
+        self.link_stats.set_value("receiver", "外部 ffplay 低延迟播放")
+        self.link_stats.set_value("delay", "发送预览在首块接收后启动，减少肉眼时差")
 
         self.receiver_output_path = self.receiver_ts_path()
         self.receiver_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -323,9 +368,6 @@ class SdrVideoGui(tk.Tk):
             self.receiver_output_path.unlink()
         except FileNotFoundError:
             pass
-
-        if self.source_preview_var.get():
-            self.start_source_preview(input_path)
 
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         self.process = subprocess.Popen(
@@ -403,30 +445,84 @@ class SdrVideoGui(tk.Tk):
             self.chunk_var.set(value)
         elif key == "stream_goodput_bps":
             try:
-                self.goodput_var.set(f"{int(float(value)) // 1000} kbps")
+                goodput = f"{int(float(value)) // 1000} kbps"
+                self.goodput_var.set(goodput)
             except ValueError:
                 self.goodput_var.set(value)
         elif key == "stream_chunks_ok":
             failed = self.ok_var.get().split("/")[-1] if "/" in self.ok_var.get() else "0"
             self.ok_var.set(f"{value}/{failed}")
+            self.link_stats.set_value("chunks", self.ok_var.get())
         elif key == "stream_chunks_failed":
             ok = self.ok_var.get().split("/")[0] if "/" in self.ok_var.get() else "0"
             self.ok_var.set(f"{ok}/{value}")
+            self.link_stats.set_value("chunks", self.ok_var.get())
         elif key == "stream_context_recreates":
             self.context_var.set(value)
+            self.link_stats.set_value("context_recreates", value)
         elif key == "stream_elapsed_sec":
             self.elapsed_var.set(f"{float(value):.1f}s")
         elif key == "player_command":
             self.receiver_status_var.set("已启动")
+            self.link_stats.set_value("receiver", "外部 ffplay 已启动")
         elif key == "source_preview_started":
             self.source_status_var.set("已启动")
             self.delay_status_var.set("首块后启动")
         elif key == "stream_output_bytes":
+            self.start_pending_source_preview(value)
             self.receiver_status_var.set("已接收 TS 数据")
+            self.link_stats.set_value("output_bytes", f"{int(float(value)) // 1024} KB")
         elif key == "packets_decoded":
             self.receiver_status_var.set(f"已解包 {value}")
+            self.link_stats.set_value("packets_decoded", value)
+        elif key == "source_preview":
+            self.link_stats.set_value("profile", f"发送预览={value}")
+        elif key == "source_preview_filter":
+            self.set_profile_part("滤镜", value.replace("-vf ", ""))
+        elif key == "video_bitrate":
+            self.set_profile_part("码率", value)
+        elif key == "scale_height":
+            self.set_profile_part("高度", f"{value}p")
+        elif key == "fps":
+            self.set_profile_part("帧率", f"{value} fps")
+        elif key == "encoder_preset":
+            self.set_profile_part("编码", value)
+        elif key == "player_buffered":
+            self.set_profile_part("播放缓冲", "开启" if value.lower() == "true" else "低延迟")
+        elif key == "raw_bitrate_bps":
+            self.link_stats.set_value("raw_bitrate", f"{int(float(value)) / 1_000_000:.2f} Mbps")
+        elif key == "payload_bitrate_est_bps":
+            self.link_stats.set_value("payload_bitrate", f"{int(float(value)) / 1_000_000:.2f} Mbps")
+        elif key == "stream_chunk_bytes":
+            self.link_stats.set_value("chunk_bytes", f"{int(float(value)) // 1024} KB")
+        elif key == "rx_rms_dbfs":
+            self.link_stats.set_value("rx_rms", f"{float(value):.2f} dBFS")
+        elif key == "rx_peak_dbfs":
+            self.link_stats.set_value("rx_peak", f"{float(value):.2f} dBFS")
+        elif key == "chunk_elapsed_sec":
+            self.link_stats.set_value("chunk_elapsed", f"{float(value):.3f} s")
+        elif key == "capture_attempt":
+            self.link_stats.set_value("capture_attempts", value)
         elif key == "low_latency_stream_ok":
             self.status_var.set("完成" if value.lower() == "true" else "失败")
+
+    def start_pending_source_preview(self, output_bytes: str) -> None:
+        if self.source_preview_started or self.pending_source_preview_path is None:
+            return
+        try:
+            if int(float(output_bytes)) <= 0:
+                return
+        except ValueError:
+            return
+        self.source_preview_started = True
+        self.source_status_var.set("同步启动")
+        self.delay_status_var.set("首块后同步")
+        self.link_stats.set_value("delay", "发送预览已在首块接收后启动；接收端仍包含RF和解码延迟")
+        self.start_source_preview(self.pending_source_preview_path)
+
+    def set_profile_part(self, key: str, value: str) -> None:
+        self.profile_parts[key] = value
+        self.link_stats.set_value("profile", "，".join(f"{k}:{v}" for k, v in self.profile_parts.items()))
 
     def start_source_preview(self, input_path: Path) -> None:
         self.stop_source_preview()
