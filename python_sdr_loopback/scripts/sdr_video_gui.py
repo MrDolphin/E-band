@@ -508,11 +508,12 @@ class SdrVideoGui(tk.Tk):
         if key == "stream_chunk":
             self.chunk_var.set(value)
         elif key == "stream_goodput_bps":
-            try:
-                goodput = f"{int(float(value)) // 1000} kbps"
+            number = self.parse_metric_number(value)
+            if number is not None:
+                goodput = f"{int(number) // 1000} kbps"
                 self.goodput_var.set(goodput)
                 self.link_stats.set_value("goodput", goodput)
-            except ValueError:
+            else:
                 self.goodput_var.set(value)
         elif key == "stream_chunks_ok":
             failed = self.ok_var.get().split("/")[-1] if "/" in self.ok_var.get() else "0"
@@ -526,8 +527,10 @@ class SdrVideoGui(tk.Tk):
             self.context_var.set(value)
             self.link_stats.set_value("context_recreates", value)
         elif key == "stream_elapsed_sec":
-            self.elapsed_var.set(f"{float(value):.1f}s")
-            self.link_stats.set_value("stream_elapsed", f"{float(value):.1f} s")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.elapsed_var.set(f"{number:.1f}s")
+                self.link_stats.set_value("stream_elapsed", f"{number:.1f} s")
         elif key == "player_command":
             self.receiver_status_var.set("已启动")
             self.link_stats.set_value("receiver", "外部 ffplay 已启动")
@@ -535,7 +538,9 @@ class SdrVideoGui(tk.Tk):
             self.source_status_var.set("已启动")
         elif key == "stream_output_bytes":
             self.receiver_status_var.set("已接收 TS 数据")
-            self.link_stats.set_value("output_bytes", f"{int(float(value)) // 1024} KB")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("output_bytes", f"{int(number) // 1024} KB")
         elif key == "packets_decoded":
             self.receiver_status_var.set(f"已解包 {value}")
             self.link_stats.set_value("packets_decoded", value)
@@ -557,23 +562,39 @@ class SdrVideoGui(tk.Tk):
         elif key == "output_file":
             self.link_stats.set_value("output", value)
         elif key == "chunk_bytes_effective":
-            self.link_stats.set_value("chunk_effective", f"{int(float(value)) // 1024} KB")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("chunk_effective", f"{int(number) // 1024} KB")
         elif key == "ts_packet_aligned":
             self.link_stats.set_value("ts_aligned", "是" if value.lower() == "true" else "否")
         elif key == "raw_bitrate_bps":
-            self.link_stats.set_value("raw_bitrate", f"{int(float(value)) / 1_000_000:.2f} Mbps")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("raw_bitrate", f"{int(number) / 1_000_000:.2f} Mbps")
         elif key == "payload_bitrate_est_bps":
-            self.link_stats.set_value("payload_bitrate", f"{int(float(value)) / 1_000_000:.2f} Mbps")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("payload_bitrate", f"{int(number) / 1_000_000:.2f} Mbps")
         elif key == "stream_chunk_bytes":
-            self.link_stats.set_value("chunk_bytes", f"{int(float(value)) // 1024} KB")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("chunk_bytes", f"{int(number) // 1024} KB")
         elif key == "lo_hz":
-            self.link_stats.set_value("lo_hz", f"{int(float(value)) / 1_000_000:.2f} MHz")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("lo_hz", f"{int(number) / 1_000_000:.2f} MHz")
         elif key == "sample_rate":
-            self.link_stats.set_value("sample_rate", f"{int(float(value)) / 1_000_000:.2f} MSPS")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("sample_rate", f"{int(number) / 1_000_000:.2f} MSPS")
         elif key == "symbol_rate":
-            self.link_stats.set_value("symbol_rate", f"{int(float(value)) / 1_000_000:.2f} Msym/s")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("symbol_rate", f"{int(number) / 1_000_000:.2f} Msym/s")
         elif key == "bandwidth":
-            self.link_stats.set_value("rf_bandwidth", f"{int(float(value)) / 1_000_000:.2f} MHz")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("rf_bandwidth", f"{int(number) / 1_000_000:.2f} MHz")
         elif key.startswith("tx_hardwaregain"):
             self.link_stats.set_value("tx_gain", value)
         elif key.startswith("rx_hardwaregain"):
@@ -581,13 +602,21 @@ class SdrVideoGui(tk.Tk):
         elif key == "rx_samples":
             self.link_stats.set_value("rx_samples", value)
         elif key == "rx_rms_dbfs":
-            self.link_stats.set_value("rx_rms", f"{float(value):.2f} dBFS")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("rx_rms", f"{number:.2f} dBFS")
         elif key == "rx_peak_dbfs":
-            self.link_stats.set_value("rx_peak", f"{float(value):.2f} dBFS")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("rx_peak", f"{number:.2f} dBFS")
         elif key == "rx_clip_ratio":
-            self.link_stats.set_value("rx_clip", f"{float(value) * 100:.3f}%")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("rx_clip", f"{number * 100:.3f}%")
         elif key == "chunk_elapsed_sec":
-            self.link_stats.set_value("chunk_elapsed", f"{float(value):.3f} s")
+            number = self.parse_metric_number(value)
+            if number is not None:
+                self.link_stats.set_value("chunk_elapsed", f"{number:.3f} s")
         elif key == "capture_attempt":
             self.link_stats.set_value("capture_attempts", value)
         elif key == "chunks_ok_in_chunk":
@@ -601,6 +630,14 @@ class SdrVideoGui(tk.Tk):
     def set_profile_part(self, key: str, value: str) -> None:
         self.profile_parts[key] = value
         self.link_stats.set_value("profile", "，".join(f"{k}:{v}" for k, v in self.profile_parts.items()))
+
+    @staticmethod
+    def parse_metric_number(value: str) -> float | None:
+        first = value.strip().split(maxsplit=1)[0] if value.strip() else ""
+        try:
+            return float(first)
+        except ValueError:
+            return None
 
     def source_preview_delay(self) -> float:
         try:

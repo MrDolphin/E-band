@@ -152,7 +152,13 @@ def start_player(
     print(f"player_title={title}")
     print(f"player_left={left}")
     print(f"player_top={top}")
-    return subprocess.Popen(command, stdin=subprocess.PIPE, env=player_environment(window_id, left, top))
+    return subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=player_environment(window_id, left, top),
+    )
 
 
 def start_source_preview(
@@ -185,7 +191,12 @@ def start_source_preview(
     print(f"source_player_top={top}")
     if filters:
         print(f"source_player_filter={' '.join(filters)}")
-    return subprocess.Popen(command, env=player_environment(window_id, left, top))
+    return subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=player_environment(window_id, left, top),
+    )
 
 
 def write_pipe(process: subprocess.Popen | None, data: bytes, label: str) -> bool:
