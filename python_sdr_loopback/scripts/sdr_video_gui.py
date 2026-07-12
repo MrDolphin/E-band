@@ -31,8 +31,16 @@ class Preset:
 
 
 PRESETS: tuple[Preset, ...] = (
-    Preset("稳定演示", "250k, 360p, 12fps, veryfast, 接收端低延迟播放", ("--player-nobuffer",)),
-    Preset("快速测试", "稳定演示参数，但 20 个 chunk 后停止", ("--player-nobuffer", "--max-chunks", "20")),
+    Preset(
+        "稳定演示",
+        "250k, 360p, 12fps, veryfast, 较小传输块，接收端低延迟播放",
+        ("--player-nobuffer", "--chunk-bytes", "12000"),
+    ),
+    Preset(
+        "快速测试",
+        "稳定演示参数，但 20 个 chunk 后停止",
+        ("--player-nobuffer", "--chunk-bytes", "12000", "--max-chunks", "20"),
+    ),
     Preset(
         "保守链路",
         "更低码率和帧率，用于较弱链路",
@@ -173,6 +181,7 @@ class SdrVideoGui(tk.Tk):
         self.output_queue: queue.Queue[object] = queue.Queue()
         self.preview_process: subprocess.Popen | None = None
         self.preview_thread: threading.Thread | None = None
+        self.preview_after_id: str | None = None
         self.receiver_output_path: Path | None = None
 
         self.input_var = tk.StringVar(value=str(PROJECT_DIR / "small.mp4"))
@@ -180,6 +189,7 @@ class SdrVideoGui(tk.Tk):
         self.preset_var = tk.StringVar(value=PRESETS[0].label)
         self.extra_args_var = tk.StringVar(value="")
         self.source_preview_var = tk.BooleanVar(value=True)
+        self.source_preview_delay_var = tk.DoubleVar(value=6.0)
 
         self.status_var = tk.StringVar(value="就绪")
         self.chunk_var = tk.StringVar(value="-")
@@ -245,9 +255,18 @@ class SdrVideoGui(tk.Tk):
         ttk.Checkbutton(preset_frame, text="打开发送端预览", variable=self.source_preview_var).grid(
             row=3, column=0, padx=8, pady=8, sticky="w"
         )
-        ttk.Label(preset_frame, text="发送端预览会显示在“视频传输”页固定区域").grid(
-            row=3, column=1, padx=8, pady=8, sticky="w"
-        )
+        preview_options = ttk.Frame(preset_frame)
+        preview_options.grid(row=3, column=1, padx=8, pady=8, sticky="w")
+        ttk.Label(preview_options, text="发送预览延迟").pack(side=tk.LEFT)
+        ttk.Spinbox(
+            preview_options,
+            from_=0.0,
+            to=20.0,
+            increment=0.5,
+            width=6,
+            textvariable=self.source_preview_delay_var,
+        ).pack(side=tk.LEFT, padx=(8, 4))
+        ttk.Label(preview_options, text="秒，用于和接收播放对齐").pack(side=tk.LEFT)
 
         hint = ttk.Label(
             self.config_tab,
@@ -385,15 +404,18 @@ class SdrVideoGui(tk.Tk):
         self.context_var.set("-")
         self.elapsed_var.set("-")
         self.link_stats.reset()
-        self.source_pane.show_placeholder("发送预览启动中" if self.source_preview_var.get() else "发送预览关闭")
-        self.source_status_var.set("关闭" if not self.source_preview_var.get() else "启动中")
+        preview_delay = self.source_preview_delay()
+        self.source_pane.show_placeholder(
+            f"发送预览将在 {preview_delay:.1f}s 后启动" if self.source_preview_var.get() else "发送预览关闭"
+        )
+        self.source_status_var.set("关闭" if not self.source_preview_var.get() else f"延迟 {preview_delay:.1f}s")
         self.receiver_status_var.set("外部播放器")
         self.delay_status_var.set("RF链路延迟")
         self.profile_parts = {}
         self.link_stats.set_value("input", str(input_path))
         self.link_stats.set_value("output", str(self.receiver_ts_path()))
         self.link_stats.set_value("receiver", "外部 ffplay 低延迟播放")
-        self.link_stats.set_value("delay", "发送预览是本地参考；接收视频经过编码、RF、解包和播放器缓冲")
+        self.link_stats.set_value("delay", f"发送预览延迟 {preview_delay:.1f}s；接收视频经过编码、RF、解包和播放器缓冲")
 
         self.receiver_output_path = self.receiver_ts_path()
         self.receiver_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -403,7 +425,7 @@ class SdrVideoGui(tk.Tk):
             pass
 
         if self.source_preview_var.get():
-            self.start_source_preview(input_path)
+            self.schedule_source_preview(input_path, preview_delay)
 
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         self.process = subprocess.Popen(
@@ -422,6 +444,7 @@ class SdrVideoGui(tk.Tk):
         self.reader_thread.start()
 
     def stop_stream(self) -> None:
+        self.cancel_source_preview_schedule()
         self.stop_source_preview()
         if self.process is None:
             return
@@ -574,6 +597,33 @@ class SdrVideoGui(tk.Tk):
         self.profile_parts[key] = value
         self.link_stats.set_value("profile", "，".join(f"{k}:{v}" for k, v in self.profile_parts.items()))
 
+    def source_preview_delay(self) -> float:
+        try:
+            return max(0.0, float(self.source_preview_delay_var.get()))
+        except (tk.TclError, ValueError):
+            return 0.0
+
+    def schedule_source_preview(self, input_path: Path, delay_sec: float) -> None:
+        self.cancel_source_preview_schedule()
+        delay_ms = int(max(0.0, delay_sec) * 1000)
+        self.preview_after_id = self.after(delay_ms, lambda: self.start_source_preview_if_running(input_path))
+
+    def cancel_source_preview_schedule(self) -> None:
+        if self.preview_after_id is None:
+            return
+        try:
+            self.after_cancel(self.preview_after_id)
+        except Exception:
+            pass
+        self.preview_after_id = None
+
+    def start_source_preview_if_running(self, input_path: Path) -> None:
+        self.preview_after_id = None
+        if self.process is None:
+            return
+        self.source_status_var.set("启动中")
+        self.start_source_preview(input_path)
+
     def start_source_preview(self, input_path: Path) -> None:
         self.stop_source_preview()
         command = [
@@ -671,9 +721,11 @@ class SdrVideoGui(tk.Tk):
             self.status_var.set("已停止")
         self.process = None
         self.reader_thread = None
+        self.cancel_source_preview_schedule()
         self.stop_source_preview()
 
     def on_close(self) -> None:
+        self.cancel_source_preview_schedule()
         self.stop_source_preview()
         if self.process is not None:
             self.stop_stream()
