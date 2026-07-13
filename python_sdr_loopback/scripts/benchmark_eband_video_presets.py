@@ -22,8 +22,7 @@ class VideoPreset:
 
 
 PRESETS: tuple[VideoPreset, ...] = (
-    VideoPreset("eband_conservative", "300k", "600k", 16_000, "300k conservative E-band demo"),
-    VideoPreset("eband_stable", "350k", "700k", 20_000, "350k stable E-band demo"),
+    VideoPreset("eband_stable", "300k", "600k", 16_000, "300k stable E-band demo"),
     VideoPreset("eband_quality", "400k", "800k", 20_000, "400k quality E-band demo"),
 )
 
