@@ -105,7 +105,7 @@ PRESETS: tuple[Preset, ...] = (
 
 
 class VideoPane(ttk.Frame):
-    def __init__(self, parent: tk.Widget, title: str) -> None:
+    def __init__(self, parent: tk.Widget, title: str, width: int = 640, height: int = 360) -> None:
         super().__init__(parent)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
@@ -113,6 +113,7 @@ class VideoPane(ttk.Frame):
 
         ttk.Label(self, text=title, anchor="center").grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self.canvas = tk.Canvas(self, background="black", highlightthickness=1, highlightbackground="#333333")
+        self.canvas.configure(width=width, height=height)
         self.canvas.grid(row=1, column=0, sticky="nsew")
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
         self.image: Image.Image | None = None
@@ -239,6 +240,8 @@ class SdrVideoGui(tk.Tk):
         self.extra_args_var = tk.StringVar(value="")
         self.source_preview_var = tk.BooleanVar(value=True)
         self.source_preview_delay_var = tk.DoubleVar(value=6.0)
+        self.player_width_var = tk.IntVar(value=640)
+        self.player_height_var = tk.IntVar(value=360)
 
         self.status_var = tk.StringVar(value="就绪")
         self.chunk_var = tk.StringVar(value="-")
@@ -316,6 +319,18 @@ class SdrVideoGui(tk.Tk):
             textvariable=self.source_preview_delay_var,
         ).pack(side=tk.LEFT, padx=(8, 4))
         ttk.Label(preview_options, text="秒，用于和接收播放对齐").pack(side=tk.LEFT)
+
+        display_options = ttk.Frame(preset_frame)
+        display_options.grid(row=4, column=1, padx=8, pady=(0, 8), sticky="w")
+        ttk.Label(preset_frame, text="对照窗口尺寸").grid(row=4, column=0, padx=8, pady=(0, 8), sticky="w")
+        ttk.Spinbox(display_options, from_=240, to=1920, increment=20, width=6, textvariable=self.player_width_var).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(display_options, text=" × ").pack(side=tk.LEFT)
+        ttk.Spinbox(display_options, from_=180, to=1080, increment=20, width=6, textvariable=self.player_height_var).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(display_options, text="发送预览与接收播放使用同一显示尺寸").pack(side=tk.LEFT, padx=(8, 0))
 
         hint = ttk.Label(
             self.config_tab,
@@ -409,10 +424,15 @@ class SdrVideoGui(tk.Tk):
         command.extend(preset.args)
         if not no_player:
             positions = self.player_positions()
+            player_width, player_height = self.player_size()
             command.extend(
                 [
                     "--player-title",
                     "接收视频",
+                    "--player-width",
+                    str(player_width),
+                    "--player-height",
+                    str(player_height),
                     "--player-left",
                     str(positions["receiver_left"]),
                     "--player-top",
@@ -424,9 +444,15 @@ class SdrVideoGui(tk.Tk):
             command.extend(shlex.split(extra))
         return command
 
+    def player_size(self) -> tuple[int, int]:
+        width = max(240, int(self.player_width_var.get()))
+        height = max(180, int(self.player_height_var.get()))
+        return width, height
+
     def player_positions(self) -> dict[str, int]:
         self.update_idletasks()
-        left = max(0, self.winfo_rootx() + self.winfo_width() - 480)
+        width, _height = self.player_size()
+        left = max(0, self.winfo_rootx() + self.winfo_width() - width - 40)
         top = max(0, self.winfo_rooty() + 120)
         return {"receiver_left": left, "receiver_top": top}
 
@@ -463,7 +489,8 @@ class SdrVideoGui(tk.Tk):
         self.profile_parts = {}
         self.link_stats.set_value("input", str(input_path))
         self.link_stats.set_value("output", str(self.receiver_ts_path()))
-        self.link_stats.set_value("receiver", "外部 ffplay 低延迟播放")
+        player_width, player_height = self.player_size()
+        self.link_stats.set_value("receiver", f"外部 ffplay 低延迟播放，窗口 {player_width}x{player_height}")
         self.link_stats.set_value("delay", f"发送预览延迟 {preview_delay:.1f}s；接收视频经过编码、RF、解包和播放器缓冲")
 
         self.receiver_output_path = self.receiver_ts_path()
