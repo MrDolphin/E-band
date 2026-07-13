@@ -38,7 +38,7 @@ PRESETS: tuple[Preset, ...] = (
     ),
     Preset(
         "E波段稳定演示",
-        "E波段实测流畅档：250k, 360p, 12fps, veryfast, 20 MHz 模拟带宽",
+        "E波段实测流畅档：250k, 360p, 12fps, veryfast, 20 MHz 模拟带宽，20 ms 发射稳定等待",
         (
             "--video-bitrate",
             "250k",
@@ -54,6 +54,8 @@ PRESETS: tuple[Preset, ...] = (
             "12",
             "--chunk-bytes",
             "16000",
+            "--tx-settle-sec",
+            "0.02",
         ),
     ),
     Preset(
