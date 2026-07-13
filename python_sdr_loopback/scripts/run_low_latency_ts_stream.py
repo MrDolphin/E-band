@@ -221,6 +221,34 @@ def print_sdr_info(sdr, args) -> None:
     print(f"rx_hardwaregain_chan{args.rx_channel}={sdr._get_iio_attr(f'voltage{args.rx_channel}', 'hardwaregain', False)}")
 
 
+def capture_stream_rx_once(
+    sdr,
+    tx_samples: np.ndarray,
+    target_samples: int,
+    settle_sec: float,
+    discard_buffers: int,
+) -> tuple[np.ndarray, int]:
+    destroy_iio_buffers(sdr)
+    sdr.tx_cyclic_buffer = True
+    sdr.tx(tx_samples)
+    time.sleep(float(settle_sec))
+    for _ in range(discard_buffers):
+        sdr.rx()
+
+    chunks: list[np.ndarray] = []
+    captured = 0
+    reads = 0
+    while captured < target_samples:
+        raw = sdr.rx()
+        chunk = np.asarray(raw[0] if isinstance(raw, list) else raw, dtype=np.complex64)
+        chunks.append(chunk)
+        captured += len(chunk)
+        reads += 1
+
+    rx = np.concatenate(chunks)[:target_samples].astype(np.complex64)
+    return rx, reads
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Low-latency MPEG-TS stream over E310 RF loopback.")
     parser.add_argument("--input-file", type=Path, required=True)
@@ -283,6 +311,12 @@ def main() -> int:
     parser.add_argument("--rx-discard-buffers", type=int, default=0)
     parser.add_argument("--tx-cyclic-copies", type=int, default=3)
     parser.add_argument("--rx-frame-copies", type=float, default=1.0)
+    parser.add_argument(
+        "--stream-rx",
+        action="store_true",
+        help="Experimental: capture each chunk by repeatedly reading smaller RX buffers.",
+    )
+    parser.add_argument("--rx-stream-buffer", type=int, default=65_536)
     parser.add_argument("--min-rx-rms-dbfs", type=float, default=-45.0)
     parser.add_argument("--rx-level-retries", type=int, default=8)
     parser.add_argument("--continue-on-error", action="store_true")
@@ -373,12 +407,18 @@ def main() -> int:
         ModemConfig(sample_rate=args.sample_rate, symbol_rate=args.symbol_rate, tx_amplitude=args.tx_amplitude)
     )
     rx_buffer_size, samples_per_packet, _max_chunks = max_rx_buffer_size(modem, args, effective_chunk_bytes)
+    rx_target_samples = int(rx_buffer_size)
+    configured_rx_buffer_size = int(args.rx_stream_buffer) if args.stream_rx else int(rx_buffer_size)
     encoded_packet_size = len(Packet(sequence=1, payload=bytes(int(args.payload_bytes))).encode())
     bitrate_est = raw_bitrate_bps(float(args.symbol_rate)) * payload_efficiency(
         int(args.payload_bytes), encoded_packet_size, 8
     )
     print(f"payload_bitrate_est_bps={bitrate_est:.0f}")
-    print(f"rx_buffer_used={rx_buffer_size}")
+    print(f"rx_buffer_used={configured_rx_buffer_size}")
+    if args.stream_rx:
+        print("stream_rx=true")
+        print(f"rx_buffer_target={rx_target_samples}")
+        print(f"rx_stream_buffer={configured_rx_buffer_size}")
     print(f"samples_per_packet={samples_per_packet:.1f}")
 
     stream_start = time.perf_counter()
@@ -393,7 +433,7 @@ def main() -> int:
     source_process = None
     output_handle = None
     try:
-        sdr = configure_sdr(adi, args, rx_buffer_size)
+        sdr = configure_sdr(adi, args, configured_rx_buffer_size)
         print_sdr_info(sdr, args)
         ffmpeg_process = subprocess.Popen(encoder_command, stdout=subprocess.PIPE)
         player_process = None if args.no_player else start_player(
@@ -436,34 +476,46 @@ def main() -> int:
 
             rx = None
             level = -999.0
+            rx_stream_reads = 0
             capture_start = time.perf_counter()
             chunk_attempts = 0
             for attempt in range(1, int(args.rx_level_retries) + 2):
                 chunk_attempts += 1
                 capture_attempts_total += 1
                 try:
-                    from e310_rf_loopback import capture_once  # noqa: PLC0415
+                    if args.stream_rx:
+                        rx, rx_stream_reads = capture_stream_rx_once(
+                            sdr,
+                            tx_padded,
+                            rx_target_samples,
+                            float(args.tx_settle_sec),
+                            int(args.rx_discard_buffers),
+                        )
+                    else:
+                        from e310_rf_loopback import capture_once  # noqa: PLC0415
 
-                    rx = capture_once(sdr, tx_padded, float(args.tx_settle_sec), int(args.rx_discard_buffers))
+                        rx = capture_once(sdr, tx_padded, float(args.tx_settle_sec), int(args.rx_discard_buffers))
                 except OSError as exc:
                     print(f"iio_error={exc}")
                     if attempt > int(args.rx_level_retries):
                         raise
                     destroy_iio_buffers(sdr)
                     context_recreates += 1
-                    sdr = configure_sdr(adi, args, rx_buffer_size)
+                    sdr = configure_sdr(adi, args, configured_rx_buffer_size)
                     print(f"stream_context_retry={context_recreates}")
                     time.sleep(0.25)
                     continue
                 level = rx_level_dbfs(rx, float(args.adc_full_scale))
                 print(f"capture_attempt={attempt}")
+                if args.stream_rx:
+                    print(f"rx_stream_reads={rx_stream_reads}")
                 print(f"rx_rms_dbfs_attempt={level:.2f}")
                 if level >= float(args.min_rx_rms_dbfs):
                     break
                 if attempt <= int(args.rx_level_retries):
                     destroy_iio_buffers(sdr)
                     context_recreates += 1
-                    sdr = configure_sdr(adi, args, rx_buffer_size)
+                    sdr = configure_sdr(adi, args, configured_rx_buffer_size)
                     print(f"stream_context_retry={context_recreates}")
                     time.sleep(0.25)
             capture_elapsed = time.perf_counter() - capture_start
@@ -530,6 +582,7 @@ def main() -> int:
                         f'"sdr_capture_elapsed_sec":{capture_elapsed:.6f},'
                         f'"decode_elapsed_sec":{decode_elapsed:.6f},'
                         f'"capture_attempts":{chunk_attempts},'
+                        f'"rx_stream_reads":{rx_stream_reads},'
                         f'"context_recreates_this_batch":{context_recreates - chunk_context_start},'
                         f'"context_recreates_so_far":{context_recreates},'
                         f'"stream_output_bytes":{output_bytes},'
