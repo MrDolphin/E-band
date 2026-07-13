@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import queue
 import shlex
@@ -107,18 +108,21 @@ PRESETS: tuple[Preset, ...] = (
 class VideoPane(ttk.Frame):
     def __init__(self, parent: tk.Widget, title: str, width: int = 640, height: int = 360) -> None:
         super().__init__(parent)
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.columnconfigure(0, weight=0)
+        self.rowconfigure(1, weight=0)
         self.photo: ImageTk.PhotoImage | None = None
 
         ttk.Label(self, text=title, anchor="center").grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self.canvas = tk.Canvas(self, background="black", highlightthickness=1, highlightbackground="#333333")
-        self.canvas.configure(width=width, height=height)
-        self.canvas.grid(row=1, column=0, sticky="nsew")
+        self.set_display_size(width, height)
+        self.canvas.grid(row=1, column=0)
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
         self.image: Image.Image | None = None
         self.placeholder = "等待视频"
         self.redraw()
+
+    def set_display_size(self, width: int, height: int) -> None:
+        self.canvas.configure(width=max(1, int(width)), height=max(1, int(height)))
 
     def show_placeholder(self, text: str) -> None:
         self.placeholder = text
@@ -240,6 +244,7 @@ class SdrVideoGui(tk.Tk):
         self.extra_args_var = tk.StringVar(value="")
         self.source_preview_var = tk.BooleanVar(value=True)
         self.source_preview_delay_var = tk.DoubleVar(value=6.0)
+        self.auto_player_size_var = tk.BooleanVar(value=True)
         self.player_width_var = tk.IntVar(value=640)
         self.player_height_var = tk.IntVar(value=360)
 
@@ -331,6 +336,11 @@ class SdrVideoGui(tk.Tk):
             side=tk.LEFT
         )
         ttk.Label(display_options, text="发送预览与接收播放使用同一显示尺寸").pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(
+            preset_frame,
+            text="自动按发送分辨率设置尺寸",
+            variable=self.auto_player_size_var,
+        ).grid(row=5, column=1, padx=8, pady=(0, 8), sticky="w")
 
         hint = ttk.Label(
             self.config_tab,
@@ -361,12 +371,12 @@ class SdrVideoGui(tk.Tk):
 
         video_frame = ttk.LabelFrame(self.stream_tab, text="发送预览与链路质量")
         video_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
-        video_frame.columnconfigure(0, weight=1)
+        video_frame.columnconfigure(0, weight=0)
         video_frame.columnconfigure(1, weight=1)
-        video_frame.rowconfigure(0, weight=3)
+        video_frame.rowconfigure(0, weight=0)
         video_frame.rowconfigure(1, weight=2)
         self.source_pane = VideoPane(video_frame, "发送视频")
-        self.source_pane.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.source_pane.grid(row=0, column=0, sticky="nw", padx=(0, 8))
         self.link_stats = LinkStatsPane(video_frame)
         self.link_stats.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(8, 0))
 
@@ -407,10 +417,17 @@ class SdrVideoGui(tk.Tk):
     def update_preset_description(self) -> None:
         self.preset_description.configure(text=self.selected_preset().description)
 
+    def current_stream_args(self) -> list[str]:
+        args = list(self.selected_preset().args)
+        extra = self.extra_args_var.get().strip()
+        if extra:
+            args.extend(shlex.split(extra))
+        return args
+
     def build_command(self) -> list[str]:
-        preset = self.selected_preset()
         output_file = self.receiver_ts_path()
-        no_player = "--no-player" in preset.args
+        stream_args = self.current_stream_args()
+        no_player = "--no-player" in stream_args
         command = [
             sys.executable,
             str(STREAM_SCRIPT),
@@ -421,10 +438,10 @@ class SdrVideoGui(tk.Tk):
             "--output-file",
             str(output_file),
         ]
-        command.extend(preset.args)
+        command.extend(stream_args)
         if not no_player:
-            positions = self.player_positions()
-            player_width, player_height = self.player_size()
+            player_width, player_height = self.player_size(Path(self.input_var.get()), stream_args)
+            positions = self.player_positions(player_width)
             command.extend(
                 [
                     "--player-title",
@@ -439,19 +456,81 @@ class SdrVideoGui(tk.Tk):
                     str(positions["receiver_top"]),
                 ]
             )
-        extra = self.extra_args_var.get().strip()
-        if extra:
-            command.extend(shlex.split(extra))
         return command
 
-    def player_size(self) -> tuple[int, int]:
+    def player_size(self, input_path: Path | None = None, stream_args: list[str] | None = None) -> tuple[int, int]:
+        if self.auto_player_size_var.get():
+            width, height = self.auto_video_size(input_path, stream_args or [])
+            if width > 0 and height > 0:
+                self.player_width_var.set(width)
+                self.player_height_var.set(height)
+                return width, height
         width = max(240, int(self.player_width_var.get()))
         height = max(180, int(self.player_height_var.get()))
         return width, height
 
-    def player_positions(self) -> dict[str, int]:
+    def auto_video_size(self, input_path: Path | None, stream_args: list[str]) -> tuple[int, int]:
+        scale_height = self.scale_height_from_args(stream_args)
+        source_width, source_height = self.source_video_size(input_path)
+        if source_width <= 0 or source_height <= 0:
+            source_width, source_height = 16, 9
+        if scale_height <= 0:
+            return self.even_dimension(source_width), source_height
+        width = self.even_dimension(round(source_width * scale_height / source_height))
+        return max(240, width), max(180, scale_height)
+
+    @staticmethod
+    def scale_height_from_args(args: list[str]) -> int:
+        scale_height = 360
+        for index, value in enumerate(args):
+            if value == "--scale-height" and index + 1 < len(args):
+                try:
+                    scale_height = int(args[index + 1])
+                except ValueError:
+                    pass
+        return scale_height
+
+    @staticmethod
+    def even_dimension(value: int) -> int:
+        value = max(2, int(value))
+        return value if value % 2 == 0 else value + 1
+
+    @functools.lru_cache(maxsize=32)
+    def source_video_size(self, input_path: Path | None) -> tuple[int, int]:
+        if input_path is None or not input_path.exists():
+            return 0, 0
+        command = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0:s=x",
+            str(input_path),
+        ]
+        try:
+            result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3)
+        except Exception:
+            return 0, 0
+        text = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+        if "x" not in text:
+            return 0, 0
+        width_text, height_text = text.split("x", 1)
+        try:
+            return int(width_text), int(height_text)
+        except ValueError:
+            return 0, 0
+
+    def player_positions(self, player_width: int | None = None) -> dict[str, int]:
         self.update_idletasks()
-        width, _height = self.player_size()
+        width = (
+            player_width
+            if player_width is not None
+            else self.player_size(Path(self.input_var.get()), self.current_stream_args())[0]
+        )
         left = max(0, self.winfo_rootx() + self.winfo_width() - width - 40)
         top = max(0, self.winfo_rooty() + 120)
         return {"receiver_left": left, "receiver_top": top}
@@ -489,9 +568,14 @@ class SdrVideoGui(tk.Tk):
         self.profile_parts = {}
         self.link_stats.set_value("input", str(input_path))
         self.link_stats.set_value("output", str(self.receiver_ts_path()))
-        player_width, player_height = self.player_size()
+        player_width, player_height = self.player_size(Path(self.input_var.get()), self.current_stream_args())
+        self.source_pane.set_display_size(player_width, player_height)
+        auto_size_note = "自动" if self.auto_player_size_var.get() else "手动"
         self.link_stats.set_value("receiver", f"外部 ffplay 低延迟播放，窗口 {player_width}x{player_height}")
-        self.link_stats.set_value("delay", f"发送预览延迟 {preview_delay:.1f}s；接收视频经过编码、RF、解包和播放器缓冲")
+        self.link_stats.set_value(
+            "delay",
+            f"发送预览延迟 {preview_delay:.1f}s；接收视频经过编码、RF、解包和播放器缓冲；窗口尺寸{auto_size_note}配置",
+        )
 
         self.receiver_output_path = self.receiver_ts_path()
         self.receiver_output_path.parent.mkdir(parents=True, exist_ok=True)
