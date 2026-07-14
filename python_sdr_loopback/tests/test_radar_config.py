@@ -69,14 +69,16 @@ class RadarModelTests(unittest.TestCase):
             frame_index=1,
             timestamp=1.0,
             config_snapshot=config,
-            range_axis_m=np.zeros(config.range_fft_size),
+            range_axis_m=np.zeros(config.range_fft_size // 2 + 1),
             velocity_axis_mps=np.zeros(config.doppler_fft_size),
-            range_doppler_db=np.zeros((config.doppler_fft_size, config.range_fft_size)),
+            range_doppler_db=np.zeros(
+                (config.doppler_fft_size, config.range_fft_size // 2 + 1)
+            ),
             targets=(),
             diagnostics=diagnostics,
         )
         self.assertEqual(capture.tx_iq.shape, (config.cpi_samples,))
-        self.assertEqual(frame.range_doppler_db.shape, (64, 4096))
+        self.assertEqual(frame.range_doppler_db.shape, (64, 2049))
         self.assertEqual(capture, capture)
         self.assertEqual(frame, frame)
 

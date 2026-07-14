@@ -84,13 +84,14 @@ class RadarFrame:
         range_axis = np.asarray(self.range_axis_m)
         velocity_axis = np.asarray(self.velocity_axis_mps)
         range_doppler = np.asarray(self.range_doppler_db)
-        if range_axis.shape != (self.config_snapshot.range_fft_size,):
+        range_bin_count = self.config_snapshot.range_fft_size // 2 + 1
+        if range_axis.shape != (range_bin_count,):
             raise ValueError("range_axis_m has an invalid shape")
         if velocity_axis.shape != (self.config_snapshot.doppler_fft_size,):
             raise ValueError("velocity_axis_mps has an invalid shape")
         expected_map_shape = (
             self.config_snapshot.doppler_fft_size,
-            self.config_snapshot.range_fft_size,
+            range_bin_count,
         )
         if range_doppler.shape != expected_map_shape:
             raise ValueError("range_doppler_db has an invalid shape")
