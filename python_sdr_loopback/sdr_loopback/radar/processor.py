@@ -5,6 +5,7 @@ from time import perf_counter
 import numpy as np
 
 from .config import RadarConfig, SPEED_OF_LIGHT_MPS
+from .detector import detect_targets
 from .models import RadarDiagnostics, RadarFrame
 from .synchronizer import ChirpSynchronizer
 from .waveform import generate_active_chirp
@@ -52,7 +53,8 @@ class FmcwProcessor:
             axis=1,
         )
         phase_consistency = self._phase_consistency(range_spectrum)
-        range_spectrum -= np.mean(range_spectrum, axis=0, keepdims=True)
+        if self.config.suppress_static_clutter:
+            range_spectrum -= np.mean(range_spectrum, axis=0, keepdims=True)
 
         doppler_window = np.hanning(self.config.chirp_count)
         range_doppler = np.fft.fftshift(
@@ -68,6 +70,7 @@ class FmcwProcessor:
             np.finfo(float).tiny,
         )
         magnitude = np.abs(range_doppler) / coherent_gain
+        power = magnitude**2
         range_doppler_db = 20.0 * np.log10(
             np.maximum(magnitude, np.finfo(np.float64).tiny)
         )
@@ -108,6 +111,15 @@ class FmcwProcessor:
             processing_time_ms=(perf_counter() - started) * 1000.0,
             overruns=0,
         )
+        targets = detect_targets(
+            power,
+            range_axis_m,
+            velocity_axis_mps,
+            self.config,
+            timestamp=float(getattr(capture, "timestamp")),
+            sync_score=sync.correlation,
+            phase_consistency=phase_consistency,
+        )
         frame = RadarFrame(
             frame_index=self._frame_index,
             timestamp=float(getattr(capture, "timestamp")),
@@ -115,7 +127,7 @@ class FmcwProcessor:
             range_axis_m=range_axis_m,
             velocity_axis_mps=velocity_axis_mps,
             range_doppler_db=range_doppler_db,
-            targets=(),
+            targets=targets,
             diagnostics=diagnostics,
         )
         self._frame_index += 1

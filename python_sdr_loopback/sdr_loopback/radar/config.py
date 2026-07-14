@@ -19,6 +19,7 @@ class RadarConfig:
     doppler_fft_size: int = 64
     max_display_range_m: float = 50.0
     cfar_threshold_db: float = 12.0
+    suppress_static_clutter: bool = False
 
     def __post_init__(self) -> None:
         active = self.sample_rate_hz * self.active_time_s

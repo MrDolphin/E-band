@@ -194,7 +194,14 @@ class FmcwProcessorTests(unittest.TestCase):
         ).synchronize(capture).correlation
         frame = FmcwProcessor(self.config).process(capture)
 
-        self.assertEqual(frame.targets, ())
+        self.assertGreaterEqual(len(frame.targets), 1)
+        self.assertLessEqual(
+            abs(frame.targets[0].range_m - 30.0), self.config.range_resolution_m
+        )
+        self.assertLessEqual(
+            abs(frame.targets[0].radial_velocity_mps - 0.8),
+            self.config.velocity_resolution_mps,
+        )
         self.assertTrue(frame.diagnostics.sync_ok)
         self.assertEqual(frame.diagnostics.source, "iq")
         self.assertAlmostEqual(frame.diagnostics.sync_score, expected_sync_score)

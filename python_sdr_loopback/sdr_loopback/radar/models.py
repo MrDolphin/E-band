@@ -110,6 +110,21 @@ class RadarFrame:
         )
         if range_doppler.shape != expected_map_shape:
             raise ValueError("range_doppler_db has an invalid shape")
+        if self.diagnostics.frame_index != self.frame_index:
+            raise ValueError("diagnostics frame_index does not match frame")
+        for target in self.targets:
+            if not (0 <= target.range_bin < range_axis.size):
+                raise ValueError("target range_bin is outside the frame")
+            if not (0 <= target.doppler_bin < velocity_axis.size):
+                raise ValueError("target doppler_bin is outside the frame")
+            if target.timestamp != self.timestamp:
+                raise ValueError("target timestamp does not match frame")
+            if not np.isclose(target.range_m, range_axis[target.range_bin]):
+                raise ValueError("target range does not match its frame bin")
+            if not np.isclose(
+                target.radial_velocity_mps, velocity_axis[target.doppler_bin]
+            ):
+                raise ValueError("target velocity does not match its frame bin")
         object.__setattr__(self, "range_axis_m", range_axis)
         object.__setattr__(self, "velocity_axis_mps", velocity_axis)
         object.__setattr__(self, "range_doppler_db", range_doppler)
