@@ -23,7 +23,7 @@ from sdr_loopback.radar.controller import RadarController
 from sdr_loopback.radar.models import SyntheticTarget
 from sdr_loopback.radar.processor import FmcwProcessor
 from sdr_loopback.radar.sources import IqReplaySource, SyntheticTargetSource
-from sdr_loopback.radar.storage import load_capture, save_frame
+from sdr_loopback.radar.storage import load_capture_config, save_frame
 from sdr_loopback.radar.ui import (
     RadarDashboard,
     format_derived_config,
@@ -121,7 +121,7 @@ PRESETS: tuple[Preset, ...] = (
 
 def create_radar_runtime(
     source_mode: str,
-    display_config: RadarConfig,
+    display_config: RadarConfig | None,
     replay_path: Path | None,
     synthetic_target: SyntheticTarget | None,
 ) -> tuple[RadarController, RadarConfig]:
@@ -129,10 +129,10 @@ def create_radar_runtime(
     if source_mode == "IQ回放":
         if replay_path is None or not replay_path.is_file():
             raise ValueError("请选择有效的IQ回放文件")
-        effective_config = load_capture(replay_path).config
+        effective_config = load_capture_config(replay_path)
         source = IqReplaySource((replay_path,), loop=True)
     else:
-        if synthetic_target is None:
+        if display_config is None or synthetic_target is None:
             raise ValueError("仿真模式需要目标参数")
         effective_config = display_config
         source = SyntheticTargetSource(effective_config, (synthetic_target,))
@@ -612,29 +612,30 @@ class SdrVideoGui(tk.Tk):
         if self.radar_controller is not None:
             return
         try:
-            config = self.build_radar_config()
-            _, _, target_range, target_velocity, target_snr = validate_runtime_inputs(
-                self.radar_tx_gain_var.get(),
-                self.radar_rx_gain_var.get(),
-                self.radar_target_range_var.get(),
-                self.radar_target_velocity_var.get(),
-                self.radar_target_snr_var.get(),
-            )
             source_mode = self.radar_source_var.get()
-            replay_path = Path(self.radar_replay_path_var.get()) if source_mode == "IQ回放" else None
-            target = (
-                SyntheticTarget(
+            if source_mode == "IQ回放":
+                replay_path = Path(self.radar_replay_path_var.get())
+                controller, effective_config = create_radar_runtime(
+                    source_mode, None, replay_path, None
+                )
+            else:
+                config = self.build_radar_config()
+                _, _, target_range, target_velocity, target_snr = validate_runtime_inputs(
+                    self.radar_tx_gain_var.get(),
+                    self.radar_rx_gain_var.get(),
+                    self.radar_target_range_var.get(),
+                    self.radar_target_velocity_var.get(),
+                    self.radar_target_snr_var.get(),
+                )
+                target = SyntheticTarget(
                     target_id="T1",
                     range_m=target_range,
                     radial_velocity_mps=target_velocity,
                     snr_db=target_snr,
                 )
-                if source_mode != "IQ回放"
-                else None
-            )
-            controller, effective_config = create_radar_runtime(
-                source_mode, config, replay_path, target
-            )
+                controller, effective_config = create_radar_runtime(
+                    source_mode, config, None, target
+                )
             controller.start()
         except (OSError, TypeError, ValueError, RuntimeError) as error:
             messagebox.showerror("雷达参数错误", str(error))

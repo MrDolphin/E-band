@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -274,6 +275,94 @@ class RadarUiTests(unittest.TestCase):
 
         self.assertEqual(effective_config, replay_config)
         self.assertEqual(controller.processor.config, replay_config)
+
+    def test_gui_replay_start_ignores_invalid_display_and_synthetic_fields(self):
+        replay_config = RadarConfig(
+            sample_rate_hz=1e6,
+            bandwidth_hz=1e6,
+            active_time_s=64e-6,
+            idle_time_s=0.0,
+            chirp_count=16,
+            range_fft_size=256,
+            doppler_fft_size=32,
+        )
+        capture = RadarCapture(
+            timestamp=1.0,
+            config=replay_config,
+            tx_iq=np.zeros(replay_config.cpi_samples, dtype=np.complex64),
+            rx_iq=np.zeros(replay_config.cpi_samples, dtype=np.complex64),
+        )
+
+        class Value:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        class Widget:
+            def configure(self, **_values):
+                pass
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "replay.npz"
+            save_capture(path, capture)
+            invalid = Value("not-a-number")
+            gui = SimpleNamespace(
+                radar_controller=None,
+                radar_source_var=Value("IQ回放"),
+                radar_replay_path_var=Value(str(path)),
+                radar_carrier_ghz_var=invalid,
+                radar_sample_rate_msps_var=invalid,
+                radar_bandwidth_mhz_var=invalid,
+                radar_active_us_var=invalid,
+                radar_idle_us_var=invalid,
+                radar_chirp_count_var=invalid,
+                radar_cfar_db_var=invalid,
+                radar_display_range_var=invalid,
+                radar_tx_channel_var=invalid,
+                radar_rx_channel_var=invalid,
+                radar_tx_gain_var=invalid,
+                radar_rx_gain_var=invalid,
+                radar_target_range_var=invalid,
+                radar_target_velocity_var=invalid,
+                radar_target_snr_var=invalid,
+                radar_status_var=Value(""),
+                radar_derived_var=Value(""),
+                radar_start_button=Widget(),
+                radar_stop_button=Widget(),
+                radar_tab=object(),
+                notebook=SimpleNamespace(select=lambda _tab: None),
+            )
+            gui.build_radar_config = lambda: SdrVideoGui.build_radar_config(gui)
+
+            with patch("scripts.sdr_video_gui.RadarController.start"), patch(
+                "scripts.sdr_video_gui.messagebox.showerror"
+            ):
+                SdrVideoGui.start_radar(gui)
+
+        self.assertEqual(gui.radar_controller.processor.config, replay_config)
+        self.assertEqual(gui.radar_source_label, "IQ回放")
+        self.assertIn("回放配置", gui.radar_derived_var.get())
+
+    def test_gui_replay_start_reports_a_stable_invalid_path_error(self):
+        value = lambda text: SimpleNamespace(get=lambda: text)
+        gui = SimpleNamespace(
+            radar_controller=None,
+            radar_source_var=value("IQ回放"),
+            radar_replay_path_var=value("missing-capture.npz"),
+        )
+
+        with patch("scripts.sdr_video_gui.messagebox.showerror") as showerror:
+            SdrVideoGui.start_radar(gui)
+
+        showerror.assert_called_once_with(
+            "雷达参数错误", "请选择有效的IQ回放文件"
+        )
+        self.assertIsNone(gui.radar_controller)
 
 
 if __name__ == "__main__":

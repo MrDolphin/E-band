@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -17,6 +18,7 @@ from sdr_loopback.radar.processor import FmcwProcessor
 from sdr_loopback.radar.storage import (
     append_metrics,
     load_capture,
+    load_capture_config,
     save_capture,
     save_frame,
 )
@@ -37,6 +39,53 @@ def small_config() -> RadarConfig:
 
 
 class RadarCaptureStorageTests(unittest.TestCase):
+    def test_metadata_config_loader_does_not_read_iq_members(self):
+        config = small_config()
+
+        class TrackingArchive:
+            files = ["radar_config_json", "tx_iq", "rx_iq"]
+
+            def __init__(self):
+                self.accessed = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __getitem__(self, name):
+                self.accessed.append(name)
+                if name != "radar_config_json":
+                    raise AssertionError(f"unexpected large member read: {name}")
+                return np.asarray(json.dumps(config.__dict__))
+
+        archive = TrackingArchive()
+        with patch("sdr_loopback.radar.storage.np.load", return_value=archive) as loader:
+            loaded = load_capture_config("capture.npz")
+
+        self.assertEqual(loaded, config)
+        self.assertEqual(archive.accessed, ["radar_config_json"])
+        loader.assert_called_once_with(Path("capture.npz"), allow_pickle=False)
+
+    def test_metadata_config_loader_maps_missing_and_invalid_values(self):
+        cases = (
+            ("missing", {"tx_iq": np.zeros(1)}, "missing required field: radar_config_json"),
+            ("invalid", {"radar_config_json": "{"}, "invalid radar_config_json"),
+            (
+                "nonscalar",
+                {"radar_config_json": np.asarray(["{}", "{}"])},
+                "invalid radar_config_json",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, fields, message in cases:
+                with self.subTest(name=name):
+                    path = Path(temporary_directory) / f"{name}.npz"
+                    np.savez(path, **fields)
+                    with self.assertRaisesRegex(ValueError, message):
+                        load_capture_config(path)
+
     def test_npz_round_trip_preserves_capture_fields(self):
         config = small_config()
         target = SyntheticTarget("T01", 22.5, 1.2, 0.5, None, 18.0)

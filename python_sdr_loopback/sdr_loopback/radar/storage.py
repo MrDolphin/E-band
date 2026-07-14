@@ -27,6 +27,32 @@ def save_capture(path: str | Path, capture: RadarCapture) -> None:
     np.savez_compressed(output, **fields)
 
 
+def _parse_config_json(value: object) -> RadarConfig:
+    try:
+        config_values = json.loads(str(value))
+        if not isinstance(config_values, dict):
+            raise TypeError
+        return RadarConfig(**config_values)
+    except (json.JSONDecodeError, TypeError, KeyError, ValueError) as error:
+        raise ValueError("invalid radar_config_json") from error
+
+
+def _config_from_archive(archive: object) -> RadarConfig:
+    try:
+        value = archive["radar_config_json"].item()
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("invalid radar_config_json") from error
+    return _parse_config_json(value)
+
+
+def load_capture_config(path: str | Path) -> RadarConfig:
+    """Load only validated radar configuration metadata from an NPZ capture."""
+    with np.load(Path(path), allow_pickle=False) as archive:
+        if "radar_config_json" not in archive.files:
+            raise ValueError("capture missing required field: radar_config_json")
+        return _config_from_archive(archive)
+
+
 def load_capture(path: str | Path) -> RadarCapture:
     """Load and validate a capture saved by :func:`save_capture`."""
     with np.load(Path(path), allow_pickle=False) as archive:
@@ -34,13 +60,7 @@ def load_capture(path: str | Path) -> RadarCapture:
         for field_name in required:
             if field_name not in archive.files:
                 raise ValueError(f"capture missing required field: {field_name}")
-        try:
-            config_values = json.loads(str(archive["radar_config_json"].item()))
-            if not isinstance(config_values, dict):
-                raise TypeError
-            config = RadarConfig(**config_values)
-        except (json.JSONDecodeError, TypeError, KeyError, ValueError) as error:
-            raise ValueError("invalid radar_config_json") from error
+        config = _config_from_archive(archive)
         try:
             truth_values = json.loads(
                 str(archive["truth_targets_json"].item())
