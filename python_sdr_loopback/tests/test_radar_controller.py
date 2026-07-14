@@ -149,14 +149,27 @@ class RadarControllerTests(unittest.TestCase):
         class ObservedLock:
             def __init__(self, lock):
                 self.lock = lock
+                self.metadata_lock = threading.Lock()
+                self._owner = None
+
+            @property
+            def owner(self):
+                with self.metadata_lock:
+                    return self._owner
 
             def __enter__(self):
                 if threading.current_thread().name == "controlled-stopper":
-                    stop_at_state_lock.set()
+                    with self.metadata_lock:
+                        if self._owner == "controlled-starter":
+                            stop_at_state_lock.set()
                 self.lock.acquire()
+                with self.metadata_lock:
+                    self._owner = threading.current_thread().name
                 return self
 
             def __exit__(self, *args):
+                with self.metadata_lock:
+                    self._owner = None
                 self.lock.release()
 
         class GatedThread(real_thread):
@@ -190,10 +203,16 @@ class RadarControllerTests(unittest.TestCase):
             starter.start()
             self.assertTrue(start_entered.wait(0.5))
             stopper.start()
-            self.assertTrue(stop_at_state_lock.wait(0.5))
-            allow_start.set()
-            starter.join(0.5)
-            stopper.join(0.5)
+            try:
+                self.assertTrue(stop_at_state_lock.wait(0.5))
+                self.assertEqual(
+                    controller._state_lock.owner,
+                    "controlled-starter",
+                )
+            finally:
+                allow_start.set()
+                starter.join(0.5)
+                stopper.join(0.5)
 
         self.assertEqual(errors, [])
         self.assertEqual(source.open_calls, 1)
