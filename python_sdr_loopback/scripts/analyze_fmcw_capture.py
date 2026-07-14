@@ -25,6 +25,9 @@ def main() -> int:
     print(f"chirp_count={capture.config.chirp_count}")
     print(f"truth_targets={len(capture.truth_targets)}")
     print(f"targets_detected={len(frame.targets)}")
+    if frame.targets:
+        print(f"detected_range_m={frame.targets[0].range_m}")
+        print(f"detected_velocity_mps={frame.targets[0].radial_velocity_mps}")
     print(
         "azimuth_measured="
         + str(any(target.azimuth_deg is not None for target in frame.targets)).lower()

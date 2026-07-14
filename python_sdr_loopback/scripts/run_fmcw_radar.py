@@ -74,8 +74,11 @@ def main() -> int:
     source.open()
     try:
         for _ in range(args.frames):
-            capture = source.capture()
-            if processor is None:
+            try:
+                capture = source.capture()
+            except StopIteration:
+                break
+            if processor is None or processor.config != capture.config:
                 processor = FmcwProcessor(capture.config)
             frame = processor.process(capture)
             save_frame(args.output_dir, frame)

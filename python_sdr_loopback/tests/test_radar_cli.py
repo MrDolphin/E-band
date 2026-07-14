@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from sdr_loopback.radar.config import RadarConfig
+from sdr_loopback.radar.simulator import simulate_capture
+from sdr_loopback.radar.storage import save_capture
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +62,11 @@ class RadarCliTests(unittest.TestCase):
 
         config = RadarConfig(**result["radar_config"])
         detected = result["targets"][0]
+        self.assertEqual(float(analyzed_values["detected_range_m"]), detected["range_m"])
+        self.assertEqual(
+            float(analyzed_values["detected_velocity_mps"]),
+            detected["radial_velocity_mps"],
+        )
         self.assertLessEqual(abs(detected["range_m"] - 22.5), config.range_resolution_m)
         self.assertLessEqual(
             abs(detected["radial_velocity_mps"] - 1.2),
@@ -84,6 +91,65 @@ class RadarCliTests(unittest.TestCase):
         self.assertEqual(values["frames_processed"], "1")
         self.assertEqual(len(metrics), 1)
         self.assertTrue(result_exists)
+
+    def test_replay_order_heterogeneous_configs_loop_and_exhaustion(self):
+        configs = (
+            RadarConfig(
+                sample_rate_hz=2e6,
+                active_time_s=64e-6,
+                idle_time_s=16e-6,
+                chirp_count=16,
+                range_fft_size=128,
+                doppler_fft_size=16,
+            ),
+            RadarConfig(
+                sample_rate_hz=2e6,
+                bandwidth_hz=10e6,
+                active_time_s=64e-6,
+                idle_time_s=16e-6,
+                chirp_count=16,
+                range_fft_size=128,
+                doppler_fft_size=16,
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            paths = tuple(root / f"capture_{index}.npz" for index in range(2))
+            for path, config, timestamp in zip(paths, configs, (1.0, 2.0)):
+                save_capture(path, simulate_capture(config, timestamp=timestamp))
+            cases = (
+                ("finite_exhaustion", (), 2, 2.0, 10e6),
+                ("explicit_loop", ("--loop-replay",), 3, 1.0, 20e6),
+            )
+            for name, loop_flags, expected_count, timestamp, bandwidth_hz in cases:
+                with self.subTest(name=name):
+                    output = root / name
+                    completed = self.run_script(
+                        "run_fmcw_radar.py",
+                        "--output-dir", output,
+                        "--frames", "3",
+                        "--replay", paths[0],
+                        "--replay", paths[1],
+                        *loop_flags,
+                    )
+                    result = json.loads(
+                        (output / "result.json").read_text(encoding="utf-8")
+                    )
+                    metrics = (output / "metrics.jsonl").read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    values = dict(
+                        line.split("=", 1) for line in completed.stdout.splitlines()
+                    )
+
+                    self.assertEqual(completed.returncode, 0)
+                    self.assertEqual(completed.stderr, "")
+                    self.assertEqual(values["frames_processed"], str(expected_count))
+                    self.assertEqual(result["timestamp"], timestamp)
+                    self.assertEqual(
+                        result["radar_config"]["bandwidth_hz"], bandwidth_hz
+                    )
+                    self.assertEqual(len(metrics), expected_count)
 
 
 if __name__ == "__main__":
