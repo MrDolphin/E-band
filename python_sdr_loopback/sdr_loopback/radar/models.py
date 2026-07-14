@@ -40,10 +40,12 @@ class RadarDiagnostics:
     frame_index: int
     source: str
     sync_ok: bool
+    sync_score: float
     phase_consistency: float
     rms: float
     peak: float
     clipping: bool
+    clip_ratio: float
     noise_floor_db: float
     processing_time_ms: float
     overruns: int

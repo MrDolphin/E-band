@@ -77,3 +77,35 @@ fields. Per the ownership restriction, the model was changed only for the
 required half-spectrum shape. The processor computes correlation and clip ratio
 from measured IQ, but the current contract can expose only their boolean status;
 adding numeric fields belongs in a separately owned contract change.
+
+## Follow-Up Diagnostics Fix Evidence
+
+The diagnostics-contract concern above is resolved before review.
+`RadarDiagnostics` now retains the existing `sync_ok` and `clipping` status
+booleans and additionally exposes numeric `sync_score: float` and
+`clip_ratio: float` measurements.
+
+The focused test was changed first to require the synchronizer's measured
+correlation and a deliberately nonzero ratio from 17 clipped samples. Before
+the model change, the targeted test failed with:
+
+```text
+AttributeError: 'RadarDiagnostics' object has no attribute 'sync_score'
+```
+
+`FmcwProcessor` now assigns `sync.correlation` directly to `sync_score` and
+the measured fraction of RX samples whose magnitude is at least full scale to
+`clip_ratio`. The booleans continue to report successful synchronization and
+whether the numeric clipping ratio is nonzero.
+
+Post-fix verification:
+
+```text
+python -m unittest tests.test_radar_processor -v
+Ran 7 tests - OK
+
+python -m unittest discover -s tests -p "test_*.py" -v
+Ran 21 tests - OK
+```
+
+No Task 3 implementation concerns remain from this contract mismatch.

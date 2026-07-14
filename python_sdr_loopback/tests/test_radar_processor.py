@@ -129,22 +129,32 @@ class FmcwProcessorTests(unittest.TestCase):
             ),
             seed=11,
         )
+        measured_rx = simulated.rx_iq.copy()
+        measured_rx[:17] = 1.25 + 0.0j
+        expected_clip_ratio = float(np.mean(np.abs(measured_rx) >= 1.0))
 
         class CaptureWithoutTruth:
             timestamp = simulated.timestamp
             config = simulated.config
             tx_iq = simulated.tx_iq
-            rx_iq = simulated.rx_iq
+            rx_iq = measured_rx
 
             @property
             def truth_targets(self):
                 raise AssertionError("processor read capture.truth_targets")
 
-        frame = FmcwProcessor(self.config).process(CaptureWithoutTruth())
+        capture = CaptureWithoutTruth()
+        expected_sync_score = ChirpSynchronizer(
+            self.config, mode="known"
+        ).synchronize(capture).correlation
+        frame = FmcwProcessor(self.config).process(capture)
 
         self.assertEqual(frame.targets, ())
         self.assertTrue(frame.diagnostics.sync_ok)
         self.assertEqual(frame.diagnostics.source, "iq")
+        self.assertAlmostEqual(frame.diagnostics.sync_score, expected_sync_score)
+        self.assertAlmostEqual(frame.diagnostics.clip_ratio, expected_clip_ratio)
+        self.assertTrue(frame.diagnostics.clipping)
         self.assertTrue(np.isfinite(frame.diagnostics.rms))
         self.assertTrue(np.isfinite(frame.diagnostics.peak))
         self.assertTrue(np.isfinite(frame.diagnostics.noise_floor_db))
