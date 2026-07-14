@@ -18,6 +18,20 @@ from tkinter import ttk
 
 from PIL import Image, ImageTk
 
+from sdr_loopback.radar.config import RadarConfig
+from sdr_loopback.radar.controller import RadarController
+from sdr_loopback.radar.models import SyntheticTarget
+from sdr_loopback.radar.processor import FmcwProcessor
+from sdr_loopback.radar.sources import IqReplaySource, SyntheticTargetSource
+from sdr_loopback.radar.storage import save_frame
+from sdr_loopback.radar.ui import (
+    RadarDashboard,
+    format_derived_config,
+    poll_radar,
+    radar_config_from_values,
+    shutdown_runtimes,
+)
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
@@ -237,6 +251,9 @@ class SdrVideoGui(tk.Tk):
         self.preview_thread: threading.Thread | None = None
         self.preview_after_id: str | None = None
         self.receiver_output_path: Path | None = None
+        self.radar_controller: RadarController | None = None
+        self._latest_radar_frame: object | None = None
+        self._last_radar_frame_index: int | None = None
 
         self.input_var = tk.StringVar(value=str(PROJECT_DIR / "small.mp4"))
         self.work_dir_var = tk.StringVar(value=str(PROJECT_DIR / "artifacts" / "gui_stream_demo"))
@@ -259,9 +276,30 @@ class SdrVideoGui(tk.Tk):
         self.delay_status_var = tk.StringVar(value="-")
         self.profile_parts: dict[str, str] = {}
 
+        self.radar_source_var = tk.StringVar(value="仿真")
+        self.radar_carrier_ghz_var = tk.StringVar(value="76")
+        self.radar_sample_rate_msps_var = tk.StringVar(value="30")
+        self.radar_bandwidth_mhz_var = tk.StringVar(value="20")
+        self.radar_active_us_var = tk.StringVar(value="128")
+        self.radar_idle_us_var = tk.StringVar(value="16")
+        self.radar_chirp_count_var = tk.StringVar(value="64")
+        self.radar_tx_gain_var = tk.StringVar(value="-30")
+        self.radar_rx_gain_var = tk.StringVar(value="30")
+        self.radar_tx_channel_var = tk.StringVar(value="0")
+        self.radar_rx_channel_var = tk.StringVar(value="0")
+        self.radar_cfar_db_var = tk.StringVar(value="12")
+        self.radar_display_range_var = tk.StringVar(value="50")
+        self.radar_replay_path_var = tk.StringVar(value="")
+        self.radar_target_range_var = tk.StringVar(value="25")
+        self.radar_target_velocity_var = tk.StringVar(value="1")
+        self.radar_target_snr_var = tk.StringVar(value="20")
+        self.radar_derived_var = tk.StringVar(value="")
+        self.radar_status_var = tk.StringVar(value="就绪")
+
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self.drain_output)
+        self.after(33, self.poll_radar_controller)
 
     def _build_ui(self) -> None:
         root = ttk.Frame(self, padding=10)
@@ -274,12 +312,16 @@ class SdrVideoGui(tk.Tk):
 
         self.config_tab = ttk.Frame(self.notebook, padding=14)
         self.stream_tab = ttk.Frame(self.notebook, padding=14)
+        self.radar_tab = ttk.Frame(self.notebook, padding=14)
         self.notebook.add(self.config_tab, text="系统配置")
         self.notebook.add(self.stream_tab, text="视频传输")
+        self.notebook.add(self.radar_tab, text="FMCW雷达")
 
         self.config_tab.columnconfigure(0, weight=1)
         self.stream_tab.columnconfigure(0, weight=1)
         self.stream_tab.rowconfigure(2, weight=2)
+        self.radar_tab.columnconfigure(0, weight=1)
+        self.radar_tab.rowconfigure(1, weight=1)
 
         file_frame = ttk.LabelFrame(self.config_tab, text="输入")
         file_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -342,11 +384,68 @@ class SdrVideoGui(tk.Tk):
             variable=self.auto_player_size_var,
         ).grid(row=5, column=1, padx=8, pady=(0, 8), sticky="w")
 
+        radar_config = ttk.LabelFrame(self.config_tab, text="FMCW雷达配置")
+        radar_config.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        radar_config.columnconfigure(1, weight=1)
+        radar_config.columnconfigure(3, weight=1)
+        fields = (
+            ("数据源", self.radar_source_var, ("仿真", "IQ回放")),
+            ("载频 (GHz)", self.radar_carrier_ghz_var, None),
+            ("采样率 (MSPS)", self.radar_sample_rate_msps_var, None),
+            ("带宽 (MHz)", self.radar_bandwidth_mhz_var, None),
+            ("有效时间 (μs)", self.radar_active_us_var, None),
+            ("空闲时间 (μs)", self.radar_idle_us_var, None),
+            ("Chirp数", self.radar_chirp_count_var, None),
+            ("CFAR阈值 (dB)", self.radar_cfar_db_var, None),
+            ("显示距离 (m)", self.radar_display_range_var, None),
+            ("TX增益 (dB)", self.radar_tx_gain_var, None),
+            ("RX增益 (dB)", self.radar_rx_gain_var, None),
+            ("TX/RX通道", None, None),
+        )
+        for index, (label, variable, choices) in enumerate(fields):
+            row, pair = divmod(index, 2)
+            column = pair * 2
+            ttk.Label(radar_config, text=label).grid(row=row, column=column, padx=8, pady=4, sticky="w")
+            if choices:
+                widget = ttk.Combobox(radar_config, textvariable=variable, values=choices, state="readonly")
+            elif variable is not None:
+                widget = ttk.Entry(radar_config, textvariable=variable)
+            else:
+                widget = ttk.Frame(radar_config)
+                ttk.Entry(widget, textvariable=self.radar_tx_channel_var, width=5).pack(side=tk.LEFT)
+                ttk.Label(widget, text=" / ").pack(side=tk.LEFT)
+                ttk.Entry(widget, textvariable=self.radar_rx_channel_var, width=5).pack(side=tk.LEFT)
+            widget.grid(row=row, column=column + 1, padx=8, pady=4, sticky="ew")
+            widget.bind("<FocusOut>", lambda _event: self.update_radar_derived())
+
+        replay_row = 6
+        ttk.Label(radar_config, text="IQ回放文件").grid(row=replay_row, column=0, padx=8, pady=4, sticky="w")
+        ttk.Entry(radar_config, textvariable=self.radar_replay_path_var).grid(
+            row=replay_row, column=1, columnspan=2, padx=8, pady=4, sticky="ew"
+        )
+        ttk.Button(radar_config, text="浏览", command=self.browse_radar_replay).grid(
+            row=replay_row, column=3, padx=8, pady=4
+        )
+        target_row = ttk.Frame(radar_config)
+        target_row.grid(row=7, column=1, columnspan=3, padx=8, pady=4, sticky="w")
+        ttk.Label(radar_config, text="仿真目标").grid(row=7, column=0, padx=8, pady=4, sticky="w")
+        for label, variable in (
+            ("距离m", self.radar_target_range_var),
+            ("速度m/s", self.radar_target_velocity_var),
+            ("SNR dB", self.radar_target_snr_var),
+        ):
+            ttk.Label(target_row, text=label).pack(side=tk.LEFT, padx=(0, 3))
+            ttk.Entry(target_row, textvariable=variable, width=8).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(radar_config, textvariable=self.radar_derived_var).grid(
+            row=8, column=0, columnspan=4, padx=8, pady=(5, 8), sticky="w"
+        )
+        self.update_radar_derived()
+
         hint = ttk.Label(
             self.config_tab,
             text="配置完成后切换到“视频传输”页，点击开始即可运行 SDR RF 回环视频演示。",
         )
-        hint.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        hint.grid(row=3, column=0, sticky="w", pady=(4, 0))
 
         controls = ttk.Frame(self.stream_tab)
         controls.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -390,6 +489,20 @@ class SdrVideoGui(tk.Tk):
         yscroll.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=yscroll.set)
 
+        radar_controls = ttk.Frame(self.radar_tab)
+        radar_controls.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self.radar_start_button = ttk.Button(radar_controls, text="启动雷达", command=self.start_radar)
+        self.radar_start_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.radar_stop_button = ttk.Button(
+            radar_controls, text="停止雷达", command=self.stop_radar, state=tk.DISABLED
+        )
+        self.radar_stop_button.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(radar_controls, text="保存当前帧", command=self.save_radar_frame).pack(side=tk.LEFT)
+        ttk.Label(radar_controls, text="单RX：方位角未测量", foreground="#a55d00").pack(side=tk.RIGHT)
+        ttk.Label(radar_controls, textvariable=self.radar_status_var).pack(side=tk.RIGHT, padx=12)
+        self.radar_dashboard = RadarDashboard(self.radar_tab)
+        self.radar_dashboard.grid(row=1, column=0, sticky="nsew")
+
     @staticmethod
     def _metric(parent: ttk.Frame, column: int, label: str, variable: tk.StringVar) -> None:
         cell = ttk.Frame(parent, padding=8)
@@ -409,6 +522,125 @@ class SdrVideoGui(tk.Tk):
         path = filedialog.askdirectory(initialdir=str(PROJECT_DIR / "artifacts"))
         if path:
             self.work_dir_var.set(path)
+
+    def browse_radar_replay(self) -> None:
+        path = filedialog.askopenfilename(
+            initialdir=str(PROJECT_DIR / "artifacts"),
+            filetypes=[("雷达捕获", "*.npz"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.radar_replay_path_var.set(path)
+
+    def build_radar_config(self) -> RadarConfig:
+        for label, variable in (
+            ("TX通道", self.radar_tx_channel_var),
+            ("RX通道", self.radar_rx_channel_var),
+        ):
+            channel = int(variable.get())
+            if channel not in (0, 1):
+                raise ValueError(f"{label}必须是0或1")
+        float(self.radar_tx_gain_var.get())
+        float(self.radar_rx_gain_var.get())
+        return radar_config_from_values(
+            dict(
+                carrier_ghz=self.radar_carrier_ghz_var.get(),
+                sample_rate_msps=self.radar_sample_rate_msps_var.get(),
+                bandwidth_mhz=self.radar_bandwidth_mhz_var.get(),
+                active_us=self.radar_active_us_var.get(),
+                idle_us=self.radar_idle_us_var.get(),
+                chirp_count=self.radar_chirp_count_var.get(),
+                cfar_threshold_db=self.radar_cfar_db_var.get(),
+                max_display_range_m=self.radar_display_range_var.get(),
+            )
+        )
+
+    def update_radar_derived(self) -> None:
+        try:
+            self.radar_derived_var.set(format_derived_config(self.build_radar_config()))
+        except (TypeError, ValueError):
+            self.radar_derived_var.set("参数待修正")
+
+    def start_radar(self) -> None:
+        if self.radar_controller is not None:
+            return
+        try:
+            config = self.build_radar_config()
+            if self.radar_source_var.get() == "IQ回放":
+                replay_path = Path(self.radar_replay_path_var.get())
+                if not replay_path.is_file():
+                    raise ValueError("请选择有效的IQ回放文件")
+                source = IqReplaySource((replay_path,), loop=True)
+            else:
+                target = SyntheticTarget(
+                    target_id="T1",
+                    range_m=float(self.radar_target_range_var.get()),
+                    radial_velocity_mps=float(self.radar_target_velocity_var.get()),
+                    snr_db=float(self.radar_target_snr_var.get()),
+                )
+                source = SyntheticTargetSource(config, (target,))
+            processor = FmcwProcessor(config)
+            controller = RadarController(
+                source,
+                processor,
+                config.chirp_period_s * config.chirp_count,
+            )
+            controller.start()
+        except (OSError, TypeError, ValueError, RuntimeError) as error:
+            messagebox.showerror("雷达参数错误", str(error))
+            return
+        self.radar_controller = controller
+        self._latest_radar_frame = None
+        self._last_radar_frame_index = None
+        self.radar_status_var.set("运行中")
+        self.radar_start_button.configure(state=tk.DISABLED)
+        self.radar_stop_button.configure(state=tk.NORMAL)
+        self.notebook.select(self.radar_tab)
+        self.update_radar_derived()
+
+    def stop_radar(self) -> None:
+        controller = self.radar_controller
+        self.radar_controller = None
+        if controller is not None:
+            controller.stop()
+        self.radar_status_var.set("已停止")
+        self.radar_start_button.configure(state=tk.NORMAL)
+        self.radar_stop_button.configure(state=tk.DISABLED)
+
+    def render(self, frame: object) -> None:
+        self._latest_radar_frame = frame
+        self.radar_dashboard.render(frame)
+
+    def poll_radar_controller(self) -> None:
+        controller = self.radar_controller
+        if controller is not None:
+            self._last_radar_frame_index = poll_radar(
+                controller, self, self._last_radar_frame_index
+            )
+            status = controller.status()
+            if status.error or status.shutdown_error:
+                self.radar_status_var.set(status.error or status.shutdown_error or "雷达错误")
+            elif not status.running:
+                self.radar_status_var.set("已完成")
+                self.radar_controller = None
+                self.radar_start_button.configure(state=tk.NORMAL)
+                self.radar_stop_button.configure(state=tk.DISABLED)
+        self.after(33, self.poll_radar_controller)
+
+    def save_radar_frame(self) -> None:
+        frame = self._latest_radar_frame
+        if frame is None:
+            messagebox.showinfo("保存雷达帧", "当前没有可保存的雷达帧")
+            return
+        directory = filedialog.askdirectory(initialdir=str(PROJECT_DIR / "artifacts"))
+        if not directory:
+            return
+        output = Path(directory) / f"radar_frame_{frame.frame_index:06d}"
+        try:
+            save_frame(output, frame)
+        except (OSError, TypeError, ValueError) as error:
+            messagebox.showerror("保存失败", str(error))
+            return
+        self.radar_status_var.set(f"已保存: {output}")
 
     def selected_preset(self) -> Preset:
         label = self.preset_var.get()
@@ -922,11 +1154,9 @@ class SdrVideoGui(tk.Tk):
         self.stop_source_preview()
 
     def on_close(self) -> None:
-        self.cancel_source_preview_schedule()
-        self.stop_source_preview()
-        if self.process is not None:
-            self.stop_stream()
-        self.destroy()
+        controller = self.radar_controller
+        self.radar_controller = None
+        shutdown_runtimes(self.stop_stream, controller, self.destroy)
 
 
 def main() -> int:
