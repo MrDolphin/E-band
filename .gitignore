@@ -19,6 +19,8 @@ Material/videotool_decompiled/remotevideo_usepdb - 副本/
 python_sdr_loopback/artifacts/
 **/__pycache__/
 *.pyc
+python_sdr_loopback/1.png
+python_sdr_loopback/small.png
 
 # Runtime diagnostics and captures
 **/diagnostics/
