@@ -12,6 +12,13 @@ import time
 import io
 from dataclasses import dataclass
 from pathlib import Path
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parent
+sys.path.insert(0, str(PROJECT_DIR))
+
+
 from tkinter import filedialog, messagebox
 import tkinter as tk
 from tkinter import ttk
@@ -33,8 +40,6 @@ from sdr_loopback.radar.ui import (
 )
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SCRIPT_DIR.parent
 STREAM_SCRIPT = SCRIPT_DIR / "run_low_latency_ts_stream.py"
 
 
@@ -1229,4 +1234,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if os.environ.get("FMCW_GUI_IMPORT_ONLY") == "1":
+        raise SystemExit(0)
     raise SystemExit(main())

@@ -1,5 +1,7 @@
 import unittest
+import os
 import subprocess
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -363,6 +365,23 @@ class RadarUiTests(unittest.TestCase):
             "雷达参数错误", "请选择有效的IQ回放文件"
         )
         self.assertIsNone(gui.radar_controller)
+
+    def test_direct_gui_script_bootstraps_package_imports_without_tk(self):
+        project = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        environment["FMCW_GUI_IMPORT_ONLY"] = "1"
+
+        result = subprocess.run(
+            [sys.executable, "scripts/sdr_video_gui.py"],
+            cwd=project,
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
