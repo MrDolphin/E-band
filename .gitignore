@@ -14,6 +14,11 @@ Material/videotool_decompiled/remotevideo_usepdb - 副本/
 **/obj/
 **/.vs/
 **/.vscode/
+.codex-build/
+codex_tmp_build*/
+
+# Local codebase index
+.codebase-memory/
 
 # Python runtime and generated test artifacts
 python_sdr_loopback/artifacts/
