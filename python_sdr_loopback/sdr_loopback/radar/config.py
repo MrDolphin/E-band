@@ -22,6 +22,26 @@ class RadarConfig:
     suppress_static_clutter: bool = False
 
     def __post_init__(self) -> None:
+        positive_fields = (
+            ("carrier_hz", self.carrier_hz),
+            ("sample_rate_hz", self.sample_rate_hz),
+            ("bandwidth_hz", self.bandwidth_hz),
+            ("active_time_s", self.active_time_s),
+            ("max_display_range_m", self.max_display_range_m),
+        )
+        for name, value in positive_fields:
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be positive and finite")
+        if not math.isfinite(self.idle_time_s) or self.idle_time_s < 0.0:
+            raise ValueError("idle_time_s must be nonnegative and finite")
+        if (
+            not isinstance(self.chirp_count, int)
+            or isinstance(self.chirp_count, bool)
+            or self.chirp_count <= 0
+        ):
+            raise ValueError("chirp_count must be a positive integer")
+        if not math.isfinite(self.cfar_threshold_db):
+            raise ValueError("cfar_threshold_db must be finite")
         active = self.sample_rate_hz * self.active_time_s
         total = self.sample_rate_hz * self.chirp_period_s
         if not math.isclose(active, round(active), abs_tol=1e-9):
@@ -61,6 +81,10 @@ class RadarConfig:
     @property
     def cpi_samples(self) -> int:
         return self.samples_per_chirp * self.chirp_count
+
+    @property
+    def cpi_duration_s(self) -> float:
+        return self.chirp_period_s * self.chirp_count
 
     @property
     def wavelength_m(self) -> float:

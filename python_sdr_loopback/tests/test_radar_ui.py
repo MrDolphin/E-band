@@ -1,9 +1,15 @@
 import unittest
+import subprocess
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import numpy as np
 
 from sdr_loopback.radar.config import RadarConfig
-from sdr_loopback.radar.models import RadarDiagnostics, RadarFrame, RadarTarget
+from scripts.sdr_video_gui import SdrVideoGui, create_radar_runtime
+from sdr_loopback.radar.models import RadarCapture, RadarDiagnostics, RadarFrame, RadarTarget
+from sdr_loopback.radar.storage import save_capture
 from sdr_loopback.radar.ui import (
     RadarDashboard,
     axis_ticks,
@@ -11,10 +17,11 @@ from sdr_loopback.radar.ui import (
     format_derived_config,
     format_diagnostics,
     format_target,
-    poll_radar,
+    heatmap_plot_bounds,
+    orient_heatmap_for_canvas,
     radar_xy,
     radar_config_from_values,
-    shutdown_runtimes,
+    validate_runtime_inputs,
 )
 
 
@@ -68,6 +75,22 @@ class RadarUiTests(unittest.TestCase):
             (32, 64),
         )
 
+    def test_heatmap_orientation_puts_positive_velocity_above_negative(self):
+        velocity_ordered = np.array([[-4.0, -3.0], [3.0, 4.0]])
+
+        displayed = orient_heatmap_for_canvas(velocity_ordered)
+
+        np.testing.assert_array_equal(displayed[0], [3.0, 4.0])
+        np.testing.assert_array_equal(displayed[-1], [-4.0, -3.0])
+
+    def test_heatmap_bounds_fit_a_narrow_canvas_without_losing_cell_grid(self):
+        left, top, right, bottom = heatmap_plot_bounds(360, 220)
+
+        self.assertGreaterEqual(right - left, 64)
+        self.assertGreaterEqual(bottom - top, 32)
+        self.assertLessEqual(right, 360)
+        self.assertLessEqual(bottom, 220)
+
     def test_ticks_and_rows_use_radar_units_and_single_rx_language(self):
         target = RadarTarget(
             "T1", 25.0, -1.5, None, 18.2, -12.0, 4, 7, 0.91, 3.0
@@ -109,22 +132,38 @@ class RadarUiTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertIn(expected, derived)
 
-    def test_poll_renders_only_changed_frame_and_passes_same_object(self):
+    def test_gui_poll_wires_runtime_diagnostics_and_only_renders_changed_frame(self):
         frames = [self.frame, self.frame]
+        status = SimpleNamespace(
+            overruns=9, error=None, shutdown_error=None, running=True
+        )
 
         class Controller:
             def latest_frame(self):
                 return frames.pop(0)
 
+            def status(self):
+                return status
+
         rendered = []
-        dashboard = type("Dashboard", (), {"render": lambda _self, frame: rendered.append(frame)})()
+        schedules = []
+        gui = SimpleNamespace(
+            radar_controller=Controller(),
+            _last_radar_frame_index=None,
+            radar_source_label="IQ回放",
+            render=lambda frame: rendered.append(frame),
+            after=lambda delay, callback: schedules.append((delay, callback)),
+            poll_radar_controller=lambda: None,
+        )
 
-        index = poll_radar(Controller(), dashboard, None)
-        index = poll_radar(Controller(), dashboard, index)
+        SdrVideoGui.poll_radar_controller(gui)
+        SdrVideoGui.poll_radar_controller(gui)
 
-        self.assertEqual(index, 4)
-        self.assertEqual(rendered, [self.frame])
-        self.assertIs(rendered[0], self.frame)
+        self.assertEqual(gui._last_radar_frame_index, 4)
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(rendered[0].diagnostics.source, "IQ回放")
+        self.assertEqual(rendered[0].diagnostics.overruns, 9)
+        self.assertEqual([delay for delay, _ in schedules], [33, 33])
 
     def test_dashboard_gives_every_pane_the_same_complete_frame(self):
         received = []
@@ -140,17 +179,44 @@ class RadarUiTests(unittest.TestCase):
         self.assertEqual(len(received), 4)
         self.assertTrue(all(frame is self.frame for frame in received))
 
-    def test_shutdown_stops_video_then_radar_before_destroy(self):
+    def test_window_close_waits_then_kills_video_before_radar_and_destroy(self):
         calls = []
-        controller = type("Controller", (), {"stop": lambda _self: calls.append("radar")})()
 
-        shutdown_runtimes(
-            lambda: calls.append("video"),
-            controller,
-            lambda: calls.append("destroy"),
+        class Process:
+            def __init__(self):
+                self.waits = 0
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                calls.append("terminate")
+
+            def wait(self, timeout):
+                calls.append("wait")
+                self.waits += 1
+                if self.waits == 1:
+                    raise subprocess.TimeoutExpired("video", timeout)
+
+            def kill(self):
+                calls.append("kill")
+
+        gui = SimpleNamespace(
+            process=Process(),
+            radar_controller=SimpleNamespace(stop=lambda: calls.append("radar")),
+            cancel_source_preview_schedule=lambda: calls.append("cancel-preview"),
+            stop_source_preview=lambda: calls.append("stop-preview"),
+            destroy=lambda: calls.append("destroy"),
         )
 
-        self.assertEqual(calls, ["video", "radar", "destroy"])
+        SdrVideoGui.on_close(gui)
+
+        self.assertEqual(
+            calls,
+            ["cancel-preview", "stop-preview", "terminate", "wait", "kill", "wait", "radar", "destroy"],
+        )
+        self.assertIsNone(gui.process)
+        self.assertIsNone(gui.radar_controller)
 
     def test_display_fields_build_and_validate_radar_config(self):
         values = dict(
@@ -167,6 +233,47 @@ class RadarUiTests(unittest.TestCase):
         self.assertEqual(radar_config_from_values(values).active_samples, 3840)
         with self.assertRaisesRegex(ValueError, "max_display_range_m"):
             radar_config_from_values({**values, "max_display_range_m": "0"})
+
+    def test_gain_and_synthetic_fields_reject_nonfinite_or_negative_range(self):
+        invalid = (
+            ("nan", "30", "25", "1", "20"),
+            ("-30", "inf", "25", "1", "20"),
+            ("-30", "30", "nan", "1", "20"),
+            ("-30", "30", "-1", "1", "20"),
+            ("-30", "30", "25", "inf", "20"),
+            ("-30", "30", "25", "1", "nan"),
+        )
+        for values in invalid:
+            with self.subTest(values=values):
+                with self.assertRaises(ValueError):
+                    validate_runtime_inputs(*values)
+
+    def test_replay_runtime_uses_capture_config_including_hidden_fft_fields(self):
+        replay_config = RadarConfig(
+            sample_rate_hz=1e6,
+            bandwidth_hz=1e6,
+            active_time_s=64e-6,
+            idle_time_s=0.0,
+            chirp_count=16,
+            range_fft_size=256,
+            doppler_fft_size=32,
+        )
+        capture = RadarCapture(
+            timestamp=1.0,
+            config=replay_config,
+            tx_iq=np.zeros(replay_config.cpi_samples, dtype=np.complex64),
+            rx_iq=np.zeros(replay_config.cpi_samples, dtype=np.complex64),
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "nondefault.npz"
+            save_capture(path, capture)
+
+            controller, effective_config = create_radar_runtime(
+                "IQ回放", self.frame.config_snapshot, path, None
+            )
+
+        self.assertEqual(effective_config, replay_config)
+        self.assertEqual(controller.processor.config, replay_config)
 
 
 if __name__ == "__main__":

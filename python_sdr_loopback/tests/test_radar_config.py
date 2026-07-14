@@ -18,6 +18,7 @@ class RadarConfigTests(unittest.TestCase):
         self.assertEqual(config.active_samples, 3840)
         self.assertEqual(config.samples_per_chirp, 4320)
         self.assertEqual(config.cpi_samples, 276480)
+        self.assertAlmostEqual(config.cpi_duration_s, 9.216e-3)
         self.assertEqual(config.range_fft_size, 4096)
         self.assertAlmostEqual(config.range_resolution_m, 7.49481145, places=5)
         self.assertAlmostEqual(config.max_unambiguous_velocity_mps, 6.85, delta=0.03)
@@ -26,6 +27,22 @@ class RadarConfigTests(unittest.TestCase):
     def test_non_integral_sample_count_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "integer sample count"):
             RadarConfig(active_time_s=128.01e-6)
+
+    def test_physical_values_must_be_finite_and_positive(self):
+        invalid = (
+            {"carrier_hz": float("nan")},
+            {"sample_rate_hz": float("inf")},
+            {"bandwidth_hz": -1.0},
+            {"active_time_s": -1.0},
+            {"idle_time_s": -1.0},
+            {"chirp_count": 0},
+            {"max_display_range_m": 0.0},
+            {"cfar_threshold_db": float("nan")},
+        )
+        for values in invalid:
+            with self.subTest(**values):
+                with self.assertRaises(ValueError):
+                    RadarConfig(**values)
 
     def test_fft_sizes_must_be_positive_powers_of_two(self):
         invalid_sizes = (

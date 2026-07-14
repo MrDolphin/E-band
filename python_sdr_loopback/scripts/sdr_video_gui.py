@@ -23,13 +23,13 @@ from sdr_loopback.radar.controller import RadarController
 from sdr_loopback.radar.models import SyntheticTarget
 from sdr_loopback.radar.processor import FmcwProcessor
 from sdr_loopback.radar.sources import IqReplaySource, SyntheticTargetSource
-from sdr_loopback.radar.storage import save_frame
+from sdr_loopback.radar.storage import load_capture, save_frame
 from sdr_loopback.radar.ui import (
     RadarDashboard,
     format_derived_config,
     poll_radar,
     radar_config_from_values,
-    shutdown_runtimes,
+    validate_runtime_inputs,
 )
 
 
@@ -117,6 +117,55 @@ PRESETS: tuple[Preset, ...] = (
     ),
     Preset("无播放调试", "不打开 ffplay，只跑 RF 流，20 个 chunk 后停止", ("--no-player", "--max-chunks", "20")),
 )
+
+
+def create_radar_runtime(
+    source_mode: str,
+    display_config: RadarConfig,
+    replay_path: Path | None,
+    synthetic_target: SyntheticTarget | None,
+) -> tuple[RadarController, RadarConfig]:
+    """Build a controller with the source-owned effective configuration."""
+    if source_mode == "IQ回放":
+        if replay_path is None or not replay_path.is_file():
+            raise ValueError("请选择有效的IQ回放文件")
+        effective_config = load_capture(replay_path).config
+        source = IqReplaySource((replay_path,), loop=True)
+    else:
+        if synthetic_target is None:
+            raise ValueError("仿真模式需要目标参数")
+        effective_config = display_config
+        source = SyntheticTargetSource(effective_config, (synthetic_target,))
+    controller = RadarController(
+        source,
+        FmcwProcessor(effective_config),
+        effective_config.cpi_duration_s,
+    )
+    return controller, effective_config
+
+
+def shutdown_video_process(process: subprocess.Popen | None, timeout_s: float = 1.0) -> None:
+    """Synchronously stop one video process within two bounded waits."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            return
+    try:
+        process.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except Exception:
+            return
+        try:
+            process.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 class VideoPane(ttk.Frame):
@@ -254,6 +303,7 @@ class SdrVideoGui(tk.Tk):
         self.radar_controller: RadarController | None = None
         self._latest_radar_frame: object | None = None
         self._last_radar_frame_index: int | None = None
+        self.radar_source_label = "仿真"
 
         self.input_var = tk.StringVar(value=str(PROJECT_DIR / "small.mp4"))
         self.work_dir_var = tk.StringVar(value=str(PROJECT_DIR / "artifacts" / "gui_stream_demo"))
@@ -539,8 +589,6 @@ class SdrVideoGui(tk.Tk):
             channel = int(variable.get())
             if channel not in (0, 1):
                 raise ValueError(f"{label}必须是0或1")
-        float(self.radar_tx_gain_var.get())
-        float(self.radar_rx_gain_var.get())
         return radar_config_from_values(
             dict(
                 carrier_ghz=self.radar_carrier_ghz_var.get(),
@@ -565,37 +613,42 @@ class SdrVideoGui(tk.Tk):
             return
         try:
             config = self.build_radar_config()
-            if self.radar_source_var.get() == "IQ回放":
-                replay_path = Path(self.radar_replay_path_var.get())
-                if not replay_path.is_file():
-                    raise ValueError("请选择有效的IQ回放文件")
-                source = IqReplaySource((replay_path,), loop=True)
-            else:
-                target = SyntheticTarget(
+            _, _, target_range, target_velocity, target_snr = validate_runtime_inputs(
+                self.radar_tx_gain_var.get(),
+                self.radar_rx_gain_var.get(),
+                self.radar_target_range_var.get(),
+                self.radar_target_velocity_var.get(),
+                self.radar_target_snr_var.get(),
+            )
+            source_mode = self.radar_source_var.get()
+            replay_path = Path(self.radar_replay_path_var.get()) if source_mode == "IQ回放" else None
+            target = (
+                SyntheticTarget(
                     target_id="T1",
-                    range_m=float(self.radar_target_range_var.get()),
-                    radial_velocity_mps=float(self.radar_target_velocity_var.get()),
-                    snr_db=float(self.radar_target_snr_var.get()),
+                    range_m=target_range,
+                    radial_velocity_mps=target_velocity,
+                    snr_db=target_snr,
                 )
-                source = SyntheticTargetSource(config, (target,))
-            processor = FmcwProcessor(config)
-            controller = RadarController(
-                source,
-                processor,
-                config.chirp_period_s * config.chirp_count,
+                if source_mode != "IQ回放"
+                else None
+            )
+            controller, effective_config = create_radar_runtime(
+                source_mode, config, replay_path, target
             )
             controller.start()
         except (OSError, TypeError, ValueError, RuntimeError) as error:
             messagebox.showerror("雷达参数错误", str(error))
             return
         self.radar_controller = controller
+        self.radar_source_label = source_mode
         self._latest_radar_frame = None
         self._last_radar_frame_index = None
         self.radar_status_var.set("运行中")
         self.radar_start_button.configure(state=tk.DISABLED)
         self.radar_stop_button.configure(state=tk.NORMAL)
         self.notebook.select(self.radar_tab)
-        self.update_radar_derived()
+        prefix = "回放配置 | " if source_mode == "IQ回放" else ""
+        self.radar_derived_var.set(prefix + format_derived_config(effective_config))
 
     def stop_radar(self) -> None:
         controller = self.radar_controller
@@ -613,10 +666,12 @@ class SdrVideoGui(tk.Tk):
     def poll_radar_controller(self) -> None:
         controller = self.radar_controller
         if controller is not None:
-            self._last_radar_frame_index = poll_radar(
-                controller, self, self._last_radar_frame_index
+            self._last_radar_frame_index, status = poll_radar(
+                controller,
+                self,
+                self._last_radar_frame_index,
+                self.radar_source_label,
             )
-            status = controller.status()
             if status.error or status.shutdown_error:
                 self.radar_status_var.set(status.error or status.shutdown_error or "雷达错误")
             elif not status.running:
@@ -1154,9 +1209,16 @@ class SdrVideoGui(tk.Tk):
         self.stop_source_preview()
 
     def on_close(self) -> None:
+        self.cancel_source_preview_schedule()
+        self.stop_source_preview()
+        process = self.process
+        self.process = None
         controller = self.radar_controller
         self.radar_controller = None
-        shutdown_runtimes(self.stop_stream, controller, self.destroy)
+        shutdown_video_process(process)
+        if controller is not None:
+            controller.stop()
+        self.destroy()
 
 
 def main() -> int:

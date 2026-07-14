@@ -1,7 +1,8 @@
 """Pure display transforms and Tk panes for FMCW radar frames."""
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
+from dataclasses import replace
 from typing import Optional
 import tkinter as tk
 from tkinter import ttk
@@ -67,6 +68,20 @@ def axis_ticks(minimum: float, maximum: float, count: int) -> tuple[float, ...]:
     return tuple(float(value) for value in np.linspace(minimum, maximum, count))
 
 
+def orient_heatmap_for_canvas(values: np.ndarray) -> np.ndarray:
+    """Put ascending velocity rows onto a Canvas whose y axis points down."""
+    return np.flipud(np.asarray(values))
+
+
+def heatmap_plot_bounds(width: int, height: int) -> tuple[int, int, int, int]:
+    """Fit labeled heatmap bounds inside the current Canvas allocation."""
+    right = max(72, width - 8)
+    left = min(58, right - 64)
+    bottom = max(52, height - 34)
+    top = min(20, bottom - 32)
+    return left, top, min(right, width), min(bottom, height)
+
+
 def format_target(target: RadarTarget) -> str:
     """Format one target row, explicitly describing unavailable azimuth."""
     angle = (
@@ -106,7 +121,7 @@ def format_diagnostics(diagnostics: RadarDiagnostics) -> str:
 
 def format_derived_config(config: RadarConfig) -> str:
     """Format physical values, deriving every value from ``RadarConfig``."""
-    cpi_ms = config.chirp_period_s * config.chirp_count * 1000.0
+    cpi_ms = config.cpi_duration_s * 1000.0
     return (
         f"每chirp {config.active_samples} 点 | 距离分辨率 {config.range_resolution_m:.2f} m | "
         f"最大无模糊速度 ±{config.max_unambiguous_velocity_mps:.2f} m/s | "
@@ -144,25 +159,44 @@ def radar_config_from_values(values: Mapping[str, str]) -> RadarConfig:
     return RadarConfig(**converted)
 
 
-def poll_radar(controller: object, dashboard: object, last_frame_index: Optional[int]) -> Optional[int]:
-    """Consume one latest frame and render it only when its index changed."""
+def validate_runtime_inputs(
+    tx_gain: str,
+    rx_gain: str,
+    target_range: str,
+    target_velocity: str,
+    target_snr: str,
+) -> tuple[float, float, float, float, float]:
+    """Validate non-configuration GUI values before starting a runtime."""
+    converted = tuple(
+        float(value)
+        for value in (tx_gain, rx_gain, target_range, target_velocity, target_snr)
+    )
+    if not all(math.isfinite(value) for value in converted):
+        raise ValueError("gain and synthetic target values must be finite")
+    if converted[2] < 0.0:
+        raise ValueError("synthetic target range must be nonnegative")
+    return converted
+
+
+def poll_radar(
+    controller: object,
+    dashboard: object,
+    last_frame_index: Optional[int],
+    source_label: str,
+) -> tuple[Optional[int], object]:
+    """Render one runtime-adjusted latest frame and return one status snapshot."""
+    status = controller.status()
     frame = controller.latest_frame()
     if frame is None or frame.frame_index == last_frame_index:
-        return last_frame_index
-    dashboard.render(frame)
-    return frame.frame_index
-
-
-def shutdown_runtimes(
-    stop_video: Callable[[], None],
-    radar_controller: Optional[object],
-    destroy: Callable[[], None],
-) -> None:
-    """Stop both runtimes in a deterministic order before destroying Tk."""
-    stop_video()
-    if radar_controller is not None:
-        radar_controller.stop()
-    destroy()
+        return last_frame_index, status
+    diagnostics = replace(
+        frame.diagnostics,
+        source=source_label,
+        overruns=status.overruns,
+    )
+    adjusted_frame = replace(frame, diagnostics=diagnostics)
+    dashboard.render(adjusted_frame)
+    return frame.frame_index, status
 
 
 class SemicircleRadarPane(ttk.LabelFrame):
@@ -241,18 +275,27 @@ class RangeDopplerPane(ttk.LabelFrame):
         self.canvas = tk.Canvas(self, background="#081018", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self._photo: Optional[ImageTk.PhotoImage] = None
+        self._last_frame: Optional[object] = None
+        self.canvas.bind("<Configure>", self._on_configure)
+
+    def _on_configure(self, _event: tk.Event) -> None:
+        if self._last_frame is not None:
+            self.render(self._last_frame)
 
     def render(self, frame: object) -> None:
+        self._last_frame = frame
         canvas = self.canvas
         canvas.delete("all")
-        width = max(canvas.winfo_width(), 520)
-        height = max(canvas.winfo_height(), 280)
-        left, top, right, bottom = 58, 20, width - 18, height - 42
+        width = max(canvas.winfo_width(), 80)
+        height = max(canvas.winfo_height(), 60)
+        left, top, right, bottom = heatmap_plot_bounds(width, height)
         range_mask = frame.range_axis_m <= frame.config_snapshot.max_display_range_m
         values = frame.range_doppler_db[:, range_mask]
         if values.shape[1] == 0:
             values = frame.range_doppler_db[:, :1]
-        cells = downsample_heatmap(values, rows=32, columns=64)
+        cells = orient_heatmap_for_canvas(
+            downsample_heatmap(values, rows=32, columns=64)
+        )
         finite = cells[np.isfinite(cells)]
         floor = float(np.percentile(finite, 5)) if finite.size else -120.0
         ceiling = float(np.percentile(finite, 99)) if finite.size else 0.0
