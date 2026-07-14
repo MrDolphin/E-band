@@ -142,26 +142,33 @@ class RadarControllerTests(unittest.TestCase):
     def test_concurrent_start_and_stop_never_join_an_unstarted_worker(self):
         real_thread = threading.Thread
         start_entered = threading.Event()
-        join_entered = threading.Event()
-        join_finished = threading.Event()
+        stop_at_state_lock = threading.Event()
+        allow_start = threading.Event()
         errors = []
+
+        class ObservedLock:
+            def __init__(self, lock):
+                self.lock = lock
+
+            def __enter__(self):
+                if threading.current_thread().name == "controlled-stopper":
+                    stop_at_state_lock.set()
+                self.lock.acquire()
+                return self
+
+            def __exit__(self, *args):
+                self.lock.release()
 
         class GatedThread(real_thread):
             def start(self):
                 start_entered.set()
-                if join_entered.wait(0.2):
-                    join_finished.wait(0.2)
+                if not allow_start.wait(1.0):
+                    raise AssertionError("test did not release worker start")
                 return super().start()
-
-            def join(self, timeout=None):
-                join_entered.set()
-                try:
-                    return super().join(timeout)
-                finally:
-                    join_finished.set()
 
         source = FakeSource()
         controller = RadarController(source, FakeProcessor(), 0.01)
+        controller._state_lock = ObservedLock(controller._state_lock)
 
         def call(action):
             try:
@@ -170,16 +177,58 @@ class RadarControllerTests(unittest.TestCase):
                 errors.append(error)
 
         with patch("sdr_loopback.radar.controller.threading.Thread", GatedThread):
-            starter = real_thread(target=call, args=(controller.start,))
-            stopper = real_thread(target=call, args=(controller.stop,))
+            starter = real_thread(
+                target=call,
+                args=(controller.start,),
+                name="controlled-starter",
+            )
+            stopper = real_thread(
+                target=call,
+                args=(controller.stop,),
+                name="controlled-stopper",
+            )
             starter.start()
             self.assertTrue(start_entered.wait(0.5))
             stopper.start()
-            starter.join(1.5)
-            stopper.join(1.5)
+            self.assertTrue(stop_at_state_lock.wait(0.5))
+            allow_start.set()
+            starter.join(0.5)
+            stopper.join(0.5)
 
         self.assertEqual(errors, [])
         self.assertEqual(source.open_calls, 1)
+        self.assertEqual(source.close_calls, 1)
+
+    def test_timeout_cannot_restore_running_after_worker_finishes(self):
+        real_thread = threading.Thread
+        source = BlockingSource(close_unblocks=False)
+
+        class CapturedAliveThread:
+            def __init__(self, *, target, name, daemon):
+                self.inner = real_thread(target=target, name=name, daemon=daemon)
+
+            def start(self):
+                self.inner.start()
+
+            def join(self, timeout=None):
+                return None
+
+            def is_alive(self):
+                captured_alive = self.inner.is_alive()
+                source.release_capture.set()
+                self.inner.join(0.5)
+                return captured_alive
+
+        controller = RadarController(source, FakeProcessor(), 0.01)
+        with patch(
+            "sdr_loopback.radar.controller.threading.Thread",
+            CapturedAliveThread,
+        ):
+            controller.start()
+            self.assertTrue(source.capture_started.wait(0.5))
+            controller.stop()
+
+        self.assertFalse(controller.status().running)
         self.assertEqual(source.close_calls, 1)
 
     def test_stop_during_open_closes_only_after_open_completes(self):

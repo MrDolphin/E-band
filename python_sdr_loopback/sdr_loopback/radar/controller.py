@@ -70,7 +70,6 @@ class RadarController:
             if self._started:
                 raise RuntimeError("radar controller has already been started")
             self._started = True
-            self._running = True
             worker = threading.Thread(
                 target=self._run,
                 name="fmcw-radar-controller",
@@ -81,9 +80,10 @@ class RadarController:
                 worker.start()
             except Exception as error:
                 self._worker = None
-                self._running = False
                 self._error = str(error)
                 start_error = error
+            else:
+                self._running = True
         if start_error is not None:
             self._request_source_close(allow_sync_fallback=True)
             raise start_error
@@ -99,15 +99,12 @@ class RadarController:
 
         if worker is None:
             self._request_source_close()
-            with self._state_lock:
-                self._running = False
             return
 
         worker.join(timeout=max(0.0, deadline - perf_counter()))
         if worker.is_alive():
             with self._state_lock:
                 self._shutdown_error = self._SHUTDOWN_ERROR
-                self._running = True
             self._request_source_close()
 
     def publish(self, frame: RadarFrame) -> None:
