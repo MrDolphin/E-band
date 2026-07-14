@@ -15,6 +15,11 @@ Material/videotool_decompiled/remotevideo_usepdb - 副本/
 **/.vs/
 **/.vscode/
 
+# Python runtime and generated test artifacts
+python_sdr_loopback/artifacts/
+**/__pycache__/
+*.pyc
+
 # Runtime diagnostics and captures
 **/diagnostics/
 *.iq
