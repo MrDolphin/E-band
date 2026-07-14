@@ -76,10 +76,57 @@ def orient_heatmap_for_canvas(values: np.ndarray) -> np.ndarray:
 def heatmap_plot_bounds(width: int, height: int) -> tuple[int, int, int, int]:
     """Fit labeled heatmap bounds inside the current Canvas allocation."""
     right = max(72, width - 8)
-    left = min(58, right - 64)
+    left = min(72, right - 64)
     bottom = max(52, height - 34)
     top = min(20, bottom - 32)
     return left, top, min(right, width), min(bottom, height)
+
+
+def range_doppler_y_axis_layout(
+    plot_left: int,
+    plot_top: int,
+    plot_bottom: int,
+) -> tuple[tuple[float, float, str, int], tuple[float, float, str, int]]:
+    """Reserve separate horizontal bands for the rotated title and tick text."""
+    middle_y = (plot_top + plot_bottom) / 2.0
+    return (14.0, middle_y, "center", 90), (
+        float(plot_left - 7),
+        middle_y,
+        "e",
+        0,
+    )
+
+
+def dashboard_column_options() -> dict[str, object]:
+    """Return identical Tk grid options for the two dashboard columns."""
+    return {"weight": 1, "uniform": "radar-plots"}
+
+
+def equal_dashboard_widths(total_width: int) -> tuple[int, int]:
+    """Split available width into equal integer columns for layout checks."""
+    left = total_width // 2
+    return left, total_width - left
+
+
+def semicircle_label_layout(
+    origin_x: float,
+    origin_y: float,
+    radius: float,
+    max_range_m: float,
+) -> tuple[dict[int, tuple[float, float, str]], tuple[float, float, str]]:
+    """Place range labels on a slight bearing, leaving boresight tick clear."""
+    bearing = math.radians(12.0)
+    rings = {
+        ring_m: (
+            origin_x + ring_radius * math.sin(bearing),
+            origin_y - ring_radius * math.cos(bearing),
+            "sw",
+        )
+        for ring_m in (10, 20, 30, 40, 50)
+        if (ring_radius := radius * ring_m / max_range_m) <= radius + 0.5
+    }
+    zero_tick = (origin_x, origin_y - radius - 12.0, "center")
+    return rings, zero_tick
 
 
 def format_target(target: RadarTarget) -> str:
@@ -216,32 +263,40 @@ class SemicircleRadarPane(ttk.LabelFrame):
         radius = min(width / 2.0 - 42.0, height - 58.0)
         max_range = frame.config_snapshot.max_display_range_m
         grid = "#2d5974"
-        for ring_m in (10, 20, 30, 40, 50):
+        ring_labels, zero_tick_label = semicircle_label_layout(
+            origin_x, origin_y, radius, max_range
+        )
+        for ring_m, (label_x, label_y, label_anchor) in ring_labels.items():
             ring_radius = radius * ring_m / max_range
-            if ring_radius <= radius + 0.5:
-                canvas.create_arc(
-                    origin_x - ring_radius,
-                    origin_y - ring_radius,
-                    origin_x + ring_radius,
-                    origin_y + ring_radius,
-                    start=0,
-                    extent=180,
-                    outline=grid,
-                )
-                canvas.create_text(
-                    origin_x + 4,
-                    origin_y - ring_radius,
-                    text=f"{ring_m} m",
-                    anchor="sw",
-                    fill="#9bc7dd",
-                )
+            canvas.create_arc(
+                origin_x - ring_radius,
+                origin_y - ring_radius,
+                origin_x + ring_radius,
+                origin_y + ring_radius,
+                start=0,
+                extent=180,
+                outline=grid,
+            )
+            canvas.create_text(
+                label_x,
+                label_y,
+                text=f"{ring_m} m",
+                anchor=label_anchor,
+                fill="#9bc7dd",
+            )
         for angle in axis_ticks(-90.0, 90.0, 7):
             x, y = radar_xy(max_range, angle, radius, max_range)
             canvas.create_line(origin_x, origin_y, origin_x + x, origin_y + y, fill=grid)
+            label_x, label_y, label_anchor = (
+                zero_tick_label
+                if angle == 0.0
+                else (origin_x + x, origin_y + y - 8, "center")
+            )
             canvas.create_text(
-                origin_x + x,
-                origin_y + y - 8,
+                label_x,
+                label_y,
                 text=f"{angle:+.0f}°" if angle else "0°",
+                anchor=label_anchor,
                 fill="#b9d9e8",
             )
         canvas.create_text(width / 2.0, 10, text="方位角", fill="#dcecf4")
@@ -316,12 +371,22 @@ class RangeDopplerPane(ttk.LabelFrame):
             canvas.create_text(x, bottom + 6, text=f"{value:.0f}", anchor="n", fill="white")
         velocity_min = float(frame.velocity_axis_mps[0])
         velocity_max = float(frame.velocity_axis_mps[-1])
+        title_layout, _middle_tick_layout = range_doppler_y_axis_layout(
+            left, top, bottom
+        )
         for value in axis_ticks(velocity_min, velocity_max, 5):
             y = bottom - (bottom - top) * (value - velocity_min) / max(velocity_max - velocity_min, 1e-9)
             canvas.create_line(left - 4, y, left, y, fill="white")
             canvas.create_text(left - 7, y, text=f"{value:.1f}", anchor="e", fill="white")
         canvas.create_text((left + right) / 2.0, height - 8, text="距离 (m)", fill="white")
-        canvas.create_text(8, (top + bottom) / 2.0, text="径向速度\n(m/s)", anchor="w", fill="white")
+        canvas.create_text(
+            title_layout[0],
+            title_layout[1],
+            text="径向速度 (m/s)",
+            anchor=title_layout[2],
+            angle=title_layout[3],
+            fill="white",
+        )
 
 
 class TargetTablePane(ttk.LabelFrame):
@@ -333,7 +398,7 @@ class TargetTablePane(ttk.LabelFrame):
         super().__init__(parent, text="目标列表")
         self.table = ttk.Treeview(self, columns=self._COLUMNS, show="headings", height=7)
         headings = ("ID", "距离", "径向速度", "角度状态", "SNR", "置信度")
-        widths = (70, 90, 100, 160, 80, 80)
+        widths = (45, 65, 75, 115, 55, 60)
         for column, heading, width in zip(self._COLUMNS, headings, widths):
             self.table.heading(column, text=heading)
             self.table.column(column, width=width, anchor=tk.CENTER)
@@ -376,8 +441,9 @@ class RadarDashboard(ttk.Frame):
 
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent)
-        self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=1)
+        column_options = dashboard_column_options()
+        self.columnconfigure(0, **column_options)
+        self.columnconfigure(1, **column_options)
         self.rowconfigure(0, weight=2)
         self.rowconfigure(1, weight=1)
         self.radar = SemicircleRadarPane(self)

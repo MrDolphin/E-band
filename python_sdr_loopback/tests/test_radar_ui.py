@@ -17,6 +17,8 @@ from sdr_loopback.radar.ui import (
     RadarDashboard,
     axis_ticks,
     downsample_heatmap,
+    dashboard_column_options,
+    equal_dashboard_widths,
     format_derived_config,
     format_diagnostics,
     format_target,
@@ -24,6 +26,8 @@ from sdr_loopback.radar.ui import (
     orient_heatmap_for_canvas,
     radar_xy,
     radar_config_from_values,
+    range_doppler_y_axis_layout,
+    semicircle_label_layout,
     validate_runtime_inputs,
 )
 
@@ -65,6 +69,14 @@ class RadarUiTests(unittest.TestCase):
         self.assertAlmostEqual(x, 0.0)
         self.assertAlmostEqual(y, -100.0)
 
+    def test_semicircle_outer_range_and_zero_tick_labels_have_clear_gap(self):
+        rings, zero_tick = semicircle_label_layout(210.0, 250.0, 190.0, 50.0)
+
+        self.assertEqual(tuple(rings), (10, 20, 30, 40, 50))
+        self.assertEqual(rings[50][2], "sw")
+        self.assertEqual(zero_tick[2], "center")
+        self.assertGreaterEqual(rings[50][0] - zero_tick[0], 30.0)
+
     def test_heatmap_downsampling_preserves_visible_grid_and_peaks(self):
         values = np.zeros((64, 130), dtype=float)
         values[-1, -1] = 27.0
@@ -93,6 +105,23 @@ class RadarUiTests(unittest.TestCase):
         self.assertGreaterEqual(bottom - top, 32)
         self.assertLessEqual(right, 360)
         self.assertLessEqual(bottom, 220)
+
+    def test_range_doppler_vertical_title_uses_separate_rotated_margin(self):
+        title, middle_tick = range_doppler_y_axis_layout(72, 20, 186)
+
+        self.assertEqual(title[2:], ("center", 90))
+        self.assertEqual(middle_tick[2], "e")
+        self.assertGreaterEqual(middle_tick[0] - title[0], 40)
+
+    def test_dashboard_plot_columns_are_uniform_and_split_width_equally(self):
+        options = dashboard_column_options()
+
+        self.assertEqual(options, {"weight": 1, "uniform": "radar-plots"})
+        for total_width in (900, 901):
+            with self.subTest(total_width=total_width):
+                left, right = equal_dashboard_widths(total_width)
+                self.assertLessEqual(abs(left - right), 1)
+                self.assertEqual(left + right, total_width)
 
     def test_ticks_and_rows_use_radar_units_and_single_rx_language(self):
         target = RadarTarget(
