@@ -40,64 +40,76 @@ def _rectangle_sum(
     )
 
 
-def ca_cfar_2d(
+def _validate_cfar_inputs(
     power: np.ndarray,
-    config: RadarConfig,
-    *,
-    doppler_training: int = DOPPLER_TRAINING_CELLS,
-    doppler_guard: int = DOPPLER_GUARD_CELLS,
-    range_training: int = RANGE_TRAINING_CELLS,
-    range_guard: int = RANGE_GUARD_CELLS,
-    minimum_training_cells: int = MIN_CFAR_TRAINING_CELLS,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return a CA-CFAR mask and local noise power for a Doppler-range map.
-
-    Doppler cells require the complete two-sided window. Range cells near DC
-    use only the farther-range training rectangle: bins zero through the range
-    guard are protected, and training begins beyond the CUT guard. Far-range
-    and Doppler edges remain excluded. A noise estimate is accepted only when
-    at least ``minimum_training_cells`` contribute.
-    """
+    doppler_training: int,
+    doppler_guard: int,
+    range_training: int,
+    range_guard: int,
+    minimum_training_cells: Optional[int] = None,
+) -> np.ndarray:
     values = np.asarray(power, dtype=float)
     if values.ndim != 2:
         raise ValueError("power must be a two-dimensional Doppler-range map")
     if np.any(~np.isfinite(values)) or np.any(values < 0.0):
         raise ValueError("power must contain finite nonnegative values")
-    parameters = (
+    parameters = [doppler_training, doppler_guard, range_training, range_guard]
+    if minimum_training_cells is not None:
+        parameters.append(minimum_training_cells)
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) for value in parameters
+    ):
+        raise ValueError("CFAR cell counts must be integers")
+    positive_counts = [doppler_training, range_training]
+    if minimum_training_cells is not None:
+        positive_counts.append(minimum_training_cells)
+    if min(positive_counts) <= 0:
+        raise ValueError("CFAR training counts must be positive")
+    if min(doppler_guard, range_guard) < 0:
+        raise ValueError("CFAR guard counts must be nonnegative")
+    return values
+
+
+def cfar_training_stats(
+    power: np.ndarray,
+    *,
+    doppler_training: int = DOPPLER_TRAINING_CELLS,
+    doppler_guard: int = DOPPLER_GUARD_CELLS,
+    range_training: int = RANGE_TRAINING_CELLS,
+    range_guard: int = RANGE_GUARD_CELLS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return integral-image CA-CFAR training sums and cell counts."""
+    values = _validate_cfar_inputs(
+        power,
         doppler_training,
         doppler_guard,
         range_training,
         range_guard,
-        minimum_training_cells,
     )
-    if any(not isinstance(value, int) or isinstance(value, bool) for value in parameters):
-        raise ValueError("CFAR cell counts must be integers")
-    if min(doppler_training, range_training, minimum_training_cells) <= 0:
-        raise ValueError("CFAR training counts must be positive")
-    if min(doppler_guard, range_guard) < 0:
-        raise ValueError("CFAR guard counts must be nonnegative")
 
     row_count, column_count = values.shape
-    noise_power = np.full(values.shape, np.nan, dtype=float)
+    training_sums = np.zeros(values.shape, dtype=float)
+    training_counts = np.zeros(values.shape, dtype=np.int64)
     doppler_margin = doppler_training + doppler_guard
     range_margin = range_training + range_guard
     valid_rows = np.arange(doppler_margin, row_count - doppler_margin)
     if valid_rows.size == 0:
-        return np.zeros(values.shape, dtype=bool), noise_power
+        return training_sums, training_counts
 
     integral = _integral_image(values)
     rows = valid_rows[:, None]
     outer_row_low = rows - doppler_margin
     outer_row_high = rows + doppler_margin
 
-    near_columns = np.arange(
-        range_guard + 1,
-        min(range_margin, column_count - range_margin),
-    )
+    near_columns = np.arange(1, min(range_margin, column_count))
     if near_columns.size:
         columns = near_columns[None, :]
-        training_low = columns + range_guard + 1
-        training_high = training_low + range_training - 1
+        requested_low = columns + range_guard + 1
+        training_low = np.minimum(requested_low, column_count)
+        training_high = np.minimum(
+            requested_low + range_training - 1, column_count - 1
+        )
+        valid_training = training_low <= training_high
         training_sum = _rectangle_sum(
             integral,
             outer_row_low,
@@ -105,11 +117,14 @@ def ca_cfar_2d(
             training_low,
             training_high,
         )
-        training_count = (2 * doppler_margin + 1) * range_training
-        if training_count >= minimum_training_cells:
-            noise_power[np.ix_(valid_rows, near_columns)] = (
-                training_sum / training_count
-            )
+        training_count = (
+            (2 * doppler_margin + 1)
+            * np.maximum(training_high - training_low + 1, 0)
+        )
+        training_sum = np.where(valid_training, training_sum, 0.0)
+        training_count = np.where(valid_training, training_count, 0)
+        training_sums[np.ix_(valid_rows, near_columns)] = training_sum
+        training_counts[np.ix_(valid_rows, near_columns)] = training_count
 
     interior_columns = np.arange(range_margin, column_count - range_margin)
     if interior_columns.size:
@@ -131,10 +146,48 @@ def ca_cfar_2d(
         outer_count = (2 * doppler_margin + 1) * (2 * range_margin + 1)
         guard_count = (2 * doppler_guard + 1) * (2 * range_guard + 1)
         training_count = outer_count - guard_count
-        if training_count >= minimum_training_cells:
-            noise_power[np.ix_(valid_rows, interior_columns)] = (
-                (outer_sum - guard_sum) / training_count
-            )
+        training_sums[np.ix_(valid_rows, interior_columns)] = outer_sum - guard_sum
+        training_counts[np.ix_(valid_rows, interior_columns)] = training_count
+
+    return training_sums, training_counts
+
+
+def ca_cfar_2d(
+    power: np.ndarray,
+    config: RadarConfig,
+    *,
+    doppler_training: int = DOPPLER_TRAINING_CELLS,
+    doppler_guard: int = DOPPLER_GUARD_CELLS,
+    range_training: int = RANGE_TRAINING_CELLS,
+    range_guard: int = RANGE_GUARD_CELLS,
+    minimum_training_cells: int = MIN_CFAR_TRAINING_CELLS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return a CA-CFAR mask and local noise power for a Doppler-range map.
+
+    Doppler cells require the complete two-sided window. DC range bin zero is
+    protected. CUTs in bins one through the near-range margin train only on
+    farther-range cells beginning after their guard, clipped to the matrix.
+    Far-range and Doppler edges remain excluded. A noise estimate is accepted
+    only when at least ``minimum_training_cells`` contribute.
+    """
+    values = _validate_cfar_inputs(
+        power,
+        doppler_training,
+        doppler_guard,
+        range_training,
+        range_guard,
+        minimum_training_cells,
+    )
+    training_sums, training_counts = cfar_training_stats(
+        values,
+        doppler_training=doppler_training,
+        doppler_guard=doppler_guard,
+        range_training=range_training,
+        range_guard=range_guard,
+    )
+    noise_power = np.full(values.shape, np.nan, dtype=float)
+    valid = training_counts >= minimum_training_cells
+    noise_power[valid] = training_sums[valid] / training_counts[valid]
 
     threshold_scale = 10.0 ** (config.cfar_threshold_db / 10.0)
     threshold = noise_power * threshold_scale
@@ -143,13 +196,12 @@ def ca_cfar_2d(
 
 
 def local_peak_mask(power: np.ndarray, detections: np.ndarray) -> np.ndarray:
-    """Keep cells that are not weaker than any detected 8-neighbor."""
+    """Keep detected cells that are not weaker than any raw-power 8-neighbor."""
     values = np.asarray(power, dtype=float)
     mask = np.asarray(detections, dtype=bool)
     if values.shape != mask.shape or values.ndim != 2:
         raise ValueError("power and detections must be same-shaped 2D arrays")
 
-    detected_power = np.where(mask, values, -np.inf)
     neighbor_max = np.full(values.shape, -np.inf, dtype=float)
     row_count, column_count = values.shape
     for row_shift in (-1, 0, 1):
@@ -166,7 +218,7 @@ def local_peak_mask(power: np.ndarray, detections: np.ndarray) -> np.ndarray:
             )
             neighbor_max[target_rows, target_columns] = np.maximum(
                 neighbor_max[target_rows, target_columns],
-                detected_power[source_rows, source_columns],
+                values[source_rows, source_columns],
             )
     return mask & (values >= neighbor_max)
 
@@ -200,11 +252,10 @@ def cluster_detections(
                         queue.append((neighbor_row, neighbor_column))
 
         candidates = [cell for cell in component if peaks[cell]]
-        if not candidates:
-            candidates = component
-        selected.append(
-            min(candidates, key=lambda cell: (-values[cell], cell[0], cell[1]))
-        )
+        if candidates:
+            selected.append(
+                min(candidates, key=lambda cell: (-values[cell], cell[0], cell[1]))
+            )
 
     return tuple(selected)
 
