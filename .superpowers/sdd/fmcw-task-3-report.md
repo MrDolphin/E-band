@@ -109,3 +109,44 @@ Ran 21 tests - OK
 ```
 
 No Task 3 implementation concerns remain from this contract mismatch.
+
+## Task 3 Review Findings Fix
+
+All three review findings were resolved with tests-first coverage.
+
+1. `RadarCapture` now carries validated `chirp_start_sample` metadata. TX IQ
+   remains exactly one CPI, while RX IQ may include a complex one-dimensional
+   synchronization prefix or trailing margin as long as the metadata-selected
+   CPI is complete. Known synchronization receives this metadata explicitly,
+   and `FmcwProcessor` slices exactly that one CPI for FFTs and diagnostics.
+2. `RadarConfig` now requires positive power-of-two range and Doppler FFT sizes,
+   with range FFT capacity at least `active_samples` and Doppler FFT capacity at
+   least `chirp_count`. `RadarFrame` continues to validate the physical
+   half-spectrum as `range_fft_size // 2 + 1` bins.
+3. Correlation and idle calculations now promote measured IQ to `complex128`
+   and powers to `float64`, suppress expected arithmetic warnings locally, and
+   explicitly reject non-finite correlation, energy, denominator, ratio, or dB
+   metrics with `ChirpSyncError`.
+
+The initial covering run exercised the unfixed behavior and reported 17 tests
+with 8 failures and 2 errors: missing chirp metadata, accepted invalid FFT
+sizes, and an overflowed finite-input synchronization case that did not raise.
+
+Final covering verification:
+
+```text
+python -m unittest tests.test_radar_config tests.test_radar_processor -v
+Ran 17 tests in 0.305s
+OK
+```
+
+Final full verification:
+
+```text
+python -m unittest discover -s tests -p "test_*.py" -v
+Ran 26 tests in 0.276s
+OK
+```
+
+The final runs produced no test failures, errors, or overflow warnings. No Task
+3 concerns remain from these review findings.

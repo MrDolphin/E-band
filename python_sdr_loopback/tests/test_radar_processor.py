@@ -70,6 +70,16 @@ class ChirpSynchronizerTests(unittest.TestCase):
                 self.capture_with_rx(invalid)
             )
 
+    def test_extreme_finite_capture_rejects_overflowed_sync_metrics(self):
+        scale = np.finfo(np.float64).max / 8.0
+        extreme_rx = self.tx_iq.astype(np.complex128) * scale
+        self.assertTrue(np.all(np.isfinite(extreme_rx)))
+
+        with self.assertRaisesRegex(ChirpSyncError, "finite"):
+            ChirpSynchronizer(self.config, mode="correlation").synchronize(
+                self.capture_with_rx(extreme_rx)
+            )
+
 
 class FmcwProcessorTests(unittest.TestCase):
     def setUp(self):
@@ -100,6 +110,41 @@ class FmcwProcessorTests(unittest.TestCase):
         )
         self.assertGreater(frame.velocity_axis_mps[peak[0]], 0.0)
         self.assertEqual(frame.range_doppler_db.shape, (64, 2049))
+
+    def test_known_mode_uses_nonzero_capture_start_metadata(self):
+        truth = SyntheticTarget(
+            target_id="T02",
+            range_m=22.5,
+            radial_velocity_mps=1.2,
+            amplitude=0.5,
+            snr_db=40.0,
+        )
+        simulated = simulate_capture(self.config, (truth,), seed=13)
+        prefix_samples = 41
+        capture = RadarCapture(
+            timestamp=simulated.timestamp,
+            config=self.config,
+            tx_iq=simulated.tx_iq,
+            rx_iq=np.concatenate(
+                (np.zeros(prefix_samples, dtype=np.complex64), simulated.rx_iq)
+            ),
+            truth_targets=(truth,),
+            chirp_start_sample=prefix_samples,
+        )
+
+        frame = FmcwProcessor(self.config, sync_mode="known").process(capture)
+        peak = np.unravel_index(
+            np.argmax(frame.range_doppler_db), frame.range_doppler_db.shape
+        )
+
+        self.assertLessEqual(
+            abs(frame.range_axis_m[peak[1]] - truth.range_m),
+            self.config.range_resolution_m,
+        )
+        self.assertLessEqual(
+            abs(frame.velocity_axis_mps[peak[0]] - truth.radial_velocity_mps),
+            self.config.velocity_resolution_mps,
+        )
 
     def test_non_finite_receive_iq_is_rejected_before_processing(self):
         capture = simulate_capture(self.config)

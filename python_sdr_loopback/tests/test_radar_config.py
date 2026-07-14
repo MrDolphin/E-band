@@ -27,6 +27,26 @@ class RadarConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "integer sample count"):
             RadarConfig(active_time_s=128.01e-6)
 
+    def test_fft_sizes_must_be_positive_powers_of_two(self):
+        invalid_sizes = (
+            {"range_fft_size": 4095},
+            {"range_fft_size": 5000},
+            {"range_fft_size": 0},
+            {"doppler_fft_size": 65},
+            {"doppler_fft_size": 96},
+            {"doppler_fft_size": 0},
+        )
+        for values in invalid_sizes:
+            with self.subTest(**values):
+                with self.assertRaisesRegex(ValueError, "positive power of two"):
+                    RadarConfig(**values)
+
+    def test_fft_sizes_must_cover_active_samples_and_chirp_count(self):
+        with self.assertRaisesRegex(ValueError, "active samples"):
+            RadarConfig(range_fft_size=2048)
+        with self.assertRaisesRegex(ValueError, "chirp_count"):
+            RadarConfig(doppler_fft_size=32)
+
 
 class RadarModelTests(unittest.TestCase):
     def test_single_rx_target_has_no_angle(self):
@@ -92,6 +112,36 @@ class RadarModelTests(unittest.TestCase):
                 config=config,
                 tx_iq=np.zeros(config.cpi_samples, dtype=np.complex64),
                 rx_iq=np.zeros(config.cpi_samples - 1, dtype=np.complex64),
+            )
+
+    def test_capture_accepts_rx_sync_margin_and_validates_start_metadata(self):
+        config = RadarConfig()
+        start_sample = 23
+        capture = RadarCapture(
+            timestamp=1.0,
+            config=config,
+            tx_iq=np.zeros(config.cpi_samples, dtype=np.complex64),
+            rx_iq=np.zeros(config.cpi_samples + start_sample, dtype=np.complex64),
+            chirp_start_sample=start_sample,
+        )
+        self.assertEqual(capture.chirp_start_sample, start_sample)
+        self.assertEqual(capture.rx_iq.shape, (config.cpi_samples + start_sample,))
+
+        with self.assertRaisesRegex(ValueError, "chirp_start_sample"):
+            RadarCapture(
+                timestamp=1.0,
+                config=config,
+                tx_iq=np.zeros(config.cpi_samples, dtype=np.complex64),
+                rx_iq=np.zeros(config.cpi_samples, dtype=np.complex64),
+                chirp_start_sample=-1,
+            )
+
+        with self.assertRaisesRegex(ValueError, "tx_iq"):
+            RadarCapture(
+                timestamp=1.0,
+                config=config,
+                tx_iq=np.zeros(config.cpi_samples + 1, dtype=np.complex64),
+                rx_iq=np.zeros(config.cpi_samples + 1, dtype=np.complex64),
             )
 
 

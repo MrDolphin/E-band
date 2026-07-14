@@ -32,7 +32,9 @@ class ChirpSynchronizer:
         self.config = config
         self.mode = mode
 
-    def synchronize(self, capture: object) -> ChirpSyncResult:
+    def synchronize(
+        self, capture: object, *, known_start_sample: int | None = None
+    ) -> ChirpSyncResult:
         tx_iq = np.asarray(getattr(capture, "tx_iq"))
         rx_iq = np.asarray(getattr(capture, "rx_iq"))
         if tx_iq.ndim != 1 or rx_iq.ndim != 1:
@@ -42,7 +44,17 @@ class ChirpSynchronizer:
         if rx_iq.size < self.config.cpi_samples:
             raise ChirpSyncError("capture does not contain all complete chirps")
 
-        start_sample = 0 if self.mode == "known" else self._correlate_start(rx_iq)
+        if self.mode == "known":
+            start_sample = (
+                getattr(capture, "chirp_start_sample", 0)
+                if known_start_sample is None
+                else known_start_sample
+            )
+            if not isinstance(start_sample, (int, np.integer)) or start_sample < 0:
+                raise ChirpSyncError("known chirp start sample must be nonnegative")
+            start_sample = int(start_sample)
+        else:
+            start_sample = self._correlate_start(rx_iq)
         chirp_starts = start_sample + (
             np.arange(self.config.chirp_count, dtype=np.int64)
             * self.config.samples_per_chirp
@@ -66,30 +78,44 @@ class ChirpSynchronizer:
             idle_to_active_db=idle_to_active_db,
         )
 
-    def _correlate_start(self, tx_iq: np.ndarray) -> int:
+    def _correlate_start(self, rx_iq: np.ndarray) -> int:
         reference = generate_active_chirp(self.config).astype(np.complex128)
-        max_complete_start = tx_iq.size - self.config.cpi_samples
+        max_complete_start = rx_iq.size - self.config.cpi_samples
         search_limit = min(self.config.samples_per_chirp, max_complete_start)
-        search_data = tx_iq[: search_limit + reference.size]
+        search_data = np.asarray(
+            rx_iq[: search_limit + reference.size], dtype=np.complex128
+        )
 
-        correlation = np.correlate(search_data, reference, mode="valid")
-        power = np.abs(search_data) ** 2
-        cumulative_power = np.concatenate(([0.0], np.cumsum(power)))
-        window_power = (
-            cumulative_power[reference.size :] - cumulative_power[: -reference.size]
-        )
-        denominator = np.sqrt(window_power * np.vdot(reference, reference).real)
-        scores = np.divide(
-            np.abs(correlation),
-            denominator,
-            out=np.zeros_like(denominator),
-            where=denominator > 0.0,
-        )
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            correlation = np.correlate(search_data, reference, mode="valid")
+            power = np.square(np.abs(search_data), dtype=np.float64)
+            cumulative_power = np.concatenate(([0.0], np.cumsum(power)))
+            window_power = (
+                cumulative_power[reference.size :]
+                - cumulative_power[: -reference.size]
+            )
+            denominator = np.sqrt(
+                window_power * float(np.vdot(reference, reference).real)
+            )
+            scores = np.divide(
+                np.abs(correlation),
+                denominator,
+                out=np.zeros_like(denominator),
+                where=denominator > 0.0,
+            )
+        if (
+            not np.all(np.isfinite(correlation))
+            or not np.all(np.isfinite(window_power))
+            or not np.all(np.isfinite(denominator))
+            or not np.all(np.isfinite(scores))
+        ):
+            raise ChirpSyncError("correlation metric must be finite")
         return int(np.argmax(scores))
 
     def _validate_chirps(
-        self, tx_iq: np.ndarray, chirp_starts: np.ndarray
+        self, rx_iq: np.ndarray, chirp_starts: np.ndarray
     ) -> tuple[np.ndarray, float]:
+        rx_iq = np.asarray(rx_iq, dtype=np.complex128)
         reference = generate_active_chirp(self.config).astype(np.complex128)
         reference_energy = float(np.vdot(reference, reference).real)
         correlations = np.empty(self.config.chirp_count, dtype=np.float64)
@@ -97,29 +123,46 @@ class ChirpSynchronizer:
         idle_energy = 0.0
         idle_samples = self.config.samples_per_chirp - self.config.active_samples
 
-        for index, start in enumerate(chirp_starts):
-            active = tx_iq[start : start + self.config.active_samples]
-            energy = float(np.vdot(active, active).real)
-            denominator = np.sqrt(energy * reference_energy)
-            correlations[index] = (
-                abs(np.vdot(reference, active)) / denominator if denominator else 0.0
-            )
-            active_energy += energy
-            if idle_samples:
-                idle = tx_iq[
-                    start + self.config.active_samples : start
-                    + self.config.samples_per_chirp
-                ]
-                idle_energy += float(np.vdot(idle, idle).real)
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            for index, start in enumerate(chirp_starts):
+                active = rx_iq[start : start + self.config.active_samples]
+                energy = float(np.vdot(active, active).real)
+                denominator = np.sqrt(energy * reference_energy)
+                correlations[index] = (
+                    abs(np.vdot(reference, active)) / denominator
+                    if denominator
+                    else 0.0
+                )
+                if not np.isfinite(energy) or not np.isfinite(correlations[index]):
+                    raise ChirpSyncError("correlation metric must be finite")
+                active_energy += energy
+                if idle_samples:
+                    idle = rx_iq[
+                        start + self.config.active_samples : start
+                        + self.config.samples_per_chirp
+                    ]
+                    idle_chirp_energy = float(np.vdot(idle, idle).real)
+                    if not np.isfinite(idle_chirp_energy):
+                        raise ChirpSyncError("idle energy metric must be finite")
+                    idle_energy += idle_chirp_energy
 
-        mean_active_power = active_energy / (
-            self.config.chirp_count * self.config.active_samples
-        )
-        mean_idle_power = (
-            idle_energy / (self.config.chirp_count * idle_samples)
-            if idle_samples
-            else 0.0
-        )
-        ratio = mean_idle_power / max(mean_active_power, np.finfo(float).tiny)
-        idle_to_active_db = 10.0 * np.log10(max(ratio, np.finfo(float).tiny))
+            mean_active_power = active_energy / (
+                self.config.chirp_count * self.config.active_samples
+            )
+            mean_idle_power = (
+                idle_energy / (self.config.chirp_count * idle_samples)
+                if idle_samples
+                else 0.0
+            )
+            ratio = mean_idle_power / max(mean_active_power, np.finfo(float).tiny)
+            idle_to_active_db = 10.0 * np.log10(
+                max(ratio, np.finfo(float).tiny)
+            )
+        if (
+            not np.isfinite(mean_active_power)
+            or not np.isfinite(mean_idle_power)
+            or not np.isfinite(ratio)
+            or not np.isfinite(idle_to_active_db)
+        ):
+            raise ChirpSyncError("idle energy metric must be finite")
         return correlations, float(idle_to_active_db)

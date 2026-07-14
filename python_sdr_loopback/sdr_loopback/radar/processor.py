@@ -23,14 +23,17 @@ class FmcwProcessor:
         if getattr(capture, "config") != self.config:
             raise ValueError("capture configuration does not match processor configuration")
 
-        sync = self._synchronizer.synchronize(capture)
+        known_start_sample = getattr(capture, "chirp_start_sample", 0)
+        sync = self._synchronizer.synchronize(
+            capture, known_start_sample=known_start_sample
+        )
         rx_iq = np.asarray(getattr(capture, "rx_iq"))
-        chirps = np.stack(
-            [
-                rx_iq[start : start + self.config.active_samples]
-                for start in sync.chirp_starts
-            ]
-        ).astype(np.complex128, copy=False)
+        rx_cpi = rx_iq[
+            sync.start_sample : sync.start_sample + self.config.cpi_samples
+        ]
+        chirps = rx_cpi.reshape(
+            self.config.chirp_count, self.config.samples_per_chirp
+        )[:, : self.config.active_samples].astype(np.complex128, copy=False)
         reference_active = generate_active_chirp(self.config).astype(np.complex128)
 
         beat = chirps * np.conj(reference_active[None, :])
@@ -87,7 +90,7 @@ class FmcwProcessor:
         )
         velocity_axis_mps = doppler_frequency_hz * self.config.wavelength_m / 2.0
 
-        rx_magnitude = np.abs(rx_iq)
+        rx_magnitude = np.abs(rx_cpi)
         rms_linear = float(np.sqrt(np.mean(rx_magnitude**2)))
         peak_linear = float(np.max(rx_magnitude))
         clip_ratio = float(np.mean(rx_magnitude >= 1.0))

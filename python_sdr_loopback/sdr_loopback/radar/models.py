@@ -58,17 +58,30 @@ class RadarCapture:
     tx_iq: np.ndarray = field(compare=False, repr=False)
     rx_iq: np.ndarray = field(compare=False, repr=False)
     truth_targets: tuple[SyntheticTarget, ...] = ()
+    chirp_start_sample: int = 0
 
     def __post_init__(self) -> None:
         tx_iq = np.asarray(self.tx_iq)
         rx_iq = np.asarray(self.rx_iq)
+        if not isinstance(self.chirp_start_sample, (int, np.integer)):
+            raise ValueError("chirp_start_sample must be an integer")
+        chirp_start_sample = int(self.chirp_start_sample)
+        if chirp_start_sample < 0:
+            raise ValueError("chirp_start_sample must be nonnegative")
         expected = (self.config.cpi_samples,)
         if tx_iq.shape != expected:
             raise ValueError(f"tx_iq must have shape {expected}, got {tx_iq.shape}")
-        if rx_iq.shape != expected:
-            raise ValueError(f"rx_iq must have shape {expected}, got {rx_iq.shape}")
+        minimum_rx_samples = chirp_start_sample + self.config.cpi_samples
+        if rx_iq.ndim != 1 or rx_iq.size < minimum_rx_samples:
+            raise ValueError(
+                "rx_iq must be one-dimensional with at least "
+                f"{minimum_rx_samples} samples, got shape {rx_iq.shape}"
+            )
+        if not np.iscomplexobj(rx_iq):
+            raise ValueError("rx_iq must be a complex array")
         object.__setattr__(self, "tx_iq", tx_iq)
         object.__setattr__(self, "rx_iq", rx_iq)
+        object.__setattr__(self, "chirp_start_sample", chirp_start_sample)
 
 
 @dataclass(frozen=True)

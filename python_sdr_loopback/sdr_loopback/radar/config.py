@@ -27,8 +27,23 @@ class RadarConfig:
             raise ValueError("active_time_s must produce an integer sample count")
         if not math.isclose(total, round(total), abs_tol=1e-9):
             raise ValueError("chirp period must produce an integer sample count")
+        if not self._is_positive_power_of_two(self.range_fft_size):
+            raise ValueError("range_fft_size must be a positive power of two")
+        if not self._is_positive_power_of_two(self.doppler_fft_size):
+            raise ValueError("doppler_fft_size must be a positive power of two")
         if self.range_fft_size < round(active):
             raise ValueError("range_fft_size must cover all active samples")
+        if self.doppler_fft_size < self.chirp_count:
+            raise ValueError("doppler_fft_size must be at least chirp_count")
+
+    @staticmethod
+    def _is_positive_power_of_two(value: int) -> bool:
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+            and value & (value - 1) == 0
+        )
 
     @property
     def chirp_period_s(self) -> float:
