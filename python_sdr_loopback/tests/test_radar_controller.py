@@ -57,6 +57,59 @@ class BlockingSource(FakeSource):
             self.release_capture.set()
 
 
+class DelayedOpenSource(FakeSource):
+    def __init__(self):
+        super().__init__()
+        self.actions = []
+        self.open_started = threading.Event()
+        self.allow_open = threading.Event()
+
+    def open(self):
+        self.open_calls += 1
+        self.actions.append("open-start")
+        self.open_started.set()
+        self.allow_open.wait()
+        self.actions.append("open-end")
+
+    def close(self):
+        self.actions.append("close")
+        super().close()
+
+
+class BlockingCaptureAndCloseSource(FakeSource):
+    def __init__(self):
+        super().__init__()
+        self.capture_started = threading.Event()
+        self.release_capture = threading.Event()
+        self.close_started = threading.Event()
+        self.release_close = threading.Event()
+
+    def capture(self):
+        self.capture_started.set()
+        self.release_capture.wait()
+        raise StopIteration
+
+    def close(self):
+        self.close_calls += 1
+        self.close_started.set()
+        self.release_close.wait()
+        self.closed.set()
+        self.release_capture.set()
+
+
+class BlockingCloseSource(FakeSource):
+    def __init__(self, captures=()):
+        super().__init__(captures)
+        self.close_started = threading.Event()
+        self.release_close = threading.Event()
+
+    def close(self):
+        self.close_calls += 1
+        self.close_started.set()
+        self.release_close.wait()
+        self.closed.set()
+
+
 class RadarControllerTests(unittest.TestCase):
     def test_cpi_period_must_be_positive(self):
         source = FakeSource()
@@ -89,14 +142,23 @@ class RadarControllerTests(unittest.TestCase):
     def test_concurrent_start_and_stop_never_join_an_unstarted_worker(self):
         real_thread = threading.Thread
         start_entered = threading.Event()
-        allow_start = threading.Event()
+        join_entered = threading.Event()
+        join_finished = threading.Event()
         errors = []
 
         class GatedThread(real_thread):
             def start(self):
                 start_entered.set()
-                allow_start.wait(0.5)
+                if join_entered.wait(0.2):
+                    join_finished.wait(0.2)
                 return super().start()
+
+            def join(self, timeout=None):
+                join_entered.set()
+                try:
+                    return super().join(timeout)
+                finally:
+                    join_finished.set()
 
         source = FakeSource()
         controller = RadarController(source, FakeProcessor(), 0.01)
@@ -113,12 +175,45 @@ class RadarControllerTests(unittest.TestCase):
             starter.start()
             self.assertTrue(start_entered.wait(0.5))
             stopper.start()
-            allow_start.set()
-            starter.join(0.5)
-            stopper.join(0.5)
+            starter.join(1.5)
+            stopper.join(1.5)
 
         self.assertEqual(errors, [])
         self.assertEqual(source.open_calls, 1)
+        self.assertEqual(source.close_calls, 1)
+
+    def test_stop_during_open_closes_only_after_open_completes(self):
+        source = DelayedOpenSource()
+        controller = RadarController(source, FakeProcessor(), 0.001)
+        controller.start()
+        self.assertTrue(source.open_started.wait(0.5))
+
+        try:
+            controller.stop()
+            self.assertEqual(source.close_calls, 0)
+        finally:
+            source.allow_open.set()
+
+        self.assertTrue(source.closed.wait(0.5))
+        controller.stop()
+        self.assertEqual(source.actions, ["open-start", "open-end", "close"])
+        self.assertEqual(source.close_calls, 1)
+
+    def test_thread_start_failure_is_terminal_and_closes_once(self):
+        source = FakeSource()
+        controller = RadarController(source, FakeProcessor(), 0.01)
+
+        with patch(
+            "sdr_loopback.radar.controller.threading.Thread.start",
+            side_effect=RuntimeError("thread launch failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "thread launch failed"):
+                controller.start()
+
+        self.assertTrue(source.closed.wait(0.5))
+        status = controller.status()
+        self.assertFalse(status.running)
+        self.assertEqual(status.error, "thread launch failed")
         self.assertEqual(source.close_calls, 1)
 
     def test_worker_exception_becomes_status_and_stop_still_closes(self):
@@ -145,21 +240,51 @@ class RadarControllerTests(unittest.TestCase):
         self.assertEqual(controller.status().dropped_display_frames, 2)
         self.assertIsNone(controller.latest_frame())
 
-    def test_overrun_counts_acquisition_plus_processing_time(self):
-        frame = SimpleNamespace(frame_index=1)
-        source = FakeSource([object()])
-        processor = FakeProcessor(result=frame)
-        controller = RadarController(source, processor, 1e-9)
+    def test_overrun_uses_acquisition_plus_processing_and_not_equality(self):
+        source = FakeSource([object(), object()])
+        processor = FakeProcessor(result=SimpleNamespace(frame_index=1))
+        controller = RadarController(source, processor, 1.0)
 
-        controller.start()
-        self.assertTrue(source.closed.wait(0.5))
+        clock_values = [0.0, 0.4, 0.4, 1.0, 1.0, 1.6, 1.6, 2.1, 2.1]
+        with patch(
+            "sdr_loopback.radar.controller.perf_counter",
+            side_effect=clock_values,
+        ):
+            controller.start()
+            self.assertTrue(source.closed.wait(0.5))
 
         status = controller.status()
         self.assertEqual(status.overruns, 1)
-        self.assertGreater(
-            status.acquisition_time_ms + status.processing_time_ms,
-            controller.cpi_period_s * 1000.0,
-        )
+        self.assertAlmostEqual(status.acquisition_time_ms, 600.0)
+        self.assertAlmostEqual(status.processing_time_ms, 500.0)
+
+    def test_stop_deadline_does_not_wait_for_blocking_close(self):
+        source = BlockingCaptureAndCloseSource()
+        controller = RadarController(source, FakeProcessor(), 0.01)
+        controller.start()
+        self.assertTrue(source.capture_started.wait(0.5))
+        stop_done = threading.Event()
+        elapsed = []
+
+        def stop_controller():
+            started = time.perf_counter()
+            controller.stop()
+            elapsed.append(time.perf_counter() - started)
+            stop_done.set()
+
+        stopper = threading.Thread(target=stop_controller)
+        stopper.start()
+        try:
+            self.assertTrue(stop_done.wait(1.2))
+            self.assertLess(elapsed[0], 1.15)
+            self.assertTrue(source.close_started.wait(0.2))
+        finally:
+            source.release_close.set()
+            source.release_capture.set()
+            stopper.join(0.5)
+        self.assertTrue(source.closed.wait(0.5))
+        controller.stop()
+        self.assertEqual(source.close_calls, 1)
 
     def test_stop_timeout_closes_once_and_reports_stable_shutdown_error(self):
         source = BlockingSource(close_unblocks=False)
@@ -175,12 +300,42 @@ class RadarControllerTests(unittest.TestCase):
         self.assertEqual(source.close_calls, 1)
         first_status = controller.status()
         self.assertTrue(first_status.running)
-        self.assertEqual(first_status.error, "radar worker did not stop before timeout")
+        self.assertIsNone(first_status.error)
+        self.assertEqual(
+            first_status.shutdown_error,
+            "radar worker did not stop before timeout",
+        )
         source.release_capture.set()
         controller.stop()
         self.assertFalse(controller.status().running)
         self.assertEqual(source.close_calls, 1)
-        self.assertEqual(controller.status().error, first_status.error)
+        self.assertEqual(controller.status().shutdown_error, first_status.shutdown_error)
+
+    def test_worker_error_survives_shutdown_timeout_while_close_blocks(self):
+        source = BlockingCloseSource([object()])
+        processor = FakeProcessor(error=RuntimeError("processor exploded"))
+        controller = RadarController(source, processor, 0.01)
+        controller.start()
+        self.assertTrue(source.close_started.wait(0.5))
+        stop_done = threading.Event()
+        stopper = threading.Thread(target=lambda: (controller.stop(), stop_done.set()))
+        stopper.start()
+
+        try:
+            self.assertTrue(stop_done.wait(1.2))
+            status = controller.status()
+            self.assertEqual(status.error, "processor exploded")
+            self.assertEqual(
+                status.shutdown_error,
+                "radar worker did not stop before timeout",
+            )
+        finally:
+            source.release_close.set()
+            stopper.join(0.5)
+
+        controller.stop()
+        self.assertFalse(controller.status().running)
+        self.assertEqual(source.close_calls, 1)
 
     def test_stop_before_start_is_safe_and_closes_once(self):
         source = FakeSource()
@@ -189,6 +344,7 @@ class RadarControllerTests(unittest.TestCase):
         controller.stop()
         controller.stop()
 
+        self.assertTrue(source.closed.wait(0.5))
         self.assertEqual(source.open_calls, 0)
         self.assertEqual(source.close_calls, 1)
         self.assertFalse(controller.status().running)

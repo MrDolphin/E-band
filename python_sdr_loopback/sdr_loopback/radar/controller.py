@@ -16,6 +16,7 @@ class ControllerStatus:
 
     running: bool
     error: Optional[str]
+    shutdown_error: Optional[str]
     acquisition_time_ms: float
     processing_time_ms: float
     overruns: int
@@ -26,6 +27,11 @@ class RadarController:
     """Acquire and process CPIs on a daemon worker, retaining only the latest."""
 
     _SHUTDOWN_ERROR = "radar worker did not stop before timeout"
+    _NOT_OPEN = "not_open"
+    _OPENING = "opening"
+    _OPEN = "open"
+    _CLOSE_REQUESTED = "close_requested"
+    _CLOSED = "closed"
 
     def __init__(
         self,
@@ -41,13 +47,17 @@ class RadarController:
         self._frames: queue.Queue[RadarFrame] = queue.Queue(maxsize=1)
         self._frame_lock = threading.Lock()
         self._state_lock = threading.Lock()
-        self._close_lock = threading.Lock()
+        self._source_condition = threading.Condition()
         self._stop_event = threading.Event()
         self._worker: Optional[threading.Thread] = None
+        self._cleanup_worker: Optional[threading.Thread] = None
         self._started = False
-        self._source_closed = False
+        self._source_state = self._NOT_OPEN
+        self._open_in_progress = False
+        self._close_started = False
         self._running = False
         self._error: Optional[str] = None
+        self._shutdown_error: Optional[str] = None
         self._acquisition_time_ms = 0.0
         self._processing_time_ms = 0.0
         self._overruns = 0
@@ -55,6 +65,7 @@ class RadarController:
 
     def start(self) -> None:
         """Start the one-shot controller lifecycle."""
+        start_error: Optional[Exception] = None
         with self._state_lock:
             if self._started:
                 raise RuntimeError("radar controller has already been started")
@@ -66,10 +77,20 @@ class RadarController:
                 daemon=True,
             )
             self._worker = worker
-            worker.start()
+            try:
+                worker.start()
+            except Exception as error:
+                self._worker = None
+                self._running = False
+                self._error = str(error)
+                start_error = error
+        if start_error is not None:
+            self._request_source_close(allow_sync_fallback=True)
+            raise start_error
 
     def stop(self) -> None:
         """Request shutdown without waiting beyond the bounded CPI allowance."""
+        deadline = perf_counter() + 2.0 * self.cpi_period_s + 1.0
         self._stop_event.set()
         with self._state_lock:
             if not self._started:
@@ -77,19 +98,17 @@ class RadarController:
             worker = self._worker
 
         if worker is None:
-            self._record_close_error(self._close_source_once())
+            self._request_source_close()
             with self._state_lock:
                 self._running = False
             return
 
-        worker.join(timeout=2.0 * self.cpi_period_s + 1.0)
+        worker.join(timeout=max(0.0, deadline - perf_counter()))
         if worker.is_alive():
             with self._state_lock:
-                self._error = self._SHUTDOWN_ERROR
-            self._record_close_error(self._close_source_once())
-            worker.join(timeout=min(self.cpi_period_s, 0.05))
-            with self._state_lock:
-                self._running = worker.is_alive()
+                self._shutdown_error = self._SHUTDOWN_ERROR
+                self._running = True
+            self._request_source_close()
 
     def publish(self, frame: RadarFrame) -> None:
         """Publish a frame, evicting one stale display frame when necessary."""
@@ -124,6 +143,7 @@ class RadarController:
             return ControllerStatus(
                 running=self._running,
                 error=self._error,
+                shutdown_error=self._shutdown_error,
                 acquisition_time_ms=self._acquisition_time_ms,
                 processing_time_ms=self._processing_time_ms,
                 overruns=self._overruns,
@@ -131,8 +151,22 @@ class RadarController:
             )
 
     def _run(self) -> None:
+        open_attempted = False
         try:
-            self.source.open()
+            with self._source_condition:
+                if self._source_state == self._CLOSE_REQUESTED:
+                    return
+                self._source_state = self._OPENING
+                self._open_in_progress = True
+            open_attempted = True
+            try:
+                self.source.open()
+            finally:
+                with self._source_condition:
+                    self._open_in_progress = False
+                    if self._source_state == self._OPENING:
+                        self._source_state = self._OPEN
+                    self._source_condition.notify_all()
             while not self._stop_event.is_set():
                 acquisition_started = perf_counter()
                 capture = self.source.capture()
@@ -151,27 +185,59 @@ class RadarController:
         except StopIteration:
             pass
         except Exception as error:
-            with self._state_lock:
-                if self._error is None:
-                    self._error = str(error)
+            self._record_primary_error(str(error))
         finally:
-            self._record_close_error(self._close_source_once())
+            if open_attempted:
+                self._close_source_once()
             with self._state_lock:
                 self._running = False
 
-    def _close_source_once(self) -> Optional[str]:
-        with self._close_lock:
-            if self._source_closed:
-                return None
-            self._source_closed = True
-            try:
-                self.source.close()
-            except Exception as error:
-                return str(error)
-        return None
+    def _request_source_close(self, *, allow_sync_fallback: bool = False) -> None:
+        cleanup_worker: Optional[threading.Thread] = None
+        with self._source_condition:
+            if self._source_state == self._CLOSED or self._close_started:
+                return
+            self._source_state = self._CLOSE_REQUESTED
+            if self._open_in_progress:
+                return
+            if self._cleanup_worker is not None:
+                return
+            cleanup_worker = threading.Thread(
+                target=self._close_source_once,
+                name="fmcw-radar-source-cleanup",
+                daemon=True,
+            )
+            self._cleanup_worker = cleanup_worker
+        try:
+            cleanup_worker.start()
+        except Exception as error:
+            with self._source_condition:
+                self._cleanup_worker = None
+            if allow_sync_fallback:
+                self._close_source_once()
+            else:
+                self._record_primary_error(str(error))
 
-    def _record_close_error(self, error: Optional[str]) -> None:
-        if error is None:
+    def _close_source_once(self) -> None:
+        with self._source_condition:
+            if self._close_started or self._source_state == self._CLOSED:
+                return
+            if self._open_in_progress:
+                self._source_state = self._CLOSE_REQUESTED
+                return
+            self._close_started = True
+            self._source_state = self._CLOSE_REQUESTED
+        try:
+            self.source.close()
+        except Exception as error:
+            self._record_primary_error(str(error))
+        finally:
+            with self._source_condition:
+                self._source_state = self._CLOSED
+                self._source_condition.notify_all()
+
+    def _record_primary_error(self, error: str) -> None:
+        if not error:
             return
         with self._state_lock:
             if self._error is None:
