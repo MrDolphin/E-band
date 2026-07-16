@@ -1,9 +1,9 @@
 # FMCW 雷达 MVP 整体开发进展报告
 
-更新日期：2026-07-16  
-工作树：`D:\hp-laptop\E-band-fmcw`  
-开发分支：`python-feature/fmcw-v0`  
-计划文档：`docs/superpowers/plans/2026-07-14-fmcw-synthetic-radar-mvp.md`  
+更新日期：2026-07-17
+工作树：`D:\hp-laptop\E-band-fmcw`
+开发分支：`python-feature/fmcw-v0`
+计划文档：`docs/superpowers/plans/2026-07-14-fmcw-synthetic-radar-mvp.md`
 设计文档：`docs/superpowers/specs/2026-07-14-e310-eband-fmcw-radar-design.md`
 
 ## 1. 当前结论
