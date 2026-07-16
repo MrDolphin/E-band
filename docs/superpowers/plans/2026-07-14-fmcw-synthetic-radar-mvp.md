@@ -573,25 +573,25 @@ git push origin python-feature/fmcw-v0
 - Modify: `python_sdr_loopback/tests/test_radar_processor.py`
 - Modify: `python_sdr_loopback/scripts/run_fmcw_radar.py`
 
-- [ ] **Step 1: Write fake-ADI tests for configuration, acquisition, cleanup, and errors**
+- [x] **Step 1: Write fake-ADI tests for configuration, acquisition, cleanup, and errors**
 
-Verify URI `ip:192.168.1.10`, AD9361 LO 900 MHz, 30 MSPS, 20 MHz analog bandwidth, selected ports/channels, manual gain, cyclic TX, and RX buffer >= one CPI. Assert both buffers are destroyed on success, IIO exception, and close.
+Verify URI `ip:192.168.1.10`, AD9361 LO 900 MHz, 30 MSPS, 20 MHz analog bandwidth, selected ports/channels, manual gain, cyclic TX, and RX buffer >= one CPI. Hardware diagnosis showed that destroying the cyclic buffer after every successful capture makes later FMCW cycles unreliable, so assert session-local buffer reuse on success and “mute TX before destroying both buffers” on IIO exception and final close. Reject concurrent captures; when close races with capture, wait for exclusive IIO-buffer ownership before muting and destroying buffers.
 
-- [ ] **Step 2: Implement `E310CpiSource` with dependency injection**
+- [x] **Step 2: Implement `E310CpiSource` with dependency injection**
 
-`E310CpiSource(config: RadarConfig, radio_config: E310RadioConfig, adi_module: object | None = None)` implements the same `open()`, `capture() -> RadarCapture`, and `close()` contract as synthetic/replay sources. `open()` configures AD9361 and uploads TX; `capture()` obtains and validates one finite CPI; `close()` destroys TX/RX buffers and clears the context reference.
+`E310CpiSource(config: RadarConfig, radio_config: E310RadioConfig, adi_module: object | None = None)` implements the same `open()`, `capture() -> RadarCapture`, and `close()` contract as synthetic/replay sources. `open()` configures AD9361 and uploads TX; `capture()` obtains and validates one finite CPI; `close()` waits for any active capture, safely destroys TX/RX buffers, and clears the context reference. In GUI E310 mode, synchronization misses skip the affected frames and show `等待同步` without closing healthy IIO buffers; only acquisition/IIO failures terminate the session and trigger cleanup.
 
-Scale normalized chirps to DAC counts without clipping, upload a finite repeated CPI to cyclic TX, settle briefly, capture synchronization margin plus one CPI, and return complex64 IQ. Reproduce the proven buffer cleanup from `scripts/e310_rf_loopback.py` inside the source rather than importing script functions.
+Scale normalized chirps to DAC counts without clipping, upload a finite repeated CPI to cyclic TX, settle briefly, capture synchronization margin plus one CPI, and return complex64 IQ. Reuse the cyclic TX buffer within one open session; on errors and final close, lower TX gain before disabling DDS and destroying TX/RX buffers. Reproduce cleanup inside the source rather than importing script functions.
 
-- [ ] **Step 3: Implement empty-room background calibration**
+- [x] **Step 3: Implement empty-room background calibration**
 
 Accumulate aligned dechirped matrices from configurable empty-room CPIs, store complex mean plus metadata, subtract only when configuration hashes match, and apply a configurable near-range guard. Reject mismatched calibration explicitly.
 
-- [ ] **Step 4: Add phase-consistency trust handling**
+- [x] **Step 4: Add phase-consistency trust handling**
 
 When adjacent-chirp correlation or phase consistency is below threshold, retain range but set velocity confidence to zero and `velocity_trusted=False`. GUI displays `速度不可信` rather than a precise result.
 
-- [ ] **Step 5: Add E310 CLI dry-run**
+- [x] **Step 5: Add E310 CLI dry-run**
 
 Run: `python scripts\run_fmcw_radar.py --source e310 --dry-run`
 
@@ -602,10 +602,13 @@ source=e310
 uri=ip:192.168.1.10
 sample_rate_hz=30000000
 cpi_samples=276480
+tx_gain_db=-40.0
+tx_amplitude=0.25
+rx_gain_db=20.0
 hardware_access=false
 ```
 
-- [ ] **Step 6: Run automated tests**
+- [x] **Step 6: Run automated tests**
 
 Run: `python -m unittest tests.test_radar_sources tests.test_radar_processor -v`
 
@@ -613,14 +616,16 @@ Run: `python -m unittest discover -s tests -p "test_*.py" -v`
 
 Expected: fake hardware, calibration, trust tests pass; full suite reports `OK`.
 
-- [ ] **Step 7: Perform device-side check with spatially separated horns**
+Final Task 8 regression after controller cleanup, synchronization-loss tolerance, phase-aligned in-session GUI background calibration, and physically scaled heatmap rendering: `145/145` tests pass, plus `py_compile`, dry-run, and `git diff --check`. Both plots mark each CFAR target with its ID, distance, and trusted velocity state; semicircle range ticks are placed on the bottom baseline, and heatmap rendering is capped at 64 physical columns.
 
-Use low TX gain and no coax direct loopback. Capture empty-room calibration, then add a metal reflector. Verify clip ratio near zero, 64 chirps synchronize, and a repeatable new range peak appears. Accept velocity only after phase diagnostics mark it trusted.
+- [x] **Step 7: Perform device-side check with spatially separated horns**
 
-- [ ] **Step 8: Commit and push only after automated and device-side checks pass**
+Use low TX gain and no coax direct loopback. Capture an empty-room control, then add a metal reflector. Verify clip ratio near zero, 64 chirps synchronize, and a repeatable new range peak appears. Final acceptance used a 20 cm corner reflector at about 8 m: three of three frames synchronized without clipping, the first non-DC range cell increased about 8.1 dB versus the empty-room capture, and velocity remained explicitly untrusted.
+
+- [x] **Step 8: Commit and push only after automated and device-side checks pass**
 
 ```powershell
-git add python_sdr_loopback/sdr_loopback/radar/sources.py python_sdr_loopback/sdr_loopback/radar/calibration.py python_sdr_loopback/scripts/run_fmcw_radar.py python_sdr_loopback/tests/test_radar_sources.py python_sdr_loopback/tests/test_radar_processor.py
+git add docs/superpowers/plans/2026-07-14-fmcw-synthetic-radar-mvp.md docs/superpowers/2026-07-15-fmcw-radar-mvp-overall-report.zh-CN.md python_sdr_loopback/sdr_loopback/radar/sources.py python_sdr_loopback/sdr_loopback/radar/calibration.py python_sdr_loopback/sdr_loopback/radar/controller.py python_sdr_loopback/sdr_loopback/radar/detector.py python_sdr_loopback/sdr_loopback/radar/models.py python_sdr_loopback/sdr_loopback/radar/processor.py python_sdr_loopback/sdr_loopback/radar/storage.py python_sdr_loopback/sdr_loopback/radar/synchronizer.py python_sdr_loopback/sdr_loopback/radar/ui.py python_sdr_loopback/scripts/run_fmcw_radar.py python_sdr_loopback/scripts/sdr_video_gui.py python_sdr_loopback/scripts/diagnose_e310_tx.py python_sdr_loopback/scripts/run_fmcw_tx_burst.py python_sdr_loopback/tests/test_radar_sources.py python_sdr_loopback/tests/test_radar_processor.py python_sdr_loopback/tests/test_radar_controller.py python_sdr_loopback/tests/test_radar_cli.py python_sdr_loopback/tests/test_radar_storage.py python_sdr_loopback/tests/test_radar_ui.py
 git commit -m "Add E310 FMCW CPI acquisition"
 git push origin python-feature/fmcw-v0
 ```
