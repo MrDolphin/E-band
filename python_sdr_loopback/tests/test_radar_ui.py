@@ -2,6 +2,7 @@ import unittest
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -12,17 +13,23 @@ import numpy as np
 from sdr_loopback.radar.config import RadarConfig
 from scripts.sdr_video_gui import SdrVideoGui, create_radar_runtime
 from sdr_loopback.radar.models import RadarCapture, RadarDiagnostics, RadarFrame, RadarTarget
+from sdr_loopback.radar.sources import E310RadioConfig
 from sdr_loopback.radar.storage import save_capture
+from sdr_loopback.radar.synchronizer import ChirpSyncError
 from sdr_loopback.radar.ui import (
     RadarDashboard,
+    axis_cell_edges,
     axis_ticks,
+    downsample_axis_edges,
     downsample_heatmap,
     dashboard_column_options,
     equal_dashboard_widths,
     format_derived_config,
     format_diagnostics,
+    format_plot_target,
     format_target,
     heatmap_plot_bounds,
+    heatmap_color_limits,
     orient_heatmap_for_canvas,
     radar_xy,
     radar_config_from_values,
@@ -73,9 +80,23 @@ class RadarUiTests(unittest.TestCase):
         rings, zero_tick = semicircle_label_layout(210.0, 250.0, 190.0, 50.0)
 
         self.assertEqual(tuple(rings), (10, 20, 30, 40, 50))
-        self.assertEqual(rings[50][2], "sw")
+        self.assertEqual(rings[50][2], "n")
+        self.assertGreater(rings[50][1], 250.0)
         self.assertEqual(zero_tick[2], "center")
         self.assertGreaterEqual(rings[50][0] - zero_tick[0], 30.0)
+
+    def test_plot_target_label_contains_range_and_only_trusted_velocity(self):
+        trusted = RadarTarget(
+            "T01", 14.05, 1.25, None, 20.0, -10.0, 2, 3, 0.8, 1.0,
+            velocity_confidence=0.9, velocity_trusted=True,
+        )
+        untrusted = RadarTarget(
+            "T02", 7.03, 0.0, None, 18.0, -12.0, 1, 3, 0.7, 1.0,
+            velocity_confidence=0.0, velocity_trusted=False,
+        )
+
+        self.assertEqual(format_plot_target(trusted), "T01  14.05 m / +1.25 m/s")
+        self.assertEqual(format_plot_target(untrusted), "T02  7.03 m / 速度不可信")
 
     def test_heatmap_downsampling_preserves_visible_grid_and_peaks(self):
         values = np.zeros((64, 130), dtype=float)
@@ -90,6 +111,26 @@ class RadarUiTests(unittest.TestCase):
             (32, 64),
         )
 
+        boundary_peak = np.zeros((1, 130), dtype=float)
+        boundary_peak[0, 2] = 27.0
+        pooled = downsample_heatmap(boundary_peak, rows=1, columns=64)
+        self.assertEqual(np.count_nonzero(pooled), 1)
+
+    def test_axis_edges_downsampling_uses_original_nonoverlapping_bin_edges(self):
+        centers = np.arange(130, dtype=float)
+
+        edges = downsample_axis_edges(
+            centers,
+            count=64,
+            minimum=0.0,
+            maximum=130.0,
+        )
+
+        self.assertEqual(edges.shape, (65,))
+        self.assertTrue(np.all(np.diff(edges) > 0.0))
+        np.testing.assert_allclose(edges[:3], [0.0, 2.5, 5.5])
+        self.assertEqual(edges[-1], 130.0)
+
     def test_heatmap_orientation_puts_positive_velocity_above_negative(self):
         velocity_ordered = np.array([[-4.0, -3.0], [3.0, 4.0]])
 
@@ -97,6 +138,29 @@ class RadarUiTests(unittest.TestCase):
 
         np.testing.assert_array_equal(displayed[0], [3.0, 4.0])
         np.testing.assert_array_equal(displayed[-1], [-4.0, -3.0])
+
+    def test_range_cell_edges_use_physical_fft_midpoints(self):
+        edges = axis_cell_edges(
+            np.array([0.0, 7.03, 14.05, 21.08]),
+            minimum=0.0,
+            maximum=25.0,
+        )
+
+        np.testing.assert_allclose(
+            edges,
+            [0.0, 3.515, 10.54, 17.565, 25.0],
+            atol=1e-6,
+        )
+
+    def test_heatmap_color_scale_is_anchored_to_noise_floor(self):
+        floor, ceiling = heatmap_color_limits(
+            np.array([[-120.0, -80.0, -20.0]]),
+            noise_floor_db=-92.0,
+            dynamic_range_db=30.0,
+        )
+
+        self.assertEqual(floor, -92.0)
+        self.assertEqual(ceiling, -62.0)
 
     def test_heatmap_bounds_fit_a_narrow_canvas_without_losing_cell_grid(self):
         left, top, right, bottom = heatmap_plot_bounds(360, 220)
@@ -133,6 +197,13 @@ class RadarUiTests(unittest.TestCase):
         for expected in ("T1", "25.00 m", "-1.50 m/s", "方位角未测量", "18.2 dB", "91%"):
             with self.subTest(expected=expected):
                 self.assertIn(expected, row)
+
+        untrusted = RadarTarget(
+            "T2", 25.0, -1.5, None, 18.2, -12.0, 4, 7, 0.91, 3.0,
+            velocity_confidence=0.0, velocity_trusted=False,
+        )
+        self.assertIn("速度不可信", format_target(untrusted))
+        self.assertNotIn("-1.50 m/s", format_target(untrusted))
 
     def test_diagnostics_and_derived_values_are_chinese_and_config_owned(self):
         diagnostics = type(
@@ -235,7 +306,12 @@ class RadarUiTests(unittest.TestCase):
 
         gui = SimpleNamespace(
             process=Process(),
-            radar_controller=SimpleNamespace(stop=lambda: calls.append("radar")),
+            radar_controller=SimpleNamespace(
+                stop=lambda: calls.append("radar"),
+                status=lambda: SimpleNamespace(
+                    running=False, cleanup_complete=True
+                ),
+            ),
             cancel_source_preview_schedule=lambda: calls.append("cancel-preview"),
             stop_source_preview=lambda: calls.append("stop-preview"),
             destroy=lambda: calls.append("destroy"),
@@ -245,10 +321,189 @@ class RadarUiTests(unittest.TestCase):
 
         self.assertEqual(
             calls,
-            ["cancel-preview", "stop-preview", "terminate", "wait", "kill", "wait", "radar", "destroy"],
+            ["cancel-preview", "stop-preview", "terminate", "wait", "kill", "wait", "destroy"],
         )
         self.assertIsNone(gui.process)
         self.assertIsNone(gui.radar_controller)
+
+    def test_window_close_waits_for_radar_cleanup_before_destroying(self):
+        calls = []
+        controller = SimpleNamespace(
+            stop=lambda: calls.append("stop-radar"),
+            status=lambda: SimpleNamespace(running=True, cleanup_complete=False),
+        )
+        gui = SimpleNamespace(
+            process=None,
+            radar_controller=controller,
+            cancel_source_preview_schedule=lambda: calls.append("cancel-preview"),
+            stop_source_preview=lambda: calls.append("stop-preview"),
+            radar_status_var=SimpleNamespace(
+                set=lambda value: calls.append(("status", value))
+            ),
+            after=lambda delay, callback: calls.append(("after", delay, callback)),
+            destroy=lambda: calls.append("destroy"),
+        )
+
+        SdrVideoGui.on_close(gui)
+
+        self.assertIs(gui.radar_controller, controller)
+        self.assertNotIn("destroy", calls)
+        self.assertTrue(any(call[:2] == ("after", 100) for call in calls if isinstance(call, tuple)))
+
+    def test_window_close_does_not_block_tk_thread_on_radar_stop(self):
+        controller = SimpleNamespace(
+            stop=lambda: time.sleep(0.2),
+            status=lambda: SimpleNamespace(
+                running=True, cleanup_complete=False
+            ),
+        )
+        gui = SimpleNamespace(
+            process=None,
+            radar_controller=controller,
+            cancel_source_preview_schedule=lambda: None,
+            stop_source_preview=lambda: None,
+            radar_status_var=SimpleNamespace(set=lambda _value: None),
+            after=lambda _delay, _callback: None,
+            destroy=lambda: None,
+        )
+
+        started = time.monotonic()
+        SdrVideoGui.on_close(gui)
+
+        self.assertLess(time.monotonic() - started, 0.1)
+
+    def test_stop_radar_keeps_controller_and_start_disabled_while_cleanup_is_pending(self):
+        class Value:
+            def __init__(self):
+                self.value = ""
+
+            def set(self, value):
+                self.value = value
+
+        class Widget:
+            def __init__(self):
+                self.state = None
+
+            def configure(self, *, state):
+                self.state = state
+
+        controller = SimpleNamespace(
+            stop=lambda: None,
+            status=lambda: SimpleNamespace(
+                running=True,
+                cleanup_complete=False,
+                error=None,
+                shutdown_error="radar worker did not stop before timeout",
+            ),
+        )
+        gui = SimpleNamespace(
+            radar_controller=controller,
+            radar_status_var=Value(),
+            radar_start_button=Widget(),
+            radar_stop_button=Widget(),
+        )
+
+        SdrVideoGui.stop_radar(gui)
+
+        self.assertIs(gui.radar_controller, controller)
+        self.assertEqual(gui.radar_start_button.state, "disabled")
+        self.assertEqual(gui.radar_stop_button.state, "disabled")
+        self.assertIn("停止中", gui.radar_status_var.value)
+
+    def test_poll_releases_controller_after_timed_out_cleanup_finishes(self):
+        status = SimpleNamespace(
+            running=False,
+            cleanup_complete=True,
+            error=None,
+            shutdown_error="radar worker did not stop before timeout",
+            overruns=0,
+        )
+        controller = SimpleNamespace(
+            status=lambda: status,
+            latest_frame=lambda: None,
+        )
+        start_button = SimpleNamespace(state=None)
+        stop_button = SimpleNamespace(state=None)
+        start_button.configure = lambda *, state: setattr(start_button, "state", state)
+        stop_button.configure = lambda *, state: setattr(stop_button, "state", state)
+        radar_status = SimpleNamespace(value="")
+        radar_status.set = lambda value: setattr(radar_status, "value", value)
+        gui = SimpleNamespace(
+            radar_controller=controller,
+            _last_radar_frame_index=None,
+            radar_source_label="E310",
+            radar_status_var=radar_status,
+            radar_start_button=start_button,
+            radar_stop_button=stop_button,
+            after=lambda _delay, _callback: None,
+            poll_radar_controller=lambda: None,
+        )
+
+        SdrVideoGui.poll_radar_controller(gui)
+
+        self.assertIsNone(gui.radar_controller)
+        self.assertEqual(start_button.state, "normal")
+        self.assertEqual(stop_button.state, "disabled")
+        self.assertIn("已停止", radar_status.value)
+
+    def test_poll_keeps_start_disabled_when_worker_stopped_but_cleanup_failed(self):
+        status = SimpleNamespace(
+            running=False,
+            cleanup_complete=False,
+            error="E310 cleanup failed",
+            shutdown_error=None,
+            overruns=0,
+        )
+        controller = SimpleNamespace(status=lambda: status, latest_frame=lambda: None)
+        start_button = SimpleNamespace(state=None)
+        stop_button = SimpleNamespace(state=None)
+        start_button.configure = lambda *, state: setattr(start_button, "state", state)
+        stop_button.configure = lambda *, state: setattr(stop_button, "state", state)
+        radar_status = SimpleNamespace(value="")
+        radar_status.set = lambda value: setattr(radar_status, "value", value)
+        gui = SimpleNamespace(
+            radar_controller=controller,
+            _last_radar_frame_index=None,
+            radar_source_label="E310",
+            radar_status_var=radar_status,
+            radar_start_button=start_button,
+            radar_stop_button=stop_button,
+            after=lambda _delay, _callback: None,
+            poll_radar_controller=lambda: None,
+        )
+
+        SdrVideoGui.poll_radar_controller(gui)
+
+        self.assertIs(gui.radar_controller, controller)
+        self.assertEqual(start_button.state, "disabled")
+        self.assertEqual(stop_button.state, "normal")
+        self.assertIn("清理失败", radar_status.value)
+
+    def test_empty_room_button_starts_in_session_e310_calibration(self):
+        processor = SimpleNamespace(cpi_count=None)
+        processor.begin_background_calibration = lambda *, cpi_count: setattr(
+            processor, "cpi_count", cpi_count
+        )
+        controller = SimpleNamespace(
+            processor=processor,
+            status=lambda: SimpleNamespace(running=True),
+        )
+        radar_status = SimpleNamespace(value="")
+        radar_status.set = lambda value: setattr(radar_status, "value", value)
+        button = SimpleNamespace(state=None)
+        button.configure = lambda *, state: setattr(button, "state", state)
+        gui = SimpleNamespace(
+            radar_controller=controller,
+            radar_source_label="E310",
+            radar_status_var=radar_status,
+            radar_calibrate_button=button,
+        )
+
+        SdrVideoGui.calibrate_radar_background(gui)
+
+        self.assertEqual(processor.cpi_count, 16)
+        self.assertEqual(button.state, "disabled")
+        self.assertIn("0/16", radar_status.value)
 
     def test_display_fields_build_and_validate_radar_config(self):
         values = dict(
@@ -306,6 +561,153 @@ class RadarUiTests(unittest.TestCase):
 
         self.assertEqual(effective_config, replay_config)
         self.assertEqual(controller.processor.config, replay_config)
+
+    def test_e310_runtime_uses_hardware_source_and_correlation_sync(self):
+        config = self.frame.config_snapshot
+        radio_config = E310RadioConfig(
+            tx_gain_db=-20.0,
+            rx_gain_db=20.0,
+            tx_amplitude=0.4,
+        )
+
+        with patch("scripts.sdr_video_gui.E310CpiSource") as source_type:
+            controller, effective_config = create_radar_runtime(
+                "E310", config, None, None, radio_config
+            )
+
+        source_type.assert_called_once_with(config, radio_config)
+        self.assertIs(controller.source, source_type.return_value)
+        self.assertEqual(controller.processor._synchronizer.mode, "correlation")
+        self.assertEqual(
+            controller._recoverable_processing_errors,
+            (ChirpSyncError,),
+        )
+        self.assertEqual(effective_config, config)
+
+    def test_poll_reports_waiting_for_sync_while_controller_is_running(self):
+        status = SimpleNamespace(
+            running=True,
+            cleanup_complete=False,
+            error="chirp correlation is below the sync threshold",
+            shutdown_error=None,
+            overruns=0,
+        )
+        controller = SimpleNamespace(status=lambda: status, latest_frame=lambda: None)
+        start_button = SimpleNamespace(state=None)
+        stop_button = SimpleNamespace(state=None)
+        start_button.configure = lambda *, state: setattr(start_button, "state", state)
+        stop_button.configure = lambda *, state: setattr(stop_button, "state", state)
+        radar_status = SimpleNamespace(value="")
+        radar_status.set = lambda value: setattr(radar_status, "value", value)
+        gui = SimpleNamespace(
+            radar_controller=controller,
+            _last_radar_frame_index=None,
+            radar_source_label="E310",
+            radar_status_var=radar_status,
+            radar_start_button=start_button,
+            radar_stop_button=stop_button,
+            after=lambda _delay, _callback: None,
+            poll_radar_controller=lambda: None,
+        )
+
+        SdrVideoGui.poll_radar_controller(gui)
+
+        self.assertIs(gui.radar_controller, controller)
+        self.assertEqual(start_button.state, "disabled")
+        self.assertEqual(stop_button.state, "normal")
+        self.assertIn("等待同步", radar_status.value)
+        self.assertNotIn("清理失败", radar_status.value)
+
+    def test_poll_prioritizes_shutdown_timeout_over_sync_error(self):
+        status = SimpleNamespace(
+            running=True,
+            cleanup_complete=False,
+            error="chirp correlation is below the sync threshold",
+            shutdown_error="radar worker did not stop before timeout",
+            overruns=0,
+        )
+        controller = SimpleNamespace(status=lambda: status, latest_frame=lambda: None)
+        start_button = SimpleNamespace(state=None)
+        stop_button = SimpleNamespace(state=None)
+        start_button.configure = lambda *, state: setattr(start_button, "state", state)
+        stop_button.configure = lambda *, state: setattr(stop_button, "state", state)
+        radar_status = SimpleNamespace(value="")
+        radar_status.set = lambda value: setattr(radar_status, "value", value)
+        gui = SimpleNamespace(
+            radar_controller=controller,
+            _last_radar_frame_index=None,
+            radar_source_label="E310",
+            radar_status_var=radar_status,
+            radar_start_button=start_button,
+            radar_stop_button=stop_button,
+            after=lambda _delay, _callback: None,
+            poll_radar_controller=lambda: None,
+        )
+
+        SdrVideoGui.poll_radar_controller(gui)
+
+        self.assertIn("停止中", radar_status.value)
+        self.assertNotIn("等待同步", radar_status.value)
+        self.assertEqual(start_button.state, "disabled")
+        self.assertEqual(stop_button.state, "disabled")
+
+    def test_calibration_timeout_remains_visible_during_sync_errors(self):
+        calibration = SimpleNamespace(
+            active=True,
+            collected_cpis=0,
+            required_cpis=16,
+            ready=False,
+            error=None,
+        )
+
+        class Processor:
+            def background_calibration_status(self):
+                return calibration
+
+            def cancel_background_calibration(self, reason):
+                calibration.active = False
+                calibration.error = reason
+                return True
+
+        status = SimpleNamespace(
+            running=True,
+            cleanup_complete=False,
+            error="chirp correlation is below the sync threshold",
+            shutdown_error=None,
+            overruns=0,
+        )
+        controller = SimpleNamespace(
+            processor=Processor(),
+            status=lambda: status,
+            latest_frame=lambda: None,
+        )
+        radar_status = SimpleNamespace(value="")
+        radar_status.set = lambda value: setattr(radar_status, "value", value)
+        start_button = SimpleNamespace(state=None)
+        stop_button = SimpleNamespace(state=None)
+        calibrate_button = SimpleNamespace(state=None)
+        for button in (start_button, stop_button, calibrate_button):
+            button.configure = lambda *, state, target=button: setattr(
+                target, "state", state
+            )
+        gui = SimpleNamespace(
+            radar_controller=controller,
+            _last_radar_frame_index=None,
+            _radar_calibration_deadline=0.0,
+            radar_source_label="E310",
+            radar_status_var=radar_status,
+            radar_start_button=start_button,
+            radar_stop_button=stop_button,
+            radar_calibrate_button=calibrate_button,
+            after=lambda _delay, _callback: None,
+            poll_radar_controller=lambda: None,
+        )
+
+        SdrVideoGui.poll_radar_controller(gui)
+
+        self.assertIn("空场标定未应用", radar_status.value)
+        self.assertIn("等待同步", radar_status.value)
+        self.assertEqual(calibrate_button.state, "normal")
 
     def test_gui_replay_start_ignores_invalid_display_and_synthetic_fields(self):
         replay_config = RadarConfig(
@@ -378,6 +780,70 @@ class RadarUiTests(unittest.TestCase):
         self.assertEqual(gui.radar_controller.processor.config, replay_config)
         self.assertEqual(gui.radar_source_label, "IQ回放")
         self.assertIn("回放配置", gui.radar_derived_var.get())
+
+    def test_gui_e310_start_passes_verified_radio_settings_and_ignores_target_fields(self):
+        class Value:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        class Widget:
+            def configure(self, **_values):
+                pass
+
+        value = Value
+        gui = SimpleNamespace(
+            radar_controller=None,
+            radar_source_var=value("E310"),
+            radar_replay_path_var=value(""),
+            radar_carrier_ghz_var=value("76"),
+            radar_sample_rate_msps_var=value("30"),
+            radar_bandwidth_mhz_var=value("20"),
+            radar_active_us_var=value("128"),
+            radar_idle_us_var=value("16"),
+            radar_chirp_count_var=value("64"),
+            radar_cfar_db_var=value("12"),
+            radar_display_range_var=value("50"),
+            radar_tx_channel_var=value("0"),
+            radar_rx_channel_var=value("0"),
+            radar_tx_gain_var=value("-20"),
+            radar_rx_gain_var=value("20"),
+            radar_tx_amplitude_var=value("0.40"),
+            radar_target_range_var=value("not-a-number"),
+            radar_target_velocity_var=value("not-a-number"),
+            radar_target_snr_var=value("not-a-number"),
+            radar_status_var=value(""),
+            radar_derived_var=value(""),
+            radar_start_button=Widget(),
+            radar_stop_button=Widget(),
+            radar_tab=object(),
+            notebook=SimpleNamespace(select=lambda _tab: None),
+        )
+        gui.build_radar_config = lambda: SdrVideoGui.build_radar_config(gui)
+        controller = SimpleNamespace(start=lambda: None)
+
+        with patch(
+            "scripts.sdr_video_gui.create_radar_runtime",
+            return_value=(controller, gui.build_radar_config()),
+        ) as create_runtime, patch("scripts.sdr_video_gui.messagebox.showerror") as showerror:
+            SdrVideoGui.start_radar(gui)
+
+        showerror.assert_not_called()
+        args = create_runtime.call_args.args
+        self.assertEqual(args[:4], ("E310", gui.build_radar_config(), None, None))
+        radio_config = args[4]
+        self.assertEqual(radio_config.tx_port, "B")
+        self.assertEqual(radio_config.rx_port, "B_BALANCED")
+        self.assertEqual(radio_config.tx_channel, 0)
+        self.assertEqual(radio_config.rx_channel, 0)
+        self.assertEqual(radio_config.tx_gain_db, -20.0)
+        self.assertEqual(radio_config.rx_gain_db, 20.0)
+        self.assertEqual(radio_config.tx_amplitude, 0.4)
 
     def test_gui_replay_start_reports_a_stable_invalid_path_error(self):
         value = lambda text: SimpleNamespace(get=lambda: text)

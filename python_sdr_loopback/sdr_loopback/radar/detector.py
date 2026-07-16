@@ -269,7 +269,9 @@ def detect_targets(
     timestamp: float,
     diagnostics: Optional[object] = None,
     sync_score: Optional[float] = None,
+    adjacent_chirp_correlation: Optional[float] = None,
     phase_consistency: Optional[float] = None,
+    velocity_trust_threshold: float = 0.5,
 ) -> tuple[RadarTarget, ...]:
     """Convert clustered CFAR cells into frame-local measured targets."""
     values = np.asarray(power, dtype=float)
@@ -287,8 +289,20 @@ def detect_targets(
         if phase_consistency is None:
             phase_consistency = float(getattr(diagnostics, "phase_consistency"))
     sync_quality = float(np.clip(1.0 if sync_score is None else sync_score, 0.0, 1.0))
+    chirp_quality = float(
+        np.clip(
+            1.0 if adjacent_chirp_correlation is None else adjacent_chirp_correlation,
+            0.0,
+            1.0,
+        )
+    )
     phase_quality = float(
         np.clip(1.0 if phase_consistency is None else phase_consistency, 0.0, 1.0)
+    )
+    velocity_trusted = (
+        sync_quality >= velocity_trust_threshold
+        and chirp_quality >= velocity_trust_threshold
+        and phase_quality >= velocity_trust_threshold
     )
     threshold_scale = 10.0 ** (config.cfar_threshold_db / 10.0)
 
@@ -318,6 +332,12 @@ def detect_targets(
                 "range_bin": int(range_bin),
                 "doppler_bin": int(doppler_bin),
                 "confidence": confidence,
+                "velocity_confidence": (
+                    float(min(sync_quality, chirp_quality, phase_quality))
+                    if velocity_trusted
+                    else 0.0
+                ),
+                "velocity_trusted": velocity_trusted,
                 "timestamp": float(timestamp),
             }
         )

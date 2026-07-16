@@ -4,10 +4,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from sdr_loopback.radar.config import RadarConfig
 from sdr_loopback.radar.simulator import simulate_capture
 from sdr_loopback.radar.storage import save_capture
+from scripts import run_fmcw_radar
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -76,9 +78,11 @@ class RadarCliTests(unittest.TestCase):
     def test_radar_runner_processes_a_finite_synthetic_frame(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "run"
+            captures = output / "captures"
             completed = self.run_script(
                 "run_fmcw_radar.py",
                 "--output-dir", output,
+                "--capture-dir", captures,
                 "--frames", "1",
                 "--target", "22.5,1.2,18",
                 "--seed", "7",
@@ -86,11 +90,73 @@ class RadarCliTests(unittest.TestCase):
             )
             metrics = (output / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
             result_exists = (output / "result.json").is_file()
+            capture_exists = (captures / "capture-000000.npz").is_file()
 
         values = dict(line.split("=", 1) for line in completed.stdout.splitlines())
         self.assertEqual(values["frames_processed"], "1")
         self.assertEqual(len(metrics), 1)
         self.assertTrue(result_exists)
+        self.assertTrue(capture_exists)
+
+    def test_e310_dry_run_reports_explicit_radio_levels(self):
+        completed = self.run_script(
+            "run_fmcw_radar.py",
+            "--source", "e310",
+            "--dry-run",
+            "--tx-gain-db", "-30",
+            "--tx-amplitude", "0.4",
+            "--rx-gain-db", "20",
+        )
+
+        values = dict(line.split("=", 1) for line in completed.stdout.splitlines())
+        self.assertEqual(values["tx_gain_db"], "-30.0")
+        self.assertEqual(values["tx_amplitude"], "0.4")
+        self.assertEqual(values["rx_gain_db"], "20.0")
+
+    def test_e310_open_failure_still_calls_close(self):
+        calls = []
+
+        class Source:
+            def __init__(self, _config, _radio):
+                pass
+
+            def open(self):
+                calls.append("open")
+                raise OSError("open failed")
+
+            def close(self):
+                calls.append("close")
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            sys,
+            "argv",
+            [
+                "run_fmcw_radar.py",
+                "--source",
+                "e310",
+                "--output-dir",
+                directory,
+            ],
+        ), patch.object(run_fmcw_radar, "E310CpiSource", Source):
+            with self.assertRaisesRegex(OSError, "open failed"):
+                run_fmcw_radar.main()
+
+        self.assertEqual(calls, ["open", "close"])
+
+    def test_synthetic_mode_ignores_e310_only_level_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            completed = self.run_script(
+                "run_fmcw_radar.py",
+                "--output-dir", directory,
+                "--frames", "1",
+                "--target", "22.5,0,18",
+                "--tx-gain-db", "0",
+                "--tx-amplitude", "1",
+                "--rx-gain-db", "100",
+                *REDUCED_CONFIG_FLAGS,
+            )
+
+        self.assertIn("frames_processed=1", completed.stdout)
 
     def test_replay_order_heterogeneous_configs_loop_and_exhaustion(self):
         configs = (

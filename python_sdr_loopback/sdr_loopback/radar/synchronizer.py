@@ -17,18 +17,27 @@ class ChirpSyncResult:
     start_sample: int
     chirp_starts: np.ndarray
     correlation: float
+    mean_correlation: float
+    periodic_coherence: float | None
     idle_to_active_db: float
 
 
 class ChirpSynchronizer:
     """Locate one complete CPI using metadata or bounded correlation."""
 
-    _MIN_CORRELATION = 0.8
-    _MAX_IDLE_TO_ACTIVE_DB = -6.0
+    _MIN_CHIRP_CORRELATION = 0.05
+    _MIN_MEAN_CORRELATION = 0.08
+    _MIN_PERIODIC_COHERENCE = 0.0075
 
     def __init__(self, config: RadarConfig, *, mode: str = "known") -> None:
         if mode not in {"known", "correlation"}:
             raise ValueError("mode must be 'known' or 'correlation'")
+        if mode == "correlation" and (
+            config.chirp_count < 2 or config.active_samples < 16
+        ):
+            raise ValueError(
+                "correlation mode requires at least 2 chirps and 16 active samples"
+            )
         self.config = config
         self.mode = mode
 
@@ -64,17 +73,28 @@ class ChirpSynchronizer:
 
         correlations, idle_to_active_db = self._validate_chirps(rx_iq, chirp_starts)
         correlation = float(np.min(correlations))
+        mean_correlation = float(np.mean(correlations))
+        rx_cpi = rx_iq[start_sample : start_sample + self.config.cpi_samples]
+        periodic_coherence = (
+            self._periodic_coherence(rx_cpi)
+            if self.config.chirp_count >= 2
+            else None
+        )
         if self.mode == "correlation":
-            if correlation < self._MIN_CORRELATION:
+            if correlation < self._MIN_CHIRP_CORRELATION:
                 raise ChirpSyncError("chirp correlation is below the sync threshold")
-            if idle_to_active_db > self._MAX_IDLE_TO_ACTIVE_DB:
-                raise ChirpSyncError("idle energy is too high for reliable chirp sync")
+            if mean_correlation < self._MIN_MEAN_CORRELATION:
+                raise ChirpSyncError("mean chirp correlation is below the sync threshold")
+            if periodic_coherence < self._MIN_PERIODIC_COHERENCE:
+                raise ChirpSyncError("chirp periodic coherence is below the sync threshold")
 
         chirp_starts.setflags(write=False)
         return ChirpSyncResult(
             start_sample=start_sample,
             chirp_starts=chirp_starts,
             correlation=correlation,
+            mean_correlation=mean_correlation,
+            periodic_coherence=periodic_coherence,
             idle_to_active_db=idle_to_active_db,
         )
 
@@ -166,3 +186,18 @@ class ChirpSynchronizer:
         ):
             raise ChirpSyncError("idle energy metric must be finite")
         return correlations, float(idle_to_active_db)
+
+    def _periodic_coherence(self, rx_cpi: np.ndarray) -> float:
+        values = np.asarray(rx_cpi, dtype=np.complex128)
+        period = self.config.samples_per_chirp
+        first = values[:-period]
+        second = values[period:]
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            numerator = abs(np.vdot(first, second))
+            denominator = np.sqrt(
+                float(np.vdot(first, first).real * np.vdot(second, second).real)
+            )
+            coherence = numerator / denominator if denominator else 0.0
+        if not np.isfinite(coherence):
+            raise ChirpSyncError("periodic coherence metric must be finite")
+        return float(np.clip(coherence, 0.0, 1.0))

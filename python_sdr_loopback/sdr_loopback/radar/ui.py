@@ -14,6 +14,17 @@ from .config import RadarConfig
 from .models import RadarDiagnostics, RadarTarget
 
 
+def _pool_groups(length: int, count: int) -> tuple[np.ndarray, ...]:
+    if count <= length:
+        return tuple(np.asarray(group) for group in np.array_split(np.arange(length), count))
+    # Upsampling is retained for callers that explicitly request it; rendering
+    # always caps rows/columns at their source dimensions.
+    return tuple(
+        np.asarray([min(length - 1, math.floor(index * length / count))])
+        for index in range(count)
+    )
+
+
 def radar_xy(
     range_m: float,
     azimuth_deg: Optional[float],
@@ -39,20 +50,8 @@ def downsample_heatmap(
     if source.size == 0 or rows <= 0 or columns <= 0:
         raise ValueError("heatmap and output dimensions must be nonempty")
 
-    def groups(length: int, count: int) -> tuple[np.ndarray, ...]:
-        return tuple(
-            np.arange(
-                math.floor(index * length / count),
-                max(
-                    math.floor(index * length / count) + 1,
-                    math.ceil((index + 1) * length / count),
-                ),
-            )
-            for index in range(count)
-        )
-
-    row_groups = groups(source.shape[0], rows)
-    column_groups = groups(source.shape[1], columns)
+    row_groups = _pool_groups(source.shape[0], rows)
+    column_groups = _pool_groups(source.shape[1], columns)
     return np.asarray(
         [
             [float(np.max(source[np.ix_(row_group, column_group)])) for column_group in column_groups]
@@ -66,6 +65,71 @@ def axis_ticks(minimum: float, maximum: float, count: int) -> tuple[float, ...]:
     if count < 2:
         raise ValueError("tick count must be at least two")
     return tuple(float(value) for value in np.linspace(minimum, maximum, count))
+
+
+def axis_cell_edges(
+    centers: np.ndarray,
+    *,
+    minimum: float,
+    maximum: float,
+) -> np.ndarray:
+    """Return physical cell edges from strictly ascending FFT-bin centers."""
+    values = np.asarray(centers, dtype=float)
+    if (
+        values.ndim != 1
+        or values.size == 0
+        or not np.all(np.isfinite(values))
+        or not np.isfinite(minimum)
+        or not np.isfinite(maximum)
+        or maximum <= minimum
+        or (values.size > 1 and not np.all(np.diff(values) > 0.0))
+    ):
+        raise ValueError("axis centers and bounds must be finite and increasing")
+    edges = np.empty(values.size + 1, dtype=float)
+    if values.size == 1:
+        edges[:] = (minimum, maximum)
+        return edges
+    edges[1:-1] = (values[:-1] + values[1:]) / 2.0
+    edges[0] = minimum
+    edges[-1] = maximum
+    return np.clip(edges, minimum, maximum)
+
+
+def downsample_axis_edges(
+    centers: np.ndarray,
+    *,
+    count: int,
+    minimum: float,
+    maximum: float,
+) -> np.ndarray:
+    """Pool bins into disjoint groups while preserving their original boundaries."""
+    values = np.asarray(centers, dtype=float)
+    if count <= 0 or count > values.size:
+        raise ValueError("axis edge count must be positive and no larger than the input")
+    source_edges = axis_cell_edges(values, minimum=minimum, maximum=maximum)
+    groups = _pool_groups(values.size, count)
+    return np.asarray(
+        [source_edges[groups[0][0]]]
+        + [source_edges[group[-1] + 1] for group in groups],
+        dtype=float,
+    )
+
+
+def heatmap_color_limits(
+    values: np.ndarray,
+    *,
+    noise_floor_db: float,
+    dynamic_range_db: float = 30.0,
+) -> tuple[float, float]:
+    """Use a stable noise-referenced scale instead of per-frame percentile stretching."""
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if not np.isfinite(dynamic_range_db) or dynamic_range_db <= 0.0:
+        raise ValueError("dynamic_range_db must be positive and finite")
+    floor = float(noise_floor_db)
+    if not np.isfinite(floor):
+        floor = float(np.median(finite)) if finite.size else -120.0
+    return floor, floor + float(dynamic_range_db)
 
 
 def orient_heatmap_for_canvas(values: np.ndarray) -> np.ndarray:
@@ -114,13 +178,12 @@ def semicircle_label_layout(
     radius: float,
     max_range_m: float,
 ) -> tuple[dict[int, tuple[float, float, str]], tuple[float, float, str]]:
-    """Place range labels on a slight bearing, leaving boresight tick clear."""
-    bearing = math.radians(12.0)
+    """Place range labels on the bottom +90-degree radial axis."""
     rings = {
         ring_m: (
-            origin_x + ring_radius * math.sin(bearing),
-            origin_y - ring_radius * math.cos(bearing),
-            "sw",
+            origin_x + ring_radius,
+            origin_y + 6.0,
+            "n",
         )
         for ring_m in (10, 20, 30, 40, 50)
         if (ring_radius := radius * ring_m / max_range_m) <= radius + 0.5
@@ -140,12 +203,24 @@ def format_target(target: RadarTarget) -> str:
         (
             target.target_id,
             f"{target.range_m:.2f} m",
-            f"{target.radial_velocity_mps:+.2f} m/s",
+            format_velocity(target),
             angle,
             f"{target.snr_db:.1f} dB",
             f"{target.confidence:.0%}",
         )
     )
+
+
+def format_plot_target(target: RadarTarget) -> str:
+    """Compact label shared by radar and range-Doppler target markers."""
+    return f"{target.target_id}  {target.range_m:.2f} m / {format_velocity(target)}"
+
+
+def format_velocity(target: RadarTarget) -> str:
+    """Hide precise Doppler values when phase diagnostics do not support them."""
+    if not target.velocity_trusted:
+        return "速度不可信"
+    return f"{target.radial_velocity_mps:+.2f} m/s"
 
 
 def format_diagnostics(diagnostics: RadarDiagnostics) -> str:
@@ -280,7 +355,7 @@ class SemicircleRadarPane(ttk.LabelFrame):
             canvas.create_text(
                 label_x,
                 label_y,
-                text=f"{ring_m} m",
+                text=f"{ring_m}",
                 anchor=label_anchor,
                 fill="#9bc7dd",
             )
@@ -300,7 +375,12 @@ class SemicircleRadarPane(ttk.LabelFrame):
                 fill="#b9d9e8",
             )
         canvas.create_text(width / 2.0, 10, text="方位角", fill="#dcecf4")
-        canvas.create_text(12, height / 2.0, text="径向距离 (m)", anchor="w", fill="#dcecf4")
+        canvas.create_text(
+            origin_x + radius / 2.0,
+            height - 7,
+            text="距离刻度 (m)",
+            fill="#dcecf4",
+        )
         canvas.create_oval(origin_x - 4, origin_y - 4, origin_x + 4, origin_y + 4, fill="#f4d35e")
         for target in frame.targets:
             x, y = radar_xy(target.range_m, target.azimuth_deg, radius, max_range)
@@ -316,7 +396,7 @@ class SemicircleRadarPane(ttk.LabelFrame):
             canvas.create_text(
                 target_x + 8,
                 target_y - 7,
-                text=target.target_id,
+                text=format_plot_target(target),
                 anchor="sw",
                 fill="white",
             )
@@ -346,24 +426,47 @@ class RangeDopplerPane(ttk.LabelFrame):
         left, top, right, bottom = heatmap_plot_bounds(width, height)
         range_mask = frame.range_axis_m <= frame.config_snapshot.max_display_range_m
         values = frame.range_doppler_db[:, range_mask]
+        range_centers = np.asarray(frame.range_axis_m)[range_mask]
         if values.shape[1] == 0:
             values = frame.range_doppler_db[:, :1]
-        cells = orient_heatmap_for_canvas(
-            downsample_heatmap(values, rows=32, columns=64)
+            range_centers = np.asarray(frame.range_axis_m)[:1]
+        column_count = min(64, values.shape[1])
+        range_edges = downsample_axis_edges(
+            range_centers,
+            count=column_count,
+            minimum=0.0,
+            maximum=frame.config_snapshot.max_display_range_m,
         )
-        finite = cells[np.isfinite(cells)]
-        floor = float(np.percentile(finite, 5)) if finite.size else -120.0
-        ceiling = float(np.percentile(finite, 99)) if finite.size else 0.0
+        cells = orient_heatmap_for_canvas(
+            downsample_heatmap(
+                values,
+                rows=min(32, values.shape[0]),
+                columns=column_count,
+            )
+        )
+        floor, ceiling = heatmap_color_limits(
+            cells,
+            noise_floor_db=float(frame.diagnostics.noise_floor_db),
+        )
         normalized = np.clip((cells - floor) / max(ceiling - floor, 1e-9), 0.0, 1.0)
         rgb = np.empty((*normalized.shape, 3), dtype=np.uint8)
         rgb[..., 0] = np.clip(510.0 * normalized - 255.0, 0.0, 255.0)
         rgb[..., 1] = np.clip(510.0 * np.minimum(normalized, 1.0 - normalized), 0.0, 255.0)
         rgb[..., 2] = np.clip(255.0 - 510.0 * normalized, 0.0, 255.0)
-        image = Image.fromarray(rgb, mode="RGB").resize(
-            (max(1, right - left), max(1, bottom - top)), Image.Resampling.NEAREST
-        )
-        self._photo = ImageTk.PhotoImage(image)
-        canvas.create_image(left, top, anchor="nw", image=self._photo)
+        plot_width = right - left
+        plot_height = bottom - top
+        row_count, column_count = cells.shape
+        for row in range(row_count):
+            y0 = top + plot_height * row / row_count
+            y1 = top + plot_height * (row + 1) / row_count
+            for column in range(column_count):
+                x0 = left + plot_width * range_edges[column] / frame.config_snapshot.max_display_range_m
+                x1 = left + plot_width * range_edges[column + 1] / frame.config_snapshot.max_display_range_m
+                color = "#{:02x}{:02x}{:02x}".format(*rgb[row, column])
+                canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline="")
+        for edge in range_edges:
+            x = left + plot_width * edge / frame.config_snapshot.max_display_range_m
+            canvas.create_line(x, top, x, bottom, fill="#27445a")
         canvas.create_rectangle(left, top, right, bottom, outline="#d5e8f0")
         for value in axis_ticks(0.0, frame.config_snapshot.max_display_range_m, 6):
             x = left + (right - left) * value / frame.config_snapshot.max_display_range_m
@@ -378,7 +481,17 @@ class RangeDopplerPane(ttk.LabelFrame):
             y = bottom - (bottom - top) * (value - velocity_min) / max(velocity_max - velocity_min, 1e-9)
             canvas.create_line(left - 4, y, left, y, fill="white")
             canvas.create_text(left - 7, y, text=f"{value:.1f}", anchor="e", fill="white")
-        canvas.create_text((left + right) / 2.0, height - 8, text="距离 (m)", fill="white")
+        range_spacing = (
+            float(np.median(np.diff(range_centers)))
+            if range_centers.size > 1
+            else frame.config_snapshot.range_resolution_m
+        )
+        canvas.create_text(
+            (left + right) / 2.0,
+            height - 8,
+            text=f"距离 (m；FFT单元≈{range_spacing:.2f} m)",
+            fill="white",
+        )
         canvas.create_text(
             title_layout[0],
             title_layout[1],
@@ -387,6 +500,28 @@ class RangeDopplerPane(ttk.LabelFrame):
             angle=title_layout[3],
             fill="white",
         )
+        for target in frame.targets:
+            if not 0.0 <= target.range_m <= frame.config_snapshot.max_display_range_m:
+                continue
+            x = left + plot_width * target.range_m / frame.config_snapshot.max_display_range_m
+            y = bottom - plot_height * (
+                target.radial_velocity_mps - velocity_min
+            ) / max(velocity_max - velocity_min, 1e-9)
+            canvas.create_rectangle(
+                x - 5,
+                y - 5,
+                x + 5,
+                y + 5,
+                outline="white",
+                width=2,
+            )
+            canvas.create_text(
+                x + 8,
+                y - 7,
+                text=format_plot_target(target),
+                anchor="sw",
+                fill="white",
+            )
 
 
 class TargetTablePane(ttk.LabelFrame):
@@ -414,7 +549,7 @@ class TargetTablePane(ttk.LabelFrame):
                 values=(
                     target.target_id,
                     f"{target.range_m:.2f} m",
-                    f"{target.radial_velocity_mps:+.2f} m/s",
+                    format_velocity(target),
                     angle,
                     f"{target.snr_db:.1f} dB",
                     f"{target.confidence:.0%}",

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from sdr_loopback.radar.controller import RadarController
+from sdr_loopback.radar.config import RadarConfig
+from sdr_loopback.radar.sources import E310CpiSource, E310RadioConfig
 
 
 class FakeSource:
@@ -110,12 +112,67 @@ class BlockingCloseSource(FakeSource):
         self.closed.set()
 
 
+class FailOnceCloseSource(FakeSource):
+    def close(self):
+        self.close_calls += 1
+        if self.close_calls == 1:
+            raise OSError("transient close failure")
+        self.closed.set()
+
+
+class FailTwiceCloseSource(FakeSource):
+    def close(self):
+        self.close_calls += 1
+        if self.close_calls <= 2:
+            raise OSError("persistent close failure")
+        self.closed.set()
+
+
 class RadarControllerTests(unittest.TestCase):
     def test_cpi_period_must_be_positive(self):
         source = FakeSource()
         processor = FakeProcessor()
         with self.assertRaisesRegex(ValueError, "cpi_period_s must be positive"):
             RadarController(source, processor, 0.0)
+
+    def test_e310_stop_timeout_eventually_cleans_after_blocking_rx_returns(self):
+        from tests.test_radar_sources import FakeAd9361
+
+        device = FakeAd9361("ip:192.168.1.10")
+        entered = threading.Event()
+        release = threading.Event()
+        original_rx = device.rx
+
+        def blocking_rx():
+            entered.set()
+            release.wait(timeout=3.0)
+            return original_rx()
+
+        device.rx = blocking_rx
+        adi = SimpleNamespace(ad9361=lambda uri: device)
+        source = E310CpiSource(
+            RadarConfig(),
+            E310RadioConfig(pre_tx_settle_s=0.0, settle_s=0.0),
+            adi_module=adi,
+        )
+        controller = RadarController(source, FakeProcessor(result=object()), 0.001)
+        controller.start()
+        self.assertTrue(entered.wait(0.5))
+
+        controller.stop()
+        self.assertEqual(
+            controller.status().shutdown_error,
+            "radar worker did not stop before timeout",
+        )
+        release.set()
+        deadline = time.monotonic() + 1.0
+        while source._sdr is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        self.assertIsNone(source._sdr)
+        self.assertGreaterEqual(device.dds_disable_count, 1)
+        self.assertGreaterEqual(device.tx_destroy_count, 1)
+        self.assertGreaterEqual(device.rx_destroy_count, 1)
 
     def test_start_opens_once_processes_and_closes_on_exhaustion(self):
         frame = SimpleNamespace(frame_index=1)
@@ -138,6 +195,65 @@ class RadarControllerTests(unittest.TestCase):
             status.running = True
         with self.assertRaisesRegex(RuntimeError, "already been started"):
             controller.start()
+
+    def test_transient_close_failure_is_retried_before_shutdown_completes(self):
+        source = FailOnceCloseSource()
+        controller = RadarController(source, FakeProcessor(), 0.01)
+
+        controller.start()
+
+        self.assertTrue(source.closed.wait(0.5))
+        deadline = time.monotonic() + 0.5
+        while controller.status().running and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(source.close_calls, 2)
+        self.assertFalse(controller.status().running)
+
+    def test_recoverable_processing_error_skips_frame_and_continues(self):
+        frame = SimpleNamespace(frame_index=2)
+        source = FakeSource([object(), object()])
+
+        class Processor:
+            def __init__(self):
+                self.calls = 0
+
+            def process(self, _capture):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ValueError("temporary sync loss")
+                return frame
+
+        controller = RadarController(
+            source,
+            Processor(),
+            0.01,
+            recoverable_processing_errors=(ValueError,),
+        )
+
+        controller.start()
+
+        self.assertTrue(source.closed.wait(0.5))
+        self.assertIs(controller.latest_frame(), frame)
+        self.assertIsNone(controller.status().error)
+        self.assertEqual(source.close_calls, 1)
+
+    def test_cleanup_state_stays_incomplete_until_failed_close_is_retried(self):
+        source = FailTwiceCloseSource()
+        controller = RadarController(source, FakeProcessor(), 0.01)
+        controller.start()
+        deadline = time.monotonic() + 0.5
+        while controller.status().running and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        self.assertFalse(controller.status().running)
+        self.assertFalse(controller.status().cleanup_complete)
+        self.assertEqual(source.close_calls, 2)
+
+        controller.stop()
+
+        self.assertTrue(source.closed.wait(0.5))
+        self.assertTrue(controller.status().cleanup_complete)
+        self.assertEqual(source.close_calls, 3)
 
     def test_concurrent_start_and_stop_never_join_an_unstarted_worker(self):
         real_thread = threading.Thread

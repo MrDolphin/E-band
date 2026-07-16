@@ -19,6 +19,7 @@ def save_capture(path: str | Path, capture: RadarCapture) -> None:
         "rx_iq": np.asarray(capture.rx_iq, dtype=np.complex64),
         "radar_config_json": json.dumps(asdict(capture.config)),
         "capture_timestamp": float(capture.timestamp),
+        "chirp_start_sample": int(capture.chirp_start_sample),
     }
     if capture.truth_targets:
         fields["truth_targets_json"] = json.dumps(
@@ -74,16 +75,22 @@ def load_capture(path: str | Path) -> RadarCapture:
             raise ValueError("invalid truth_targets_json") from error
         tx_iq = np.asarray(archive["tx_iq"])
         rx_iq = np.asarray(archive["rx_iq"])
-        if tx_iq.ndim != 1 or rx_iq.ndim != 1 or tx_iq.size != rx_iq.size:
+        if tx_iq.ndim != 1 or rx_iq.ndim != 1 or rx_iq.size < tx_iq.size:
             raise ValueError("tx_iq and rx_iq lengths do not match")
         if tx_iq.size != config.cpi_samples:
             raise ValueError("IQ sample count does not match radar config")
+        chirp_start_sample = (
+            archive["chirp_start_sample"].item()
+            if "chirp_start_sample" in archive.files
+            else 0
+        )
         return RadarCapture(
             timestamp=float(archive["capture_timestamp"].item()),
             config=config,
             tx_iq=np.asarray(tx_iq, dtype=np.complex64),
             rx_iq=np.asarray(rx_iq, dtype=np.complex64),
             truth_targets=truth,
+            chirp_start_sample=chirp_start_sample,
         )
 
 

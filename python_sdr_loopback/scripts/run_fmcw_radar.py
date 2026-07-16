@@ -9,8 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sdr_loopback.radar.config import RadarConfig
 from sdr_loopback.radar.models import SyntheticTarget
 from sdr_loopback.radar.processor import FmcwProcessor
-from sdr_loopback.radar.sources import IqReplaySource, SyntheticTargetSource
-from sdr_loopback.radar.storage import append_metrics, save_frame
+from sdr_loopback.radar.sources import (
+    E310CpiSource,
+    E310RadioConfig,
+    IqReplaySource,
+    SyntheticTargetSource,
+)
+from sdr_loopback.radar.storage import append_metrics, save_capture, save_frame
 
 
 def target_argument(value: str) -> tuple[float, float, float]:
@@ -25,7 +30,10 @@ def target_argument(value: str) -> tuple[float, float, float]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Process finite FMCW radar CPIs.")
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--capture-dir", type=Path)
+    parser.add_argument("--source", choices=("synthetic", "e310"), default="synthetic")
+    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--frames", type=int, default=1)
     parser.add_argument("--replay", type=Path, action="append", default=[])
     parser.add_argument("--loop-replay", action="store_true")
@@ -39,6 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chirp-count", type=int, default=64)
     parser.add_argument("--range-fft-size", type=int, default=4096)
     parser.add_argument("--doppler-fft-size", type=int, default=64)
+    parser.add_argument("--tx-gain-db", type=float, default=-40.0)
+    parser.add_argument("--tx-amplitude", type=float, default=0.25)
+    parser.add_argument("--rx-gain-db", type=float, default=20.0)
     return parser
 
 
@@ -48,21 +59,54 @@ def main() -> int:
         raise SystemExit("--frames must be positive")
     if args.replay and args.target:
         raise SystemExit("--target cannot be combined with --replay")
+    if args.replay and args.source != "synthetic":
+        raise SystemExit("--replay cannot be combined with --source e310")
+    if args.source == "e310" and args.target:
+        raise SystemExit("--target cannot be combined with --source e310")
+
+    config = RadarConfig(
+        carrier_hz=args.carrier_hz,
+        sample_rate_hz=args.sample_rate_hz,
+        bandwidth_hz=args.bandwidth_hz,
+        active_time_s=args.active_time_us * 1e-6,
+        idle_time_s=args.idle_time_us * 1e-6,
+        chirp_count=args.chirp_count,
+        range_fft_size=args.range_fft_size,
+        doppler_fft_size=args.doppler_fft_size,
+    )
+    radio = (
+        E310RadioConfig(
+            tx_gain_db=args.tx_gain_db,
+            tx_amplitude=args.tx_amplitude,
+            rx_gain_db=args.rx_gain_db,
+        )
+        if args.source == "e310"
+        else None
+    )
+    if args.dry_run:
+        if args.source != "e310":
+            raise SystemExit("--dry-run requires --source e310")
+        assert radio is not None
+        print("source=e310")
+        print(f"uri={radio.uri}")
+        print(f"sample_rate_hz={int(config.sample_rate_hz)}")
+        print(f"cpi_samples={config.cpi_samples}")
+        print(f"tx_gain_db={radio.tx_gain_db}")
+        print(f"tx_amplitude={radio.tx_amplitude}")
+        print(f"rx_gain_db={radio.rx_gain_db}")
+        print("hardware_access=false")
+        return 0
+    if args.output_dir is None:
+        raise SystemExit("--output-dir is required unless --dry-run is used")
 
     if args.replay:
         source = IqReplaySource(args.replay, loop=args.loop_replay)
         processor = None
+    elif args.source == "e310":
+        assert radio is not None
+        source = E310CpiSource(config, radio)
+        processor = FmcwProcessor(config, sync_mode="correlation")
     else:
-        config = RadarConfig(
-            carrier_hz=args.carrier_hz,
-            sample_rate_hz=args.sample_rate_hz,
-            bandwidth_hz=args.bandwidth_hz,
-            active_time_s=args.active_time_us * 1e-6,
-            idle_time_s=args.idle_time_us * 1e-6,
-            chirp_count=args.chirp_count,
-            range_fft_size=args.range_fft_size,
-            doppler_fft_size=args.doppler_fft_size,
-        )
         targets = tuple(
             SyntheticTarget(f"T{index:02d}", range_m, velocity_mps, snr_db=snr_db)
             for index, (range_m, velocity_mps, snr_db) in enumerate(args.target, 1)
@@ -71,13 +115,17 @@ def main() -> int:
         processor = FmcwProcessor(config)
 
     processed = 0
-    source.open()
     try:
+        source.open()
         for _ in range(args.frames):
             try:
                 capture = source.capture()
             except StopIteration:
                 break
+            if args.capture_dir is not None:
+                save_capture(
+                    args.capture_dir / f"capture-{processed:06d}.npz", capture
+                )
             if processor is None or processor.config != capture.config:
                 processor = FmcwProcessor(capture.config)
             frame = processor.process(capture)

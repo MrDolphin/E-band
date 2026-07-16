@@ -33,6 +33,8 @@ class RadarTarget:
     doppler_bin: int
     confidence: float
     timestamp: float
+    velocity_confidence: float = 1.0
+    velocity_trusted: bool = True
 
 
 @dataclass(frozen=True)

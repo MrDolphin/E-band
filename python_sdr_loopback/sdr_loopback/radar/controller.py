@@ -15,6 +15,7 @@ class ControllerStatus:
     """Immutable runtime values safe for GUI-thread polling."""
 
     running: bool
+    cleanup_complete: bool
     error: Optional[str]
     shutdown_error: Optional[str]
     acquisition_time_ms: float
@@ -38,12 +39,15 @@ class RadarController:
         source: RadarDataSource,
         processor: object,
         cpi_period_s: float,
+        *,
+        recoverable_processing_errors: tuple[type[Exception], ...] = (),
     ) -> None:
         if cpi_period_s <= 0.0:
             raise ValueError("cpi_period_s must be positive")
         self.source = source
         self.processor = processor
         self.cpi_period_s = float(cpi_period_s)
+        self._recoverable_processing_errors = recoverable_processing_errors
         self._frames: queue.Queue[RadarFrame] = queue.Queue(maxsize=1)
         self._frame_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -57,6 +61,7 @@ class RadarController:
         self._close_started = False
         self._running = False
         self._error: Optional[str] = None
+        self._processing_error: Optional[str] = None
         self._shutdown_error: Optional[str] = None
         self._acquisition_time_ms = 0.0
         self._processing_time_ms = 0.0
@@ -106,6 +111,8 @@ class RadarController:
             with self._state_lock:
                 self._shutdown_error = self._SHUTDOWN_ERROR
             self._request_source_close()
+        else:
+            self._request_source_close()
 
     def publish(self, frame: RadarFrame) -> None:
         """Publish a frame, evicting one stale display frame when necessary."""
@@ -136,10 +143,13 @@ class RadarController:
 
     def status(self) -> ControllerStatus:
         """Return an immutable, internally consistent status snapshot."""
+        with self._source_condition:
+            cleanup_complete = self._source_state == self._CLOSED
         with self._state_lock:
             return ControllerStatus(
                 running=self._running,
-                error=self._error,
+                cleanup_complete=cleanup_complete,
+                error=self._error or self._processing_error,
                 shutdown_error=self._shutdown_error,
                 acquisition_time_ms=self._acquisition_time_ms,
                 processing_time_ms=self._processing_time_ms,
@@ -170,10 +180,16 @@ class RadarController:
                 acquisition_s = perf_counter() - acquisition_started
 
                 processing_started = perf_counter()
-                frame = self.processor.process(capture)
+                try:
+                    frame = self.processor.process(capture)
+                except self._recoverable_processing_errors as error:
+                    with self._state_lock:
+                        self._processing_error = str(error)
+                    continue
                 processing_s = perf_counter() - processing_started
 
                 with self._state_lock:
+                    self._processing_error = None
                     self._acquisition_time_ms = acquisition_s * 1000.0
                     self._processing_time_ms = processing_s * 1000.0
                     if acquisition_s + processing_s > self.cpi_period_s:
@@ -200,7 +216,7 @@ class RadarController:
             if self._cleanup_worker is not None:
                 return
             cleanup_worker = threading.Thread(
-                target=self._close_source_once,
+                target=self._cleanup_source,
                 name="fmcw-radar-source-cleanup",
                 daemon=True,
             )
@@ -215,23 +231,42 @@ class RadarController:
             else:
                 self._record_primary_error(str(error))
 
+    def _cleanup_source(self) -> None:
+        try:
+            self._close_source_once()
+        finally:
+            with self._source_condition:
+                if self._cleanup_worker is threading.current_thread():
+                    self._cleanup_worker = None
+                self._source_condition.notify_all()
+
     def _close_source_once(self) -> None:
         with self._source_condition:
-            if self._close_started or self._source_state == self._CLOSED:
+            while self._close_started and self._source_state != self._CLOSED:
+                self._source_condition.wait()
+            if self._source_state == self._CLOSED:
                 return
             if self._open_in_progress:
                 self._source_state = self._CLOSE_REQUESTED
                 return
             self._close_started = True
             self._source_state = self._CLOSE_REQUESTED
-        try:
-            self.source.close()
-        except Exception as error:
-            self._record_primary_error(str(error))
-        finally:
-            with self._source_condition:
+        final_error: Optional[Exception] = None
+        for _attempt in range(2):
+            try:
+                self.source.close()
+            except Exception as error:
+                final_error = error
+            else:
+                final_error = None
+                break
+        with self._source_condition:
+            self._close_started = False
+            if final_error is None:
                 self._source_state = self._CLOSED
-                self._source_condition.notify_all()
+            self._source_condition.notify_all()
+        if final_error is not None:
+            self._record_primary_error(str(final_error))
 
     def _record_primary_error(self, error: str) -> None:
         if not error:

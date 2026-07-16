@@ -8,6 +8,7 @@ import numpy as np
 
 from sdr_loopback.radar.config import RadarConfig
 from sdr_loopback.radar.models import (
+    RadarCapture,
     RadarDiagnostics,
     RadarFrame,
     RadarTarget,
@@ -92,6 +93,14 @@ class RadarCaptureStorageTests(unittest.TestCase):
         capture = simulate_capture(
             config, (target,), timestamp=1234.5, seed=7
         )
+        capture = RadarCapture(
+            timestamp=capture.timestamp,
+            config=config,
+            tx_iq=capture.tx_iq,
+            rx_iq=np.concatenate((np.zeros(3, dtype=np.complex64), capture.rx_iq)),
+            truth_targets=capture.truth_targets,
+            chirp_start_sample=3,
+        )
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "capture.npz"
@@ -101,6 +110,7 @@ class RadarCaptureStorageTests(unittest.TestCase):
         self.assertEqual(loaded.config, config)
         self.assertEqual(loaded.timestamp, 1234.5)
         self.assertEqual(loaded.truth_targets, (target,))
+        self.assertEqual(loaded.chirp_start_sample, 3)
         self.assertEqual(loaded.tx_iq.dtype, np.complex64)
         self.assertEqual(loaded.rx_iq.dtype, np.complex64)
         np.testing.assert_array_equal(loaded.tx_iq, capture.tx_iq)

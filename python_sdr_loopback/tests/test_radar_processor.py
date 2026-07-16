@@ -53,6 +53,109 @@ class ChirpSynchronizerTests(unittest.TestCase):
         self.assertGreater(result.correlation, 0.99)
         self.assertLess(result.idle_to_active_db, -40.0)
 
+    def test_correlation_mode_accepts_repeatable_low_snr_hardware_chirps(self):
+        offset = 37
+        rng = np.random.default_rng(20260715)
+        rx = (
+            rng.normal(0.0, 0.5, self.tx_iq.size + offset)
+            + 1j * rng.normal(0.0, 0.5, self.tx_iq.size + offset)
+        ).astype(np.complex64)
+        rx[offset:] += 0.08 * self.tx_iq
+
+        result = ChirpSynchronizer(self.config, mode="correlation").synchronize(
+            self.capture_with_rx(rx)
+        )
+
+        self.assertEqual(result.start_sample, offset)
+        self.assertGreater(result.correlation, 0.05)
+        self.assertGreater(result.idle_to_active_db, -1.0)
+
+    def test_correlation_mode_rejects_equal_power_noise(self):
+        rng = np.random.default_rng(20260715)
+        noise = (
+            rng.normal(0.0, 0.5, self.tx_iq.size + 37)
+            + 1j * rng.normal(0.0, 0.5, self.tx_iq.size + 37)
+        ).astype(np.complex64)
+
+        with self.assertRaisesRegex(ChirpSyncError, "correlation|coherence"):
+            ChirpSynchronizer(self.config, mode="correlation").synchronize(
+                self.capture_with_rx(noise)
+            )
+
+    def test_correlation_mode_rejects_incoherent_low_snr_chirps(self):
+        rng = np.random.default_rng(20260715)
+        rx = (
+            rng.normal(0.0, 0.5, self.tx_iq.size)
+            + 1j * rng.normal(0.0, 0.5, self.tx_iq.size)
+        ).astype(np.complex64)
+        rx += 0.08 * self.tx_iq
+        chirps = rx.reshape(self.config.chirp_count, self.config.samples_per_chirp)
+        chirps *= np.exp(
+            1j * rng.uniform(-np.pi, np.pi, (self.config.chirp_count, 1))
+        )
+
+        with self.assertRaisesRegex(ChirpSyncError, "periodic coherence"):
+            ChirpSynchronizer(self.config, mode="correlation").synchronize(
+                self.capture_with_rx(chirps.ravel())
+            )
+
+    def test_correlation_mode_declares_minimum_supported_dimensions(self):
+        unsupported = (
+            RadarConfig(chirp_count=1, doppler_fft_size=1),
+            RadarConfig(
+                sample_rate_hz=1.0,
+                bandwidth_hz=1.0,
+                active_time_s=1.0,
+                idle_time_s=0.0,
+                chirp_count=2,
+                range_fft_size=1,
+                doppler_fft_size=2,
+            ),
+        )
+        for config in unsupported:
+            with self.subTest(config=config):
+                with self.assertRaisesRegex(ValueError, "correlation mode requires"):
+                    ChirpSynchronizer(config, mode="correlation")
+
+    def test_correlation_mode_is_stable_across_seeds_and_chirp_counts(self):
+        accepted_low_snr = 0
+        for seed in range(20):
+            rng = np.random.default_rng(seed)
+            noise = (
+                rng.normal(0.0, 0.5, self.tx_iq.size + 37)
+                + 1j * rng.normal(0.0, 0.5, self.tx_iq.size + 37)
+            ).astype(np.complex64)
+            for has_signal in (False, True):
+                rx = noise.copy()
+                if has_signal:
+                    rx[37:] += 0.08 * self.tx_iq
+                capture = self.capture_with_rx(rx)
+                try:
+                    result = ChirpSynchronizer(
+                        self.config, mode="correlation"
+                    ).synchronize(capture)
+                except ChirpSyncError:
+                    if not has_signal:
+                        continue
+                else:
+                    self.assertTrue(has_signal)
+                    self.assertGreaterEqual(result.periodic_coherence, 0.0)
+                    accepted_low_snr += 1
+        self.assertGreaterEqual(accepted_low_snr, 19)
+
+        for chirp_count in (2, 8, 64):
+            with self.subTest(chirp_count=chirp_count):
+                config = RadarConfig(
+                    chirp_count=chirp_count,
+                    doppler_fft_size=max(2, 1 << (chirp_count - 1).bit_length()),
+                )
+                tx = generate_cpi(config)
+                capture = RadarCapture(0.0, config, tx, tx, chirp_start_sample=0)
+                result = ChirpSynchronizer(config, mode="correlation").synchronize(
+                    capture
+                )
+                self.assertGreater(result.periodic_coherence, 0.99)
+
     def test_incomplete_capture_raises_sync_error(self):
         truncated = self.tx_iq[:-1]
 
@@ -84,6 +187,145 @@ class ChirpSynchronizerTests(unittest.TestCase):
 class FmcwProcessorTests(unittest.TestCase):
     def setUp(self):
         self.config = RadarConfig()
+
+    def test_online_empty_room_calibration_is_applied_after_requested_cpis(self):
+        capture = simulate_capture(
+            self.config,
+            (
+                SyntheticTarget(
+                    target_id="static-clutter",
+                    range_m=7.5,
+                    radial_velocity_mps=0.0,
+                    amplitude=0.8,
+                    snr_db=60.0,
+                ),
+            ),
+            seed=20260716,
+        )
+        processor = FmcwProcessor(self.config)
+
+        processor.begin_background_calibration(cpi_count=3)
+        for _ in range(3):
+            processor.process(capture)
+
+        status = processor.background_calibration_status()
+        self.assertFalse(status.active)
+        self.assertTrue(status.ready)
+        self.assertEqual(status.collected_cpis, 3)
+        self.assertEqual(status.required_cpis, 3)
+
+        calibrated = processor.process(capture)
+
+        self.assertEqual(calibrated.targets, ())
+
+    def test_online_background_calibration_rejects_invalid_count(self):
+        processor = FmcwProcessor(self.config)
+
+        for count in (0, -1, 1.5, True):
+            with self.subTest(count=count):
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    processor.begin_background_calibration(cpi_count=count)
+
+    def test_recalibration_keeps_previous_background_until_atomic_replacement(self):
+        capture = simulate_capture(
+            self.config,
+            (
+                SyntheticTarget(
+                    target_id="static-clutter",
+                    range_m=7.5,
+                    radial_velocity_mps=0.0,
+                    amplitude=0.8,
+                    snr_db=60.0,
+                ),
+            ),
+            seed=20260716,
+        )
+        processor = FmcwProcessor(self.config)
+        processor.begin_background_calibration(cpi_count=2)
+        processor.process(capture)
+        processor.process(capture)
+        self.assertTrue(processor.background_calibration_status().ready)
+
+        processor.begin_background_calibration(cpi_count=2)
+
+        status = processor.background_calibration_status()
+        self.assertTrue(status.active)
+        self.assertTrue(status.ready)
+        self.assertEqual(processor.process(capture).targets, ())
+
+        self.assertTrue(
+            processor.cancel_background_calibration("synchronization timeout")
+        )
+
+        cancelled = processor.background_calibration_status()
+        self.assertFalse(cancelled.active)
+        self.assertTrue(cancelled.ready)
+        self.assertIn("timeout", cancelled.error)
+        self.assertEqual(processor.process(capture).targets, ())
+
+        self.assertFalse(processor.cancel_background_calibration("stale timeout"))
+        self.assertIn(
+            "timeout", processor.background_calibration_status().error
+        )
+
+    def test_online_calibration_phase_aligns_coherent_global_cpi_rotations(self):
+        base = simulate_capture(
+            self.config,
+            (
+                SyntheticTarget(
+                    target_id="static-clutter",
+                    range_m=7.5,
+                    radial_velocity_mps=0.0,
+                    amplitude=0.8,
+                    snr_db=80.0,
+                ),
+            ),
+            seed=11,
+        )
+        processor = FmcwProcessor(self.config)
+        processor.begin_background_calibration(cpi_count=4)
+        for phase in (0.0, 0.7, -1.2, 2.1):
+            processor.process(
+                RadarCapture(
+                    base.timestamp,
+                    base.config,
+                    base.tx_iq,
+                    base.rx_iq * np.exp(1j * phase),
+                    chirp_start_sample=base.chirp_start_sample,
+                )
+            )
+
+        calibrated = processor.process(
+            RadarCapture(
+                base.timestamp,
+                base.config,
+                base.tx_iq,
+                base.rx_iq * np.exp(-0.4j),
+                chirp_start_sample=base.chirp_start_sample,
+            )
+        )
+
+        self.assertTrue(processor.background_calibration_status().ready)
+        self.assertEqual(calibrated.targets, ())
+
+    def test_online_calibration_rejects_incoherent_candidates_without_stopping(self):
+        processor = FmcwProcessor(self.config)
+        processor.begin_background_calibration(cpi_count=3)
+        tx = generate_cpi(self.config)
+        rng = np.random.default_rng(33)
+        for index in range(3):
+            rx = (
+                rng.normal(size=self.config.cpi_samples)
+                + 1j * rng.normal(size=self.config.cpi_samples)
+            ).astype(np.complex64)
+            processor.process(
+                RadarCapture(index, self.config, tx, rx, chirp_start_sample=0)
+            )
+
+        status = processor.background_calibration_status()
+        self.assertFalse(status.active)
+        self.assertFalse(status.ready)
+        self.assertIn("coherence", status.error)
 
     def test_single_target_peak_localizes_range_and_positive_velocity(self):
         truth = SyntheticTarget(
@@ -213,6 +455,45 @@ class FmcwProcessorTests(unittest.TestCase):
         self.assertGreaterEqual(frame.diagnostics.phase_consistency, 0.0)
         self.assertLessEqual(frame.diagnostics.phase_consistency, 1.0)
         self.assertGreaterEqual(frame.diagnostics.processing_time_ms, 0.0)
+
+    def test_low_phase_consistency_retains_range_but_marks_velocity_untrusted(self):
+        truth = SyntheticTarget("T01", 22.5, 1.2, amplitude=0.5, snr_db=40.0)
+        capture = simulate_capture(self.config, (truth,), seed=17)
+        rng = np.random.default_rng(3)
+        randomized = capture.rx_iq.reshape(self.config.chirp_count, -1).copy()
+        randomized *= np.exp(1j * rng.uniform(-np.pi, np.pi, (self.config.chirp_count, 1)))
+        capture = RadarCapture(
+            timestamp=capture.timestamp,
+            config=capture.config,
+            tx_iq=capture.tx_iq,
+            rx_iq=randomized.ravel(),
+        )
+
+        frame = FmcwProcessor(self.config).process(capture)
+
+        self.assertGreaterEqual(len(frame.targets), 1)
+        self.assertLessEqual(
+            abs(frame.targets[0].range_m - truth.range_m),
+            self.config.range_resolution_m,
+        )
+        self.assertFalse(frame.targets[0].velocity_trusted)
+        self.assertEqual(frame.targets[0].velocity_confidence, 0.0)
+
+    def test_adjacent_chirp_correlation_distinguishes_coherent_and_orthogonal_rows(self):
+        coherent = np.ones((3, 4), dtype=np.complex128)
+        orthogonal = np.asarray(
+            ((1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0)),
+            dtype=np.complex128,
+        )
+
+        self.assertAlmostEqual(FmcwProcessor._adjacent_chirp_correlation(coherent), 1.0)
+        self.assertAlmostEqual(FmcwProcessor._adjacent_chirp_correlation(orthogonal), 0.0)
+
+    def test_velocity_trust_threshold_must_be_finite_probability(self):
+        for threshold in (-0.1, 1.1, np.nan, np.inf):
+            with self.subTest(threshold=threshold):
+                with self.assertRaisesRegex(ValueError, "velocity_trust_threshold"):
+                    FmcwProcessor(self.config, velocity_trust_threshold=threshold)
 
 
 if __name__ == "__main__":
