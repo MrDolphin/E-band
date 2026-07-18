@@ -104,6 +104,8 @@ python scripts\run_fmcw_radar.py --source e310 --profile limit-56 --dry-run
 
 为受控实验提供的显式波形参数仍会覆盖所选档位；`--dry-run` 不会打开无线电设备。
 
+硬件恢复后的安全检查、20 → 40 → 56 MHz 分档命令、空场/角反 A-B-A 与记录要求见 [E310 FMCW 硬件恢复与分档联调手册](../docs/superpowers/fmcw-e310-hardware-bringup.zh-CN.md)。
+
 配置扫频带宽为 `B` 时，软件距离单元间隔为 `c / (2B)`：20 MHz 时约为 7.49 m，56 MHz 时约为 2.68 m。这里是配置的基带带宽；在将其解释为实际物理距离分辨率前，必须用仪器确认外部倍频链的有效 RF 扫频带宽。
 
 生成并分析可复现的测试数据：
