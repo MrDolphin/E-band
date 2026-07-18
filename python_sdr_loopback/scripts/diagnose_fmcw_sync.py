@@ -1,150 +1,182 @@
+"""Capture repeatable E310 FMCW synchronization diagnostics."""
+
+from __future__ import annotations
+
 import argparse
-import datetime
+from datetime import datetime
 import json
-import math
-import sys
-import time
 from pathlib import Path
+import sys
+from time import perf_counter
 
 import numpy as np
 
-# Ensure sdr_loopback package is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sdr_loopback.radar.config import RadarConfig
 from sdr_loopback.radar.sources import E310CpiSource, E310RadioConfig
-from sdr_loopback.radar.synchronizer import ChirpSynchronizer, ChirpSyncError
+from sdr_loopback.radar.storage import save_capture
+from sdr_loopback.radar.synchronizer import ChirpSyncError, ChirpSynchronizer
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Diagnose FMCW chirp synchronization and capture RX metrics.")
-    parser.add_argument("--source", choices=["e310"], default="e310", help="Data source type")
-    parser.add_argument("--frames", type=int, default=100, help="Number of frames to capture")
-    
-    default_dir = f"artifacts/hardware/sync_diagnosis_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    parser.add_argument("--output-dir", type=str, default=default_dir, help="Directory to save logs and npz files")
-    
-    parser.add_argument("--tx-gain-db", type=float, default=-20.0, help="E310 TX gain in dB")
-    parser.add_argument("--tx-amplitude", type=float, default=0.40, help="E310 TX amplitude (0.0 to 1.0)")
-    parser.add_argument("--rx-gain-db", type=float, default=20.0, help="E310 RX gain in dB")
-    
-    parser.add_argument("--save-captures", choices=["all", "failures", "none"], default="failures", 
-                        help="When to save the raw IQ data as .npz")
+    parser = argparse.ArgumentParser(
+        description="Capture E310 FMCW sync metrics and failed raw IQ frames."
+    )
+    parser.add_argument("--frames", type=int, default=100)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("artifacts/hardware")
+        / f"sync_diagnosis_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+    )
+    parser.add_argument("--save-captures", choices=("all", "failures", "none"), default="failures")
+    parser.add_argument("--carrier-hz", type=float, default=76e9)
+    parser.add_argument("--sample-rate-hz", type=float, default=30e6)
+    parser.add_argument("--bandwidth-hz", type=float, default=20e6)
+    parser.add_argument("--active-time-us", type=float, default=128.0)
+    parser.add_argument("--idle-time-us", type=float, default=16.0)
+    parser.add_argument("--chirp-count", type=int, default=64)
+    parser.add_argument("--uri", default="ip:192.168.1.10")
+    parser.add_argument("--lo-hz", type=int, default=900_000_000)
+    parser.add_argument("--tx-channel", type=int, default=0)
+    parser.add_argument("--rx-channel", type=int, default=0)
+    parser.add_argument("--tx-port", default="B")
+    parser.add_argument("--rx-port", default="B_BALANCED")
+    parser.add_argument("--tx-gain-db", type=float, default=-20.0)
+    parser.add_argument("--tx-amplitude", type=float, default=0.40)
+    parser.add_argument("--rx-gain-db", type=float, default=20.0)
+    parser.add_argument("--pre-tx-settle-s", type=float, default=1.0)
+    parser.add_argument("--settle-s", type=float, default=0.25)
+    parser.add_argument("--sync-margin-chirps", type=int, default=1)
+    parser.add_argument("--startup-rx-discard-buffers", type=int, default=2)
     return parser
 
-def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
-    
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = output_dir / "metrics.jsonl"
-    
-    print(f"Starting diagnosis...")
-    print(f"Output directory: {output_dir}")
-    print(f"Frames: {args.frames}")
-    print(f"TX Gain: {args.tx_gain_db} dB, TX Amp: {args.tx_amplitude}, RX Gain: {args.rx_gain_db} dB")
-    print(f"Save Captures: {args.save_captures}")
-    print("-" * 50)
-    
-    config = RadarConfig()
-    radio_config = E310RadioConfig(
+
+def build_config(args: argparse.Namespace) -> RadarConfig:
+    return RadarConfig(
+        carrier_hz=args.carrier_hz,
+        sample_rate_hz=args.sample_rate_hz,
+        bandwidth_hz=args.bandwidth_hz,
+        active_time_s=args.active_time_us * 1e-6,
+        idle_time_s=args.idle_time_us * 1e-6,
+        chirp_count=args.chirp_count,
+    )
+
+
+def build_radio(args: argparse.Namespace) -> E310RadioConfig:
+    return E310RadioConfig(
+        uri=args.uri,
+        lo_hz=args.lo_hz,
+        tx_channel=args.tx_channel,
+        rx_channel=args.rx_channel,
+        tx_port=args.tx_port,
+        rx_port=args.rx_port,
         tx_gain_db=args.tx_gain_db,
         tx_amplitude=args.tx_amplitude,
         rx_gain_db=args.rx_gain_db,
+        pre_tx_settle_s=args.pre_tx_settle_s,
+        settle_s=args.settle_s,
+        sync_margin_chirps=args.sync_margin_chirps,
+        startup_rx_discard_buffers=args.startup_rx_discard_buffers,
     )
-    
-    source = E310CpiSource(config, radio_config)
+
+
+def dbfs(value: float) -> float | None:
+    if not np.isfinite(value) or value <= 0.0:
+        return None
+    return float(20.0 * np.log10(value))
+
+
+def print_plan(config: RadarConfig, radio: E310RadioConfig, frames: int) -> None:
+    print("source=e310")
+    print(f"frames={frames}")
+    print(f"uri={radio.uri}")
+    print(f"sample_rate_hz={int(config.sample_rate_hz)}")
+    print(f"bandwidth_hz={int(config.bandwidth_hz)}")
+    print(f"cpi_samples={config.cpi_samples}")
+    print(f"sync_margin_chirps={radio.sync_margin_chirps}")
+    print(f"startup_rx_discard_buffers={radio.startup_rx_discard_buffers}")
+    print(f"tx_gain_db={radio.tx_gain_db}")
+    print(f"tx_amplitude={radio.tx_amplitude}")
+    print(f"rx_gain_db={radio.rx_gain_db}")
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    if args.frames < 1:
+        raise SystemExit("--frames must be positive")
+    config = build_config(args)
+    radio = build_radio(args)
+    print_plan(config, radio, args.frames)
+    if args.dry_run:
+        print("hardware_access=false")
+        return 0
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = args.output_dir / "sync_metrics.jsonl"
+    source = E310CpiSource(config, radio)
     synchronizer = ChirpSynchronizer(config, mode="correlation")
-    
-    source.open()
-    interrupted = False
-    
+    synced = 0
+    saved = 0
     try:
-        for i in range(args.frames):
-            start_time = time.perf_counter()
-            try:
-                capture = source.capture()
-            except Exception as e:
-                print(f"Frame {i:03d} | CAPTURE ERROR: {e}")
-                continue
-                
-            rx_iq = np.asarray(getattr(capture, "rx_iq"))
-            
-            # RX Metrics
-            abs_rx = np.abs(rx_iq)
-            peak = float(np.max(abs_rx)) if abs_rx.size > 0 else 0.0
-            rms = float(np.sqrt(np.mean(np.square(abs_rx)))) if abs_rx.size > 0 else 0.0
-            clipping = float(np.mean(abs_rx > 0.99)) if abs_rx.size > 0 else 0.0
-            
-            # Sync Metrics
-            sync_ok = False
-            error_msg = None
-            start_sample = -1
-            correlation = -1.0
-            mean_correlation = -1.0
-            periodic_coherence = -1.0
-            
+        source.open()
+        for frame_index in range(args.frames):
+            started = perf_counter()
+            capture = source.capture()
+            elapsed_ms = (perf_counter() - started) * 1000.0
+            rx_iq = np.asarray(capture.rx_iq)
+            magnitude = np.abs(rx_iq)
+            peak = float(np.max(magnitude)) if magnitude.size else 0.0
+            rms = float(np.sqrt(np.mean(np.square(magnitude)))) if magnitude.size else 0.0
+            record = {
+                "frame_index": frame_index,
+                "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+                "capture_time_ms": elapsed_ms,
+                "rx_peak_dbfs": dbfs(peak),
+                "rx_rms_dbfs": dbfs(rms),
+                "rx_clipping_ratio": float(np.mean(magnitude >= 0.99)),
+                "sync_ok": False,
+                "sync_error": None,
+                "start_sample": None,
+                "correlation": None,
+                "mean_correlation": None,
+                "periodic_coherence": None,
+                "idle_to_active_db": None,
+            }
             try:
                 result = synchronizer.synchronize(capture)
-                sync_ok = True
-                start_sample = result.start_sample
-                correlation = result.correlation
-                mean_correlation = result.mean_correlation
-                periodic_coherence = result.periodic_coherence if result.periodic_coherence is not None else -1.0
-            except ChirpSyncError as e:
-                error_msg = str(e)
-                try:
-                    # Attempt best-effort start sample correlation for debugging
-                    start_sample = synchronizer._correlate_start(rx_iq)
-                except Exception:
-                    pass
-                    
-            elapsed_s = time.perf_counter() - start_time
-            
-            metrics = {
-                "frame": i,
-                "sync_ok": sync_ok,
-                "error": error_msg,
-                "start_sample": start_sample,
-                "correlation": correlation,
-                "mean_correlation": mean_correlation,
-                "periodic_coherence": periodic_coherence,
-                "rx_peak": peak,
-                "rx_rms": rms,
-                "rx_clipping": clipping,
-                "elapsed_s": elapsed_s,
-                "timestamp": datetime.datetime.now().isoformat()
-            }
-            
-            with open(metrics_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(metrics) + "\n")
-                
-            status = "OK" if sync_ok else "FAIL"
-            print(f"Frame {i:03d}/{args.frames} | {status} | corr={correlation:6.4f} | peak={peak:6.4f} | clip={clipping:5.1%} | {elapsed_s*1000:4.1f}ms")
-            if not sync_ok:
-                print(f"  -> Error: {error_msg}")
-            
-            # Save raw captures
-            if (args.save_captures == "all") or (args.save_captures == "failures" and not sync_ok):
-                tx_iq = np.asarray(getattr(capture, "tx_iq"))
-                npz_name = f"frame_{i:04d}_{'ok' if sync_ok else 'fail'}.npz"
-                npz_path = output_dir / npz_name
-                np.savez_compressed(
-                    npz_path, 
-                    tx_iq=tx_iq, 
-                    rx_iq=rx_iq, 
-                    metrics=json.dumps(metrics)
+            except ChirpSyncError as error:
+                record["sync_error"] = str(error)
+            else:
+                synced += 1
+                record.update(
+                    sync_ok=True,
+                    start_sample=result.start_sample,
+                    correlation=result.correlation,
+                    mean_correlation=result.mean_correlation,
+                    periodic_coherence=result.periodic_coherence,
+                    idle_to_active_db=result.idle_to_active_db,
                 )
-                print(f"  -> Saved {npz_name}")
-                
-    except KeyboardInterrupt:
-        interrupted = True
-        print("\nDiagnostic interrupted by user.")
+            with metrics_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(record, allow_nan=False) + "\n")
+            save = args.save_captures == "all" or (
+                args.save_captures == "failures" and not record["sync_ok"]
+            )
+            if save:
+                save_capture(args.output_dir / "captures" / f"capture-{frame_index:04d}.npz", capture)
+                saved += 1
+            status = "OK" if record["sync_ok"] else f"FAIL: {record['sync_error']}"
+            print(f"frame={frame_index} sync={status} rms_dbfs={record['rx_rms_dbfs']} time_ms={elapsed_ms:.1f}")
     finally:
         source.close()
-        print("Diagnostic complete. SDR closed.")
-        
-    return 130 if interrupted else 0
+    print(f"frames_synced={synced}")
+    print(f"frames_failed={args.frames - synced}")
+    print(f"captures_saved={saved}")
+    print(f"metrics_path={metrics_path}")
+    return 0
+
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

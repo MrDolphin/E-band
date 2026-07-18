@@ -41,6 +41,7 @@ class E310RadioConfig:
     pre_tx_settle_s: float = 1.0
     settle_s: float = 0.25
     sync_margin_chirps: int = 1
+    startup_rx_discard_buffers: int = 2
 
     def __post_init__(self) -> None:
         integer_fields = (
@@ -48,6 +49,7 @@ class E310RadioConfig:
             ("rx_channel", self.rx_channel, 0, 1),
             ("tx_channel", self.tx_channel, 0, 1),
             ("sync_margin_chirps", self.sync_margin_chirps, 0, None),
+            ("startup_rx_discard_buffers", self.startup_rx_discard_buffers, 0, None),
         )
         for name, value, minimum, maximum in integer_fields:
             if (
@@ -180,6 +182,11 @@ class E310CpiSource:
         if self.radio_config.settle_s:
             time.sleep(self.radio_config.settle_s)
 
+    def _discard_startup_rx_buffers(self) -> None:
+        """Discard stale DMA buffers after the cyclic FMCW waveform is live."""
+        for _ in range(self.radio_config.startup_rx_discard_buffers):
+            self._sdr.rx()
+
     def open(self) -> None:
         if self._sdr is not None:
             return
@@ -209,6 +216,7 @@ class E310CpiSource:
             if radio.pre_tx_settle_s:
                 time.sleep(radio.pre_tx_settle_s)
             self._upload_tx()
+            self._discard_startup_rx_buffers()
         except BaseException as error:
             cleanup_errors = self._cleanup_hardware(sdr)
             self._tx_uploaded = False

@@ -113,6 +113,25 @@ class RadarCliTests(unittest.TestCase):
         self.assertEqual(values["tx_amplitude"], "0.4")
         self.assertEqual(values["rx_gain_db"], "20.0")
 
+    def test_sync_diagnosis_dry_run_reports_capture_stabilization(self):
+        completed = self.run_script(
+            "diagnose_fmcw_sync.py",
+            "--dry-run",
+            "--frames", "10",
+            "--sample-rate-hz", "2000000",
+            "--bandwidth-hz", "1000000",
+            "--active-time-us", "64",
+            "--idle-time-us", "16",
+            "--chirp-count", "16",
+            "--startup-rx-discard-buffers", "3",
+        )
+
+        values = dict(line.split("=", 1) for line in completed.stdout.splitlines())
+        self.assertEqual(values["frames"], "10")
+        self.assertEqual(values["sample_rate_hz"], "2000000")
+        self.assertEqual(values["startup_rx_discard_buffers"], "3")
+        self.assertEqual(values["hardware_access"], "false")
+
     def test_e310_open_failure_still_calls_close(self):
         calls = []
 

@@ -24,6 +24,7 @@ class FakeAd9361:
         self.attrs = []
         self.float_attrs = []
         self.events = []
+        self.rx_calls = 0
         self.tx_payloads = []
         self.tx_destroy_count = 0
         self.rx_destroy_count = 0
@@ -45,6 +46,7 @@ class FakeAd9361:
         self.tx_payloads.append(np.asarray(samples).copy())
 
     def rx(self):
+        self.rx_calls += 1
         if self.fail_rx:
             raise OSError("iio receive failed")
         return np.arange(self.rx_buffer_size, dtype=np.float32).astype(np.complex64)
@@ -76,10 +78,29 @@ class FakeAdi:
 class E310CpiSourceTests(unittest.TestCase):
     def setUp(self):
         self.config = RadarConfig()
-        self.radio = E310RadioConfig(pre_tx_settle_s=0.0, settle_s=0.0)
+        self.radio = E310RadioConfig(
+            pre_tx_settle_s=0.0,
+            settle_s=0.0,
+            startup_rx_discard_buffers=0,
+        )
 
     def test_radio_config_uses_hardware_verified_startup_wait(self):
         self.assertEqual(E310RadioConfig().pre_tx_settle_s, 1.0)
+
+    def test_open_discards_startup_rx_buffers_after_enabling_cyclic_tx(self):
+        radio = E310RadioConfig(
+            pre_tx_settle_s=0.0,
+            settle_s=0.0,
+            startup_rx_discard_buffers=2,
+        )
+        adi = FakeAdi()
+        source = E310CpiSource(self.config, radio, adi_module=adi)
+
+        source.open()
+
+        device = adi.devices[0]
+        self.assertEqual(device.rx_calls, 2)
+        self.assertEqual(device.tx_calls, 1)
 
     def test_radio_config_rejects_levels_outside_safe_hardware_envelope(self):
         invalid = (
