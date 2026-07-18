@@ -186,6 +186,26 @@ class CfarTests(unittest.TestCase):
         self.assertTrue(all(target.azimuth_deg is None for target in targets))
         self.assertTrue(all(0.0 <= target.confidence <= 1.0 for target in targets))
 
+    def test_display_edge_keeps_needed_cfar_training_columns(self):
+        config = reduced_config(cfar_threshold_db=6.0, max_display_range_m=22.5)
+        shape = (config.doppler_fft_size, config.range_fft_size // 2 + 1)
+        power = np.ones(shape, dtype=float)
+        power[16, 3] = 100.0
+        ranges = np.arange(shape[1], dtype=float) * 7.5
+        velocities = (np.arange(shape[0], dtype=float) - 16.0) * 0.25
+
+        targets = detect_targets(
+            power,
+            ranges,
+            velocities,
+            config,
+            timestamp=4.5,
+            sync_score=1.0,
+            phase_consistency=1.0,
+        )
+
+        self.assertEqual([(target.doppler_bin, target.range_bin) for target in targets], [(16, 3)])
+
     def test_confidence_increases_with_margin_and_diagnostic_quality(self):
         config = reduced_config(cfar_threshold_db=6.0, max_display_range_m=200.0)
         shape = (config.doppler_fft_size, config.range_fft_size // 2 + 1)

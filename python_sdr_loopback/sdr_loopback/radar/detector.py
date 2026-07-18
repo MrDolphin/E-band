@@ -280,9 +280,17 @@ def detect_targets(
     if values.shape != (velocities.size, ranges.size):
         raise ValueError("power shape must match velocity and range axes")
 
-    detections, noise_power = ca_cfar_2d(values, config)
-    detections &= ranges[None, :] <= config.max_display_range_m
-    cells = cluster_detections(values, detections)
+    visible_columns = int(
+        np.searchsorted(ranges, config.max_display_range_m, side="right")
+    )
+    if visible_columns == 0:
+        return ()
+    training_tail = RANGE_TRAINING_CELLS + RANGE_GUARD_CELLS
+    processed_columns = min(values.shape[1], visible_columns + training_tail)
+    search_power = values[:, :processed_columns]
+    detections, noise_power = ca_cfar_2d(search_power, config)
+    detections[:, visible_columns:] = False
+    cells = cluster_detections(search_power, detections)
     if diagnostics is not None:
         if sync_score is None:
             sync_score = float(getattr(diagnostics, "sync_score"))
@@ -311,7 +319,9 @@ def detect_targets(
         local_noise = max(
             float(noise_power[doppler_bin, range_bin]), np.finfo(float).tiny
         )
-        cell_power = max(float(values[doppler_bin, range_bin]), np.finfo(float).tiny)
+        cell_power = max(
+            float(search_power[doppler_bin, range_bin]), np.finfo(float).tiny
+        )
         snr_db = float(10.0 * np.log10(cell_power / local_noise))
         margin_db = float(10.0 * np.log10(cell_power / (local_noise * threshold_scale)))
         margin_quality = 1.0 - np.exp(-max(margin_db, 0.0) / 6.0)
