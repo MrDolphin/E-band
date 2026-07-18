@@ -2,6 +2,50 @@
 
 This workspace is for ANTSDR E310 / remotevideo development. Keep context small. Avoid scanning large binary/material folders unless the user explicitly asks.
 
+## FMCW Radar Workflow
+
+For FMCW radar work, this section takes precedence over the legacy remotevideo
+startup list below. Read only the smallest relevant source set first:
+
+1. `docs/superpowers/plans/2026-07-14-fmcw-synthetic-radar-mvp.md`
+2. `docs/superpowers/specs/2026-07-14-e310-eband-fmcw-radar-design.md`
+3. `docs/superpowers/2026-07-15-fmcw-radar-mvp-overall-report.zh-CN.md`
+4. The exact radar source and test files implicated by the current evidence.
+
+### Hardware gate
+
+- Default to **hardware disconnected**. Do not access E310, transmit, capture,
+  or change device state unless the user confirms in the current turn that the
+  physical chain is connected and authorizes the test.
+- When hardware is unavailable, work only on synthetic/replay tests, offline
+  performance, diagnostics, documentation, and reviewable code defects.
+- Do not make speculative radar-algorithm changes without a failing test,
+  profiler result, replay capture, or a concrete hardware observation.
+
+### Lean development loop
+
+1. Run `git status --short`; preserve all untracked captures, artifacts,
+   caches, and board-control material.
+2. For code discovery, use codebase-memory project
+   `D-hp-laptop-E-band-fmcw` first (`search_graph`, `trace_path`,
+   `get_code_snippet`). Use targeted `rg` only for literals, non-code files,
+   or an insufficient graph result.
+3. State the smallest falsifiable hypothesis, then add or run the smallest
+   focused test. Run the full suite only before a phase commit or after a
+   cross-module change.
+4. Commit and push one coherent, verified phase. Add one PR comment per phase
+   containing evidence, not a comment for every small exploratory action.
+5. If there is no safe offline action with evidence behind it, stop without
+   code churn and record the required hardware observation for the next phase.
+
+### Token-efficient reporting
+
+- Keep raw IQ, screenshots, long logs, and generated outputs in untracked
+  `artifacts/`; report only configuration, measured diagnostics, result, and
+  artifact path.
+- Do not paste large source files or repeat prior test logs. Refer to the
+  overall report and PR comments for durable history.
+
 ## Start Here
 
 Read only the smallest useful set first:
@@ -117,7 +161,8 @@ Use a single-context domain docs layout: root `CONTEXT.md` plus `docs/adr/`. See
 ## Token-Saving Workflow
 
 1. Identify the subsystem: PC UI/app, modem/framing, self-test, or E310 bridge.
-2. Use `rg --files` or `rg -n` to locate exact files.
+2. For code definitions and call paths, use codebase-memory first; use `rg` for
+   literal/config/document searches and as a targeted fallback.
 3. Read only relevant sections around matches.
 4. Summarize long logs instead of dumping them.
 5. Run the smallest useful verification command.
