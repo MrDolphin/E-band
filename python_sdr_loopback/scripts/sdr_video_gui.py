@@ -26,6 +26,7 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 
 from sdr_loopback.radar.config import RadarConfig
+from sdr_loopback.radar.assessment import assess_frame, append_position_candidate
 from sdr_loopback.radar.controller import RadarController
 from sdr_loopback.radar.models import SyntheticTarget
 from sdr_loopback.radar.processor import FmcwProcessor
@@ -371,6 +372,12 @@ class SdrVideoGui(tk.Tk):
         self.radar_derived_var = tk.StringVar(value="")
         self.radar_status_var = tk.StringVar(value="就绪")
 
+        self.radar_candidate_label_var = tk.StringVar(value="")
+        self.radar_candidate_measured_range_var = tk.StringVar(value="")
+        self.radar_candidate_notes_var = tk.StringVar(value="")
+        self.radar_candidate_quality_var = tk.StringVar(value="候选质量：等待雷达帧")
+        self._best_radar_candidate_score = 0.0
+
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self.drain_output)
@@ -583,8 +590,18 @@ class SdrVideoGui(tk.Tk):
         ttk.Button(radar_controls, text="保存当前帧", command=self.save_radar_frame).pack(side=tk.LEFT)
         ttk.Label(radar_controls, text="单RX：方位角未测量", foreground="#a55d00").pack(side=tk.RIGHT)
         ttk.Label(radar_controls, textvariable=self.radar_status_var).pack(side=tk.RIGHT, padx=12)
+        candidate_controls = ttk.Frame(self.radar_tab)
+        candidate_controls.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(candidate_controls, text="位置标签").pack(side=tk.LEFT)
+        ttk.Entry(candidate_controls, textvariable=self.radar_candidate_label_var, width=16).pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Label(candidate_controls, text="实测距离 m").pack(side=tk.LEFT)
+        ttk.Entry(candidate_controls, textvariable=self.radar_candidate_measured_range_var, width=8).pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Label(candidate_controls, text="角反朝向/备注").pack(side=tk.LEFT)
+        ttk.Entry(candidate_controls, textvariable=self.radar_candidate_notes_var, width=22).pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Button(candidate_controls, text="保存位置候选", command=self.save_position_candidate).pack(side=tk.LEFT)
+        ttk.Label(candidate_controls, textvariable=self.radar_candidate_quality_var).pack(side=tk.RIGHT)
         self.radar_dashboard = RadarDashboard(self.radar_tab)
-        self.radar_dashboard.grid(row=1, column=0, sticky="nsew")
+        self.radar_dashboard.grid(row=2, column=0, sticky="nsew")
 
     @staticmethod
     def _metric(parent: ttk.Frame, column: int, label: str, variable: tk.StringVar) -> None:
@@ -744,6 +761,15 @@ class SdrVideoGui(tk.Tk):
     def render(self, frame: object) -> None:
         self._latest_radar_frame = frame
         self.radar_dashboard.render(frame)
+        candidate = assess_frame(frame)
+        best = candidate.quality_score > self._best_radar_candidate_score
+        if best:
+            self._best_radar_candidate_score = candidate.quality_score
+        marker = "；本次最佳" if best and candidate.quality_score > 0.0 else ""
+        self.radar_candidate_quality_var.set(
+            f"候选质量：{candidate.quality_score:.1f}/100；当前最佳："
+            f"{self._best_radar_candidate_score:.1f}/100{marker}"
+        )
 
     def poll_radar_controller(self) -> None:
         controller = self.radar_controller
@@ -868,6 +894,34 @@ class SdrVideoGui(tk.Tk):
             messagebox.showerror("保存失败", str(error))
             return
         self.radar_status_var.set(f"已保存: {output}")
+
+    def save_position_candidate(self) -> None:
+        frame = self._latest_radar_frame
+        if frame is None:
+            messagebox.showinfo("位置候选", "当前没有可保存的雷达帧")
+            return
+        range_text = self.radar_candidate_measured_range_var.get().strip()
+        try:
+            measured_range = float(range_text) if range_text else None
+            candidate = assess_frame(
+                frame,
+                label=self.radar_candidate_label_var.get(),
+                measured_range_m=measured_range,
+                notes=self.radar_candidate_notes_var.get(),
+            )
+            output = PROJECT_DIR / "artifacts" / "hardware" / "position_candidates.jsonl"
+            append_position_candidate(output, candidate)
+            save_frame(
+                PROJECT_DIR / "artifacts" / "hardware" / "position_candidates"
+                / f"candidate_{frame.frame_index:06d}",
+                frame,
+            )
+        except (OSError, TypeError, ValueError) as error:
+            messagebox.showerror("保存位置候选失败", str(error))
+            return
+        self.radar_status_var.set(
+            f"已保存位置候选：质量 {candidate.quality_score:.1f}/100，{output}"
+        )
 
     def selected_preset(self) -> Preset:
         label = self.preset_var.get()

@@ -55,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_config(args: argparse.Namespace) -> RadarConfig:
+    active_samples = round(args.sample_rate_hz * args.active_time_us * 1e-6)
     return RadarConfig(
         carrier_hz=args.carrier_hz,
         sample_rate_hz=args.sample_rate_hz,
@@ -62,6 +63,7 @@ def build_config(args: argparse.Namespace) -> RadarConfig:
         active_time_s=args.active_time_us * 1e-6,
         idle_time_s=args.idle_time_us * 1e-6,
         chirp_count=args.chirp_count,
+        range_fft_size=1 << max(12, (max(1, active_samples) - 1).bit_length()),
     )
 
 

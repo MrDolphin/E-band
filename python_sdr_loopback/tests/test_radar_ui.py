@@ -521,6 +521,24 @@ class RadarUiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_display_range_m"):
             radar_config_from_values({**values, "max_display_range_m": "0"})
 
+    def test_display_fields_scale_range_fft_for_56_mhz_e310_profile(self):
+        config = radar_config_from_values(
+            dict(
+                carrier_ghz="76",
+                sample_rate_msps="61.44",
+                bandwidth_mhz="56",
+                active_us="125",
+                idle_us="15.625",
+                chirp_count="64",
+                cfar_threshold_db="12",
+                max_display_range_m="50",
+            )
+        )
+
+        self.assertEqual(config.active_samples, 7680)
+        self.assertEqual(config.range_fft_size, 8192)
+        self.assertLess(config.range_resolution_m, 2.7)
+
     def test_gain_and_synthetic_fields_reject_nonfinite_or_negative_range(self):
         invalid = (
             ("nan", "30", "25", "1", "20"),

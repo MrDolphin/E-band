@@ -278,6 +278,10 @@ def radar_config_from_values(values: Mapping[str, str]) -> RadarConfig:
         raise ValueError("chirp_count must be positive")
     if not math.isfinite(converted["cfar_threshold_db"]):
         raise ValueError("cfar_threshold_db must be finite")
+    active_samples = round(converted["sample_rate_hz"] * converted["active_time_s"])
+    converted["range_fft_size"] = 1 << max(
+        12, (max(1, active_samples) - 1).bit_length()
+    )
     return RadarConfig(**converted)
 
 
