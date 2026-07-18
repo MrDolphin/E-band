@@ -13,7 +13,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sdr_loopback.radar.config import RadarConfig
+from sdr_loopback.radar.config import (
+    RadarConfig,
+    fmcw_profile_names,
+    fmcw_profile_values,
+    recommended_range_fft_size,
+)
 from sdr_loopback.radar.sources import E310CpiSource, E310RadioConfig
 from sdr_loopback.radar.storage import save_capture
 from sdr_loopback.radar.synchronizer import ChirpSyncError, ChirpSynchronizer
@@ -32,12 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
         / f"sync_diagnosis_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
     )
     parser.add_argument("--save-captures", choices=("all", "failures", "none"), default="failures")
-    parser.add_argument("--carrier-hz", type=float, default=76e9)
-    parser.add_argument("--sample-rate-hz", type=float, default=30e6)
-    parser.add_argument("--bandwidth-hz", type=float, default=20e6)
-    parser.add_argument("--active-time-us", type=float, default=128.0)
-    parser.add_argument("--idle-time-us", type=float, default=16.0)
-    parser.add_argument("--chirp-count", type=int, default=64)
+    parser.add_argument("--profile", choices=fmcw_profile_names(), default="stable-20")
+    parser.add_argument("--carrier-hz", type=float)
+    parser.add_argument("--sample-rate-hz", type=float)
+    parser.add_argument("--bandwidth-hz", type=float)
+    parser.add_argument("--active-time-us", type=float)
+    parser.add_argument("--idle-time-us", type=float)
+    parser.add_argument("--chirp-count", type=int)
     parser.add_argument("--uri", default="ip:192.168.1.10")
     parser.add_argument("--lo-hz", type=int, default=900_000_000)
     parser.add_argument("--tx-channel", type=int, default=0)
@@ -55,15 +61,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_config(args: argparse.Namespace) -> RadarConfig:
-    active_samples = round(args.sample_rate_hz * args.active_time_us * 1e-6)
+    values = fmcw_profile_values(args.profile)
+    overrides = {
+        "carrier_hz": args.carrier_hz,
+        "sample_rate_hz": args.sample_rate_hz,
+        "bandwidth_hz": args.bandwidth_hz,
+        "active_time_s": (
+            None if args.active_time_us is None else args.active_time_us * 1e-6
+        ),
+        "idle_time_s": (
+            None if args.idle_time_us is None else args.idle_time_us * 1e-6
+        ),
+        "chirp_count": args.chirp_count,
+    }
+    values.update({name: value for name, value in overrides.items() if value is not None})
     return RadarConfig(
-        carrier_hz=args.carrier_hz,
-        sample_rate_hz=args.sample_rate_hz,
-        bandwidth_hz=args.bandwidth_hz,
-        active_time_s=args.active_time_us * 1e-6,
-        idle_time_s=args.idle_time_us * 1e-6,
-        chirp_count=args.chirp_count,
-        range_fft_size=1 << max(12, (max(1, active_samples) - 1).bit_length()),
+        **values,
+        range_fft_size=recommended_range_fft_size(
+            float(values["sample_rate_hz"]), float(values["active_time_s"])
+        ),
     )
 
 
@@ -91,8 +107,11 @@ def dbfs(value: float) -> float | None:
     return float(20.0 * np.log10(value))
 
 
-def print_plan(config: RadarConfig, radio: E310RadioConfig, frames: int) -> None:
+def print_plan(
+    config: RadarConfig, radio: E310RadioConfig, frames: int, profile: str
+) -> None:
     print("source=e310")
+    print(f"profile={profile}")
     print(f"frames={frames}")
     print(f"uri={radio.uri}")
     print(f"sample_rate_hz={int(config.sample_rate_hz)}")
@@ -111,7 +130,7 @@ def main() -> int:
         raise SystemExit("--frames must be positive")
     config = build_config(args)
     radio = build_radio(args)
-    print_plan(config, radio, args.frames)
+    print_plan(config, radio, args.frames, args.profile)
     if args.dry_run:
         print("hardware_access=false")
         return 0

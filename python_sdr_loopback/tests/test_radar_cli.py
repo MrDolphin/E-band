@@ -171,6 +171,20 @@ class RadarCliTests(unittest.TestCase):
         self.assertEqual(values["startup_rx_discard_buffers"], "3")
         self.assertEqual(values["hardware_access"], "false")
 
+    def test_sync_diagnosis_dry_run_uses_shared_limit_profile(self):
+        completed = self.run_script(
+            "diagnose_fmcw_sync.py",
+            "--dry-run",
+            "--profile", "limit-56",
+        )
+
+        values = dict(line.split("=", 1) for line in completed.stdout.splitlines())
+        self.assertEqual(values["profile"], "limit-56")
+        self.assertEqual(values["sample_rate_hz"], "61440000")
+        self.assertEqual(values["bandwidth_hz"], "56000000")
+        self.assertEqual(values["cpi_samples"], "552960")
+        self.assertEqual(values["hardware_access"], "false")
+
     def test_e310_open_failure_still_calls_close(self):
         calls = []
 

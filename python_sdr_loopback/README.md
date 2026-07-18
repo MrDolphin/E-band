@@ -144,7 +144,7 @@ startup synchronisation without transmitting or capturing when hardware is not
 ready:
 
 ```powershell
-python scripts/diagnose_fmcw_sync.py --dry-run --frames 10 --bandwidth-hz 56000000
+python scripts/diagnose_fmcw_sync.py --dry-run --frames 10 --profile limit-56
 ```
 
 On the current development PC, warmed synthetic 40 MHz and 56 MHz profiles
