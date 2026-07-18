@@ -107,6 +107,18 @@ GUI configuration profiles deliberately separate the stable 20 MHz baseline
 from 40 MHz validation and 56 MHz limit experiments; selecting a profile only
 updates settings, and E310 is reconfigured on the next radar start.
 
+The same deployable profiles are available to the CLI, so offline checks and a
+later E310 session use identical waveform dimensions:
+
+```powershell
+python scripts\run_fmcw_radar.py --source synthetic --profile stable-20 --headless --metrics artifacts\fmcw_profiles\stable.jsonl
+python scripts\run_fmcw_radar.py --source synthetic --profile validate-40 --headless --metrics artifacts\fmcw_profiles\validate.jsonl
+python scripts\run_fmcw_radar.py --source e310 --profile limit-56 --dry-run
+```
+
+Explicit waveform arguments still override the selected profile for controlled
+experiments. `--dry-run` never opens the radio.
+
 With configured sweep bandwidth `B`, the software range-bin spacing is
 `c / (2B)`: 7.49 m at 20 MHz and 2.68 m at 56 MHz.  Those are configured
 baseband values.  Verify the effective RF sweep of the external multiplier

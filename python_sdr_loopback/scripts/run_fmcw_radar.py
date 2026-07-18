@@ -8,7 +8,12 @@ from time import monotonic
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sdr_loopback.radar.config import RadarConfig, recommended_range_fft_size
+from sdr_loopback.radar.config import (
+    RadarConfig,
+    fmcw_profile_names,
+    fmcw_profile_values,
+    recommended_range_fft_size,
+)
 from sdr_loopback.radar.models import SyntheticTarget
 from sdr_loopback.radar.processor import FmcwProcessor
 from sdr_loopback.radar.sources import (
@@ -44,14 +49,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--loop-replay", action="store_true")
     parser.add_argument("--target", type=target_argument, action="append", default=[])
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--carrier-hz", type=float, default=76e9)
-    parser.add_argument("--sample-rate-hz", type=float, default=30e6)
-    parser.add_argument("--bandwidth-hz", type=float, default=20e6)
-    parser.add_argument("--active-time-us", type=float, default=128.0)
-    parser.add_argument("--idle-time-us", type=float, default=16.0)
-    parser.add_argument("--chirp-count", type=int, default=64)
+    parser.add_argument("--profile", choices=fmcw_profile_names(), default="stable-20")
+    parser.add_argument("--carrier-hz", type=float)
+    parser.add_argument("--sample-rate-hz", type=float)
+    parser.add_argument("--bandwidth-hz", type=float)
+    parser.add_argument("--active-time-us", type=float)
+    parser.add_argument("--idle-time-us", type=float)
+    parser.add_argument("--chirp-count", type=int)
     parser.add_argument("--range-fft-size", type=int)
-    parser.add_argument("--doppler-fft-size", type=int, default=64)
+    parser.add_argument("--doppler-fft-size", type=int)
     parser.add_argument("--tx-gain-db", type=float, default=-40.0)
     parser.add_argument("--tx-amplitude", type=float, default=0.25)
     parser.add_argument("--rx-gain-db", type=float, default=20.0)
@@ -75,21 +81,33 @@ def main() -> int:
     if args.source == "e310" and args.target:
         raise SystemExit("--target cannot be combined with --source e310")
 
+    profile_values = fmcw_profile_values(args.profile)
+    overrides = {
+        "carrier_hz": args.carrier_hz,
+        "sample_rate_hz": args.sample_rate_hz,
+        "bandwidth_hz": args.bandwidth_hz,
+        "active_time_s": (
+            None if args.active_time_us is None else args.active_time_us * 1e-6
+        ),
+        "idle_time_s": (
+            None if args.idle_time_us is None else args.idle_time_us * 1e-6
+        ),
+        "chirp_count": args.chirp_count,
+        "doppler_fft_size": args.doppler_fft_size,
+    }
+    profile_values.update(
+        {name: value for name, value in overrides.items() if value is not None}
+    )
+    active_time_s = float(profile_values["active_time_s"])
     config = RadarConfig(
-        carrier_hz=args.carrier_hz,
-        sample_rate_hz=args.sample_rate_hz,
-        bandwidth_hz=args.bandwidth_hz,
-        active_time_s=args.active_time_us * 1e-6,
-        idle_time_s=args.idle_time_us * 1e-6,
-        chirp_count=args.chirp_count,
+        **profile_values,
         range_fft_size=(
             args.range_fft_size
             if args.range_fft_size is not None
             else recommended_range_fft_size(
-                args.sample_rate_hz, args.active_time_us * 1e-6
+                float(profile_values["sample_rate_hz"]), active_time_s
             )
         ),
-        doppler_fft_size=args.doppler_fft_size,
     )
     radio = (
         E310RadioConfig(

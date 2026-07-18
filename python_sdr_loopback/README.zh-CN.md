@@ -94,6 +94,16 @@ python scripts/run_file_transfer_batches.py --input-file phone.mp4 --output-file
 
 FMCW 雷达链路支持仿真、IQ 回放和 E310 采集。上位机的配置档位将稳定的 20 MHz、验证用 40 MHz 与 56 MHz 极限实验分开；选择档位只更新界面参数，下一次启动雷达时才会重新配置 E310。
 
+命令行也提供同一组可部署档位，因此离线验证与后续 E310 联调使用完全一致的波形尺寸：
+
+```powershell
+python scripts\run_fmcw_radar.py --source synthetic --profile stable-20 --headless --metrics artifacts\fmcw_profiles\stable.jsonl
+python scripts\run_fmcw_radar.py --source synthetic --profile validate-40 --headless --metrics artifacts\fmcw_profiles\validate.jsonl
+python scripts\run_fmcw_radar.py --source e310 --profile limit-56 --dry-run
+```
+
+为受控实验提供的显式波形参数仍会覆盖所选档位；`--dry-run` 不会打开无线电设备。
+
 配置扫频带宽为 `B` 时，软件距离单元间隔为 `c / (2B)`：20 MHz 时约为 7.49 m，56 MHz 时约为 2.68 m。这里是配置的基带带宽；在将其解释为实际物理距离分辨率前，必须用仪器确认外部倍频链的有效 RF 扫频带宽。
 
 生成并分析可复现的测试数据：

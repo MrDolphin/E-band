@@ -111,3 +111,53 @@ class RadarConfig:
     @property
     def velocity_resolution_mps(self) -> float:
         return (2.0 * self.max_unambiguous_velocity_mps) / self.doppler_fft_size
+
+
+_FMCW_PROFILE_VALUES: dict[str, dict[str, float | int]] = {
+    "stable-20": {
+        "carrier_hz": 76e9,
+        "sample_rate_hz": 30e6,
+        "bandwidth_hz": 20e6,
+        "active_time_s": 128e-6,
+        "idle_time_s": 16e-6,
+        "chirp_count": 64,
+        "doppler_fft_size": 64,
+        "max_display_range_m": 50.0,
+        "cfar_threshold_db": 12.0,
+    },
+    "validate-40": {
+        "carrier_hz": 76e9,
+        "sample_rate_hz": 61.44e6,
+        "bandwidth_hz": 40e6,
+        "active_time_s": 125e-6,
+        "idle_time_s": 15.625e-6,
+        "chirp_count": 64,
+        "doppler_fft_size": 64,
+        "max_display_range_m": 50.0,
+        "cfar_threshold_db": 12.0,
+    },
+    "limit-56": {
+        "carrier_hz": 76e9,
+        "sample_rate_hz": 61.44e6,
+        "bandwidth_hz": 56e6,
+        "active_time_s": 125e-6,
+        "idle_time_s": 15.625e-6,
+        "chirp_count": 64,
+        "doppler_fft_size": 64,
+        "max_display_range_m": 50.0,
+        "cfar_threshold_db": 12.0,
+    },
+}
+
+
+def fmcw_profile_names() -> tuple[str, ...]:
+    """Return deployment profile IDs in stable-to-limit order."""
+    return tuple(_FMCW_PROFILE_VALUES)
+
+
+def fmcw_profile_values(name: str) -> dict[str, float | int]:
+    """Return a copy of a named deployable FMCW configuration profile."""
+    try:
+        return dict(_FMCW_PROFILE_VALUES[name])
+    except KeyError as error:
+        raise ValueError(f"unknown FMCW profile: {name}") from error

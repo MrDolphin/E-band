@@ -130,11 +130,7 @@ class RadarCliTests(unittest.TestCase):
                 "run_fmcw_radar.py",
                 "--headless",
                 "--metrics", metrics_path,
-                "--sample-rate-hz", "61440000",
-                "--bandwidth-hz", "56000000",
-                "--active-time-us", "125",
-                "--idle-time-us", "15.625",
-                "--chirp-count", "64",
+                "--profile", "limit-56",
             )
 
         self.assertIn("frames_processed=1", completed.stdout)
@@ -144,12 +140,14 @@ class RadarCliTests(unittest.TestCase):
             "run_fmcw_radar.py",
             "--source", "e310",
             "--dry-run",
+            "--profile", "validate-40",
             "--tx-gain-db", "-30",
             "--tx-amplitude", "0.4",
             "--rx-gain-db", "20",
         )
 
         values = dict(line.split("=", 1) for line in completed.stdout.splitlines())
+        self.assertEqual(values["sample_rate_hz"], "61440000")
         self.assertEqual(values["tx_gain_db"], "-30.0")
         self.assertEqual(values["tx_amplitude"], "0.4")
         self.assertEqual(values["rx_gain_db"], "20.0")

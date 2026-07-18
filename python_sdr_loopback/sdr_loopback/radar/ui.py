@@ -10,50 +10,37 @@ from tkinter import ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from .config import RadarConfig, recommended_range_fft_size
+from .config import (
+    RadarConfig,
+    fmcw_profile_values,
+    recommended_range_fft_size,
+)
 from .models import RadarDiagnostics, RadarTarget
 
 
 _BANDWIDTH_PROFILES = {
-    "稳定 20 MHz": {
-        "carrier_ghz": "76",
-        "sample_rate_msps": "30",
-        "bandwidth_mhz": "20",
-        "active_us": "128",
-        "idle_us": "16",
-        "chirp_count": "64",
-        "cfar_threshold_db": "12",
-        "max_display_range_m": "50",
-    },
-    "验证 40 MHz": {
-        "carrier_ghz": "76",
-        "sample_rate_msps": "61.44",
-        "bandwidth_mhz": "40",
-        "active_us": "125",
-        "idle_us": "15.625",
-        "chirp_count": "64",
-        "cfar_threshold_db": "12",
-        "max_display_range_m": "50",
-    },
-    "极限 56 MHz": {
-        "carrier_ghz": "76",
-        "sample_rate_msps": "61.44",
-        "bandwidth_mhz": "56",
-        "active_us": "125",
-        "idle_us": "15.625",
-        "chirp_count": "64",
-        "cfar_threshold_db": "12",
-        "max_display_range_m": "50",
-    },
+    "稳定 20 MHz": "stable-20",
+    "验证 40 MHz": "validate-40",
+    "极限 56 MHz": "limit-56",
 }
 
 
 def radar_bandwidth_profile(name: str) -> dict[str, str]:
-    """Return one immutable-by-convention E310 FMCW profile for GUI editing."""
+    """Return GUI display values from the shared deployable FMCW profile."""
     try:
-        return dict(_BANDWIDTH_PROFILES[name])
+        values = fmcw_profile_values(_BANDWIDTH_PROFILES[name])
     except KeyError as error:
         raise ValueError(f"unknown radar bandwidth profile: {name}") from error
+    return {
+        "carrier_ghz": f"{float(values['carrier_hz']) / 1e9:g}",
+        "sample_rate_msps": f"{float(values['sample_rate_hz']) / 1e6:g}",
+        "bandwidth_mhz": f"{float(values['bandwidth_hz']) / 1e6:g}",
+        "active_us": f"{float(values['active_time_s']) * 1e6:g}",
+        "idle_us": f"{float(values['idle_time_s']) * 1e6:g}",
+        "chirp_count": str(values["chirp_count"]),
+        "cfar_threshold_db": f"{float(values['cfar_threshold_db']):g}",
+        "max_display_range_m": f"{float(values['max_display_range_m']):g}",
+    }
 
 
 def radar_bandwidth_profile_names() -> tuple[str, ...]:

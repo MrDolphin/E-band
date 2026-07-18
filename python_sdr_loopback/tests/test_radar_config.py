@@ -2,7 +2,12 @@ import unittest
 
 import numpy as np
 
-from sdr_loopback.radar.config import RadarConfig, recommended_range_fft_size
+from sdr_loopback.radar.config import (
+    RadarConfig,
+    fmcw_profile_names,
+    fmcw_profile_values,
+    recommended_range_fft_size,
+)
 from sdr_loopback.radar.models import (
     RadarCapture,
     RadarDiagnostics,
@@ -67,6 +72,15 @@ class RadarConfigTests(unittest.TestCase):
     def test_recommended_range_fft_scales_to_56_mhz_profile(self):
         self.assertEqual(recommended_range_fft_size(30e6, 128e-6), 4096)
         self.assertEqual(recommended_range_fft_size(61.44e6, 125e-6), 8192)
+
+    def test_deployment_profiles_keep_20_40_and_56_mhz_distinct(self):
+        self.assertEqual(fmcw_profile_names(), ("stable-20", "validate-40", "limit-56"))
+        stable = RadarConfig(**fmcw_profile_values("stable-20"), range_fft_size=4096)
+        limit = RadarConfig(**fmcw_profile_values("limit-56"), range_fft_size=8192)
+
+        self.assertEqual(stable.bandwidth_hz, 20e6)
+        self.assertEqual(limit.bandwidth_hz, 56e6)
+        self.assertEqual(limit.active_samples, 7680)
 
 
 class RadarModelTests(unittest.TestCase):
