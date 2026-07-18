@@ -185,6 +185,30 @@ class RadarCliTests(unittest.TestCase):
         self.assertEqual(values["cpi_samples"], "552960")
         self.assertEqual(values["hardware_access"], "false")
 
+    def test_profile_validation_reports_limit_56_target_error_bounds(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report_path = Path(temporary_directory) / "profiles.json"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(PROJECT_ROOT / "scripts" / "validate_fmcw_profiles.py"),
+                    "--profile", "limit-56",
+                    "--output", str(report_path),
+                ],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(report["passed"])
+        result = report["profiles"][0]
+        self.assertEqual(result["profile"], "limit-56")
+        self.assertLessEqual(result["range_error_m"], result["range_tolerance_m"])
+        self.assertLessEqual(result["velocity_error_mps"], result["velocity_tolerance_mps"])
+
     def test_e310_open_failure_still_calls_close(self):
         calls = []
 

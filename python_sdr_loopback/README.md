@@ -119,6 +119,16 @@ python scripts\run_fmcw_radar.py --source e310 --profile limit-56 --dry-run
 Explicit waveform arguments still override the selected profile for controlled
 experiments. `--dry-run` never opens the radio.
 
+Run the fully offline acceptance check before a hardware session. It injects
+one seeded synthetic target into each selected profile, verifies range and
+velocity recovery within one physical bin, and writes a machine-readable JSON
+report without opening E310:
+
+```powershell
+python scripts\validate_fmcw_profiles.py --output artifacts\fmcw_profile_acceptance.json
+python scripts\validate_fmcw_profiles.py --profile limit-56 --output artifacts\fmcw_limit56_acceptance.json
+```
+
 With configured sweep bandwidth `B`, the software range-bin spacing is
 `c / (2B)`: 7.49 m at 20 MHz and 2.68 m at 56 MHz.  Those are configured
 baseband values.  Verify the effective RF sweep of the external multiplier
