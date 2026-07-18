@@ -114,3 +114,5 @@ python scripts/run_fmcw_radar.py --source synthetic --duration-sec 300 --headles
 ```powershell
 python scripts/diagnose_fmcw_sync.py --dry-run --frames 10 --bandwidth-hz 56000000
 ```
+
+在当前开发电脑上，经过预热和有界 CFAR 优化后，40 MHz 与 56 MHz 合成数据各处理一个 CPI 约需 43 ms，而 64 Chirp CPI 时长为 9 ms。因此高带宽档可用于验证配置、距离分辨率和检测行为；实时控制器会始终保留最新帧，而不会无限排队等待逐个 CPI 全部处理完成。

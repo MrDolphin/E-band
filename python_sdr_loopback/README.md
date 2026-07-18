@@ -134,3 +134,9 @@ ready:
 ```powershell
 python scripts/diagnose_fmcw_sync.py --dry-run --frames 10 --bandwidth-hz 56000000
 ```
+
+On the current development PC, warmed synthetic 40 MHz and 56 MHz profiles
+process one CPI in about 43 ms after bounded-CFAR optimization, while a 64-chirp
+CPI lasts 9 ms.  The high-bandwidth profiles therefore validate configuration,
+range resolution, and detection behavior, but the live controller deliberately
+keeps only the newest frame rather than queueing every CPI indefinitely.
