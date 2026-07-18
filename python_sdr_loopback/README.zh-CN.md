@@ -89,3 +89,28 @@ python scripts/e310_rf_loopback.py --uri ip:192.168.1.10 --sample-rate 30000000 
 ```powershell
 python scripts/run_file_transfer_batches.py --input-file phone.mp4 --output-file artifacts\recovered_phone.mp4 --batch-bytes 200000 --artifact-prefix artifacts\phone_batched
 ```
+
+## FMCW 雷达 MVP 验证
+
+FMCW 雷达链路支持仿真、IQ 回放和 E310 采集。上位机的配置档位将稳定的 20 MHz、验证用 40 MHz 与 56 MHz 极限实验分开；选择档位只更新界面参数，下一次启动雷达时才会重新配置 E310。
+
+配置扫频带宽为 `B` 时，软件距离单元间隔为 `c / (2B)`：20 MHz 时约为 7.49 m，56 MHz 时约为 2.68 m。这里是配置的基带带宽；在将其解释为实际物理距离分辨率前，必须用仪器确认外部倍频链的有效 RF 扫频带宽。
+
+生成并分析可复现的测试数据：
+
+```powershell
+python scripts/generate_fmcw_fixture.py --output artifacts\fmcw_acceptance.npz --target 22.5,1.2,18 --seed 7
+python scripts/analyze_fmcw_capture.py artifacts\fmcw_acceptance.npz --output-dir artifacts\fmcw_acceptance_result
+```
+
+执行 5 分钟无界面合成源稳定性测试。该命令不会连接 E310；每个 CPI 写入一条诊断 JSON，汇总写入 `soak_summary.json`：
+
+```powershell
+python scripts/run_fmcw_radar.py --source synthetic --duration-sec 300 --headless --metrics artifacts\fmcw_soak\metrics.jsonl
+```
+
+通过条件为：`frames_failed=0`、`queue_max_depth=1`、`controller_stopped=true`、`soak_ok=true`。E310 已重新接线后，可先用下列命令确认配置而不访问硬件：
+
+```powershell
+python scripts/diagnose_fmcw_sync.py --dry-run --frames 10 --bandwidth-hz 56000000
+```

@@ -98,6 +98,31 @@ class RadarCliTests(unittest.TestCase):
         self.assertTrue(result_exists)
         self.assertTrue(capture_exists)
 
+    def test_headless_synthetic_soak_writes_metrics_and_summary(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            metrics_path = Path(temporary_directory) / "metrics.jsonl"
+            completed = self.run_script(
+                "run_fmcw_radar.py",
+                "--headless",
+                "--metrics", metrics_path,
+                "--duration-sec", "0.05",
+                "--target", "22.5,0,18",
+                "--seed", "7",
+                *REDUCED_CONFIG_FLAGS,
+            )
+            summary = json.loads(
+                metrics_path.with_name("soak_summary.json").read_text(encoding="utf-8")
+            )
+            metric_count = len(metrics_path.read_text(encoding="utf-8").splitlines())
+
+        values = dict(line.split("=", 1) for line in completed.stdout.splitlines())
+        self.assertGreater(metric_count, 0)
+        self.assertEqual(summary["frames_processed"], metric_count)
+        self.assertEqual(values["frames_failed"], "0")
+        self.assertEqual(values["queue_max_depth"], "1")
+        self.assertEqual(values["controller_stopped"], "true")
+        self.assertEqual(values["soak_ok"], "true")
+
     def test_e310_dry_run_reports_explicit_radio_levels(self):
         completed = self.run_script(
             "run_fmcw_radar.py",

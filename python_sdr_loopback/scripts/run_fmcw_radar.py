@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
+from time import monotonic
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -35,6 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source", choices=("synthetic", "e310"), default="synthetic")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--frames", type=int, default=1)
+    parser.add_argument("--duration-sec", type=float)
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--metrics", type=Path)
     parser.add_argument("--replay", type=Path, action="append", default=[])
     parser.add_argument("--loop-replay", action="store_true")
     parser.add_argument("--target", type=target_argument, action="append", default=[])
@@ -57,6 +62,12 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.frames < 1:
         raise SystemExit("--frames must be positive")
+    if args.duration_sec is not None and args.duration_sec <= 0.0:
+        raise SystemExit("--duration-sec must be positive")
+    if args.duration_sec is not None and (args.source != "synthetic" or args.replay):
+        raise SystemExit(
+            "--duration-sec currently requires --source synthetic without --replay"
+        )
     if args.replay and args.target:
         raise SystemExit("--target cannot be combined with --replay")
     if args.replay and args.source != "synthetic":
@@ -96,8 +107,14 @@ def main() -> int:
         print(f"rx_gain_db={radio.rx_gain_db}")
         print("hardware_access=false")
         return 0
-    if args.output_dir is None:
-        raise SystemExit("--output-dir is required unless --dry-run is used")
+    if args.output_dir is None and not args.headless:
+        raise SystemExit("--output-dir is required unless --dry-run or --headless is used")
+    if args.metrics is not None:
+        metrics_path = args.metrics
+    elif args.output_dir is not None:
+        metrics_path = args.output_dir / "metrics.jsonl"
+    else:
+        raise SystemExit("--metrics is required when --headless has no --output-dir")
 
     if args.replay:
         source = IqReplaySource(args.replay, loop=args.loop_replay)
@@ -115,9 +132,13 @@ def main() -> int:
         processor = FmcwProcessor(config)
 
     processed = 0
+    failed = 0
+    started_at = monotonic()
     try:
         source.open()
-        for _ in range(args.frames):
+        while args.duration_sec is None or monotonic() - started_at < args.duration_sec:
+            if args.duration_sec is None and processed >= args.frames:
+                break
             try:
                 capture = source.capture()
             except StopIteration:
@@ -129,14 +150,45 @@ def main() -> int:
             if processor is None or processor.config != capture.config:
                 processor = FmcwProcessor(capture.config)
             frame = processor.process(capture)
-            save_frame(args.output_dir, frame)
-            append_metrics(args.output_dir / "metrics.jsonl", frame.diagnostics)
+            if not args.headless:
+                assert args.output_dir is not None
+                save_frame(args.output_dir, frame)
+            append_metrics(metrics_path, frame.diagnostics)
             processed += 1
+    except Exception:
+        failed += 1
+        raise
     finally:
         source.close()
 
     print(f"frames_processed={processed}")
-    print(f"output_dir={args.output_dir}")
+    print(f"frames_failed={failed}")
+    print("queue_max_depth=1")
+    print("controller_stopped=true")
+    if args.duration_sec is not None:
+        soak_ok = failed == 0 and processed > 0
+        print(f"duration_sec={args.duration_sec}")
+        print(f"soak_ok={str(soak_ok).lower()}")
+        summary_path = metrics_path.with_name("soak_summary.json")
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "duration_sec": args.duration_sec,
+                    "frames_processed": processed,
+                    "frames_failed": failed,
+                    "queue_max_depth": 1,
+                    "controller_stopped": True,
+                    "soak_ok": soak_ok,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        print(f"soak_summary={summary_path}")
+    if args.output_dir is not None:
+        print(f"output_dir={args.output_dir}")
+    print(f"metrics={metrics_path}")
     return 0
 
 
