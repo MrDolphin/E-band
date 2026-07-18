@@ -35,12 +35,17 @@ class PositionAssessmentTests(unittest.TestCase):
 
         empty_assessment = assess_frame(empty)
         assessment = assess_frame(
-            target, label="8m-azimuth-0", measured_range_m=8.0, notes="corner"
+            target,
+            label="8m-azimuth-0",
+            measured_range_m=8.0,
+            notes="corner",
+            photo_path="photos/corner_8m.jpg",
         )
 
         self.assertGreater(assessment.quality_score, empty_assessment.quality_score)
         self.assertEqual(assessment.label, "8m-azimuth-0")
         self.assertEqual(assessment.measured_range_m, 8.0)
+        self.assertEqual(assessment.photo_path, "photos/corner_8m.jpg")
         with TemporaryDirectory() as directory:
             output = Path(directory) / "candidates.jsonl"
             append_position_candidate(output, assessment)

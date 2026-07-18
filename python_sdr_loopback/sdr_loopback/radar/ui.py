@@ -14,6 +14,52 @@ from .config import RadarConfig
 from .models import RadarDiagnostics, RadarTarget
 
 
+_BANDWIDTH_PROFILES = {
+    "稳定 20 MHz": {
+        "carrier_ghz": "76",
+        "sample_rate_msps": "30",
+        "bandwidth_mhz": "20",
+        "active_us": "128",
+        "idle_us": "16",
+        "chirp_count": "64",
+        "cfar_threshold_db": "12",
+        "max_display_range_m": "50",
+    },
+    "验证 40 MHz": {
+        "carrier_ghz": "76",
+        "sample_rate_msps": "61.44",
+        "bandwidth_mhz": "40",
+        "active_us": "125",
+        "idle_us": "15.625",
+        "chirp_count": "64",
+        "cfar_threshold_db": "12",
+        "max_display_range_m": "50",
+    },
+    "极限 56 MHz": {
+        "carrier_ghz": "76",
+        "sample_rate_msps": "61.44",
+        "bandwidth_mhz": "56",
+        "active_us": "125",
+        "idle_us": "15.625",
+        "chirp_count": "64",
+        "cfar_threshold_db": "12",
+        "max_display_range_m": "50",
+    },
+}
+
+
+def radar_bandwidth_profile(name: str) -> dict[str, str]:
+    """Return one immutable-by-convention E310 FMCW profile for GUI editing."""
+    try:
+        return dict(_BANDWIDTH_PROFILES[name])
+    except KeyError as error:
+        raise ValueError(f"unknown radar bandwidth profile: {name}") from error
+
+
+def radar_bandwidth_profile_names() -> tuple[str, ...]:
+    return tuple(_BANDWIDTH_PROFILES)
+
+
 def _pool_groups(length: int, count: int) -> tuple[np.ndarray, ...]:
     if count <= length:
         return tuple(np.asarray(group) for group in np.array_split(np.arange(length), count))

@@ -33,6 +33,7 @@ from sdr_loopback.radar.ui import (
     orient_heatmap_for_canvas,
     radar_xy,
     radar_config_from_values,
+    radar_bandwidth_profile,
     range_doppler_y_axis_layout,
     semicircle_label_layout,
     validate_runtime_inputs,
@@ -505,6 +506,22 @@ class RadarUiTests(unittest.TestCase):
         self.assertEqual(button.state, "disabled")
         self.assertIn("0/16", radar_status.value)
 
+    def test_candidate_photo_is_copied_into_hardware_artifacts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            photo = root / "overhead.jpg"
+            photo.write_bytes(b"photo")
+            gui = SimpleNamespace(
+                radar_candidate_photo_var=SimpleNamespace(get=lambda: str(photo))
+            )
+            frame = SimpleNamespace(frame_index=7)
+            with patch("scripts.sdr_video_gui.PROJECT_DIR", root):
+                relative = SdrVideoGui._copy_radar_candidate_photo(gui, frame)
+
+            copied = root / "artifacts" / "hardware" / relative
+            self.assertEqual(relative, "position_candidates/photos/candidate_000007.jpg")
+            self.assertEqual(copied.read_bytes(), b"photo")
+
     def test_display_fields_build_and_validate_radar_config(self):
         values = dict(
             carrier_ghz="76",
@@ -538,6 +555,15 @@ class RadarUiTests(unittest.TestCase):
         self.assertEqual(config.active_samples, 7680)
         self.assertEqual(config.range_fft_size, 8192)
         self.assertLess(config.range_resolution_m, 2.7)
+
+    def test_bandwidth_profiles_keep_stable_and_trial_settings_separate(self):
+        stable = radar_config_from_values(radar_bandwidth_profile("稳定 20 MHz"))
+        trial = radar_config_from_values(radar_bandwidth_profile("极限 56 MHz"))
+
+        self.assertEqual(stable.bandwidth_hz, 20e6)
+        self.assertEqual(trial.bandwidth_hz, 56e6)
+        self.assertEqual(trial.sample_rate_hz, 61.44e6)
+        self.assertGreater(trial.range_fft_size, stable.range_fft_size)
 
     def test_gain_and_synthetic_fields_reject_nonfinite_or_negative_range(self):
         invalid = (

@@ -4,6 +4,7 @@ import functools
 import os
 import queue
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -42,6 +43,8 @@ from sdr_loopback.radar.ui import (
     RadarDashboard,
     format_derived_config,
     poll_radar,
+    radar_bandwidth_profile,
+    radar_bandwidth_profile_names,
     radar_config_from_values,
     validate_runtime_inputs,
 )
@@ -352,6 +355,7 @@ class SdrVideoGui(tk.Tk):
         self.profile_parts: dict[str, str] = {}
 
         self.radar_source_var = tk.StringVar(value="仿真")
+        self.radar_profile_var = tk.StringVar(value="稳定 20 MHz")
         self.radar_carrier_ghz_var = tk.StringVar(value="76")
         self.radar_sample_rate_msps_var = tk.StringVar(value="30")
         self.radar_bandwidth_mhz_var = tk.StringVar(value="20")
@@ -375,6 +379,7 @@ class SdrVideoGui(tk.Tk):
         self.radar_candidate_label_var = tk.StringVar(value="")
         self.radar_candidate_measured_range_var = tk.StringVar(value="")
         self.radar_candidate_notes_var = tk.StringVar(value="")
+        self.radar_candidate_photo_var = tk.StringVar(value="")
         self.radar_candidate_quality_var = tk.StringVar(value="候选质量：等待雷达帧")
         self._best_radar_candidate_score = 0.0
 
@@ -470,6 +475,17 @@ class SdrVideoGui(tk.Tk):
         radar_config.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         radar_config.columnconfigure(1, weight=1)
         radar_config.columnconfigure(3, weight=1)
+        ttk.Label(radar_config, text="带宽预设").grid(
+            row=0, column=0, padx=8, pady=4, sticky="w"
+        )
+        profile_box = ttk.Combobox(
+            radar_config,
+            textvariable=self.radar_profile_var,
+            values=radar_bandwidth_profile_names(),
+            state="readonly",
+        )
+        profile_box.grid(row=0, column=1, padx=8, pady=4, sticky="ew")
+        profile_box.bind("<<ComboboxSelected>>", self.apply_radar_bandwidth_profile)
         fields = (
             ("数据源", self.radar_source_var, ("仿真", "IQ回放", "E310")),
             ("载频 (GHz)", self.radar_carrier_ghz_var, None),
@@ -487,6 +503,7 @@ class SdrVideoGui(tk.Tk):
         )
         for index, (label, variable, choices) in enumerate(fields):
             row, pair = divmod(index, 2)
+            row += 1
             column = pair * 2
             ttk.Label(radar_config, text=label).grid(row=row, column=column, padx=8, pady=4, sticky="w")
             if choices:
@@ -501,7 +518,7 @@ class SdrVideoGui(tk.Tk):
             widget.grid(row=row, column=column + 1, padx=8, pady=4, sticky="ew")
             widget.bind("<FocusOut>", lambda _event: self.update_radar_derived())
 
-        replay_row = (len(fields) + 1) // 2
+        replay_row = (len(fields) + 1) // 2 + 1
         ttk.Label(radar_config, text="IQ回放文件").grid(row=replay_row, column=0, padx=8, pady=4, sticky="w")
         ttk.Entry(radar_config, textvariable=self.radar_replay_path_var).grid(
             row=replay_row, column=1, columnspan=2, padx=8, pady=4, sticky="ew"
@@ -598,6 +615,7 @@ class SdrVideoGui(tk.Tk):
         ttk.Entry(candidate_controls, textvariable=self.radar_candidate_measured_range_var, width=8).pack(side=tk.LEFT, padx=(4, 8))
         ttk.Label(candidate_controls, text="角反朝向/备注").pack(side=tk.LEFT)
         ttk.Entry(candidate_controls, textvariable=self.radar_candidate_notes_var, width=22).pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Button(candidate_controls, text="选择俯视照片", command=self.browse_radar_candidate_photo).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(candidate_controls, text="保存位置候选", command=self.save_position_candidate).pack(side=tk.LEFT)
         ttk.Label(candidate_controls, textvariable=self.radar_candidate_quality_var).pack(side=tk.RIGHT)
         self.radar_dashboard = RadarDashboard(self.radar_tab)
@@ -631,6 +649,14 @@ class SdrVideoGui(tk.Tk):
         if path:
             self.radar_replay_path_var.set(path)
 
+    def browse_radar_candidate_photo(self) -> None:
+        path = filedialog.askopenfilename(
+            initialdir=str(PROJECT_DIR),
+            filetypes=[("照片", "*.jpg *.jpeg *.png *.bmp"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.radar_candidate_photo_var.set(path)
+
     def build_radar_config(self) -> RadarConfig:
         for label, variable in (
             ("TX通道", self.radar_tx_channel_var),
@@ -657,6 +683,24 @@ class SdrVideoGui(tk.Tk):
             self.radar_derived_var.set(format_derived_config(self.build_radar_config()))
         except (TypeError, ValueError):
             self.radar_derived_var.set("参数待修正")
+
+    def apply_radar_bandwidth_profile(self, _event: object | None = None) -> None:
+        values = radar_bandwidth_profile(self.radar_profile_var.get())
+        fields = (
+            (self.radar_carrier_ghz_var, "carrier_ghz"),
+            (self.radar_sample_rate_msps_var, "sample_rate_msps"),
+            (self.radar_bandwidth_mhz_var, "bandwidth_mhz"),
+            (self.radar_active_us_var, "active_us"),
+            (self.radar_idle_us_var, "idle_us"),
+            (self.radar_chirp_count_var, "chirp_count"),
+            (self.radar_cfar_db_var, "cfar_threshold_db"),
+            (self.radar_display_range_var, "max_display_range_m"),
+        )
+        for variable, key in fields:
+            variable.set(values[key])
+        self.update_radar_derived()
+        if self.radar_controller is not None:
+            self.radar_status_var.set("带宽预设将在停止并重新启动雷达后生效")
 
     def start_radar(self) -> None:
         if self.radar_controller is not None:
@@ -908,6 +952,7 @@ class SdrVideoGui(tk.Tk):
                 label=self.radar_candidate_label_var.get(),
                 measured_range_m=measured_range,
                 notes=self.radar_candidate_notes_var.get(),
+                photo_path=self._copy_radar_candidate_photo(frame),
             )
             output = PROJECT_DIR / "artifacts" / "hardware" / "position_candidates.jsonl"
             append_position_candidate(output, candidate)
@@ -922,6 +967,24 @@ class SdrVideoGui(tk.Tk):
         self.radar_status_var.set(
             f"已保存位置候选：质量 {candidate.quality_score:.1f}/100，{output}"
         )
+
+    def _copy_radar_candidate_photo(self, frame: object) -> str | None:
+        source = self.radar_candidate_photo_var.get().strip()
+        if not source:
+            return None
+        source_path = Path(source)
+        if not source_path.is_file():
+            raise ValueError("俯视照片文件不存在")
+        suffix = source_path.suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".bmp"}:
+            raise ValueError("俯视照片必须是 JPG、PNG 或 BMP 文件")
+        photo_dir = PROJECT_DIR / "artifacts" / "hardware" / "position_candidates" / "photos"
+        destination = photo_dir / f"candidate_{frame.frame_index:06d}{suffix}"
+        photo_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination)
+        return destination.relative_to(
+            PROJECT_DIR / "artifacts" / "hardware"
+        ).as_posix()
 
     def selected_preset(self) -> Preset:
         label = self.preset_var.get()

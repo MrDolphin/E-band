@@ -16,6 +16,7 @@ class PositionCandidate:
     label: str
     measured_range_m: float | None
     notes: str
+    photo_path: str | None
     quality_score: float
     target_count: int
     detected_range_m: float | None
@@ -42,6 +43,7 @@ def assess_frame(
     label: str = "",
     measured_range_m: float | None = None,
     notes: str = "",
+    photo_path: str | None = None,
 ) -> PositionCandidate:
     """Create a repeatable quality score for comparing physical placements."""
     if measured_range_m is not None and measured_range_m < 0.0:
@@ -61,6 +63,7 @@ def assess_frame(
         label=label.strip(),
         measured_range_m=measured_range_m,
         notes=notes.strip(),
+        photo_path=str(photo_path) if photo_path else None,
         quality_score=round(score, 1),
         target_count=len(frame.targets),
         detected_range_m=target.range_m if target is not None else None,
