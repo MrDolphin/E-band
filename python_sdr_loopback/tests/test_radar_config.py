@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from sdr_loopback.radar.config import RadarConfig
+from sdr_loopback.radar.config import RadarConfig, recommended_range_fft_size
 from sdr_loopback.radar.models import (
     RadarCapture,
     RadarDiagnostics,
@@ -63,6 +63,10 @@ class RadarConfigTests(unittest.TestCase):
             RadarConfig(range_fft_size=2048)
         with self.assertRaisesRegex(ValueError, "chirp_count"):
             RadarConfig(doppler_fft_size=32)
+
+    def test_recommended_range_fft_scales_to_56_mhz_profile(self):
+        self.assertEqual(recommended_range_fft_size(30e6, 128e-6), 4096)
+        self.assertEqual(recommended_range_fft_size(61.44e6, 125e-6), 8192)
 
 
 class RadarModelTests(unittest.TestCase):

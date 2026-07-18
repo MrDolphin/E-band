@@ -8,7 +8,7 @@ from time import monotonic
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sdr_loopback.radar.config import RadarConfig
+from sdr_loopback.radar.config import RadarConfig, recommended_range_fft_size
 from sdr_loopback.radar.models import SyntheticTarget
 from sdr_loopback.radar.processor import FmcwProcessor
 from sdr_loopback.radar.sources import (
@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--active-time-us", type=float, default=128.0)
     parser.add_argument("--idle-time-us", type=float, default=16.0)
     parser.add_argument("--chirp-count", type=int, default=64)
-    parser.add_argument("--range-fft-size", type=int, default=4096)
+    parser.add_argument("--range-fft-size", type=int)
     parser.add_argument("--doppler-fft-size", type=int, default=64)
     parser.add_argument("--tx-gain-db", type=float, default=-40.0)
     parser.add_argument("--tx-amplitude", type=float, default=0.25)
@@ -82,7 +82,13 @@ def main() -> int:
         active_time_s=args.active_time_us * 1e-6,
         idle_time_s=args.idle_time_us * 1e-6,
         chirp_count=args.chirp_count,
-        range_fft_size=args.range_fft_size,
+        range_fft_size=(
+            args.range_fft_size
+            if args.range_fft_size is not None
+            else recommended_range_fft_size(
+                args.sample_rate_hz, args.active_time_us * 1e-6
+            )
+        ),
         doppler_fft_size=args.doppler_fft_size,
     )
     radio = (

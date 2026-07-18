@@ -123,6 +123,22 @@ class RadarCliTests(unittest.TestCase):
         self.assertEqual(values["controller_stopped"], "true")
         self.assertEqual(values["soak_ok"], "true")
 
+    def test_runner_derives_fft_size_for_56_mhz_profile(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            metrics_path = Path(temporary_directory) / "metrics.jsonl"
+            completed = self.run_script(
+                "run_fmcw_radar.py",
+                "--headless",
+                "--metrics", metrics_path,
+                "--sample-rate-hz", "61440000",
+                "--bandwidth-hz", "56000000",
+                "--active-time-us", "125",
+                "--idle-time-us", "15.625",
+                "--chirp-count", "64",
+            )
+
+        self.assertIn("frames_processed=1", completed.stdout)
+
     def test_e310_dry_run_reports_explicit_radio_levels(self):
         completed = self.run_script(
             "run_fmcw_radar.py",

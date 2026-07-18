@@ -7,6 +7,12 @@ import math
 SPEED_OF_LIGHT_MPS = 299_792_458.0
 
 
+def recommended_range_fft_size(sample_rate_hz: float, active_time_s: float) -> int:
+    """Return the smallest supported power-of-two FFT covering active samples."""
+    active_samples = round(sample_rate_hz * active_time_s)
+    return 1 << max(12, (max(1, active_samples) - 1).bit_length())
+
+
 @dataclass(frozen=True)
 class RadarConfig:
     carrier_hz: float = 76e9
