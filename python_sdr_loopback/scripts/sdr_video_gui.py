@@ -808,7 +808,11 @@ class SdrVideoGui(tk.Tk):
                     self.radar_stop_button.configure(state=tk.NORMAL)
                     calibrate_button = getattr(self, "radar_calibrate_button", None)
                     if calibrate_button is not None:
-                        calibrate_button.configure(state=tk.DISABLED)
+                        # A queued calibration only accepts successfully synchronized
+                        # CPIs in FmcwProcessor.  Keep the action available while the
+                        # radio is recovering, instead of forcing an E310 restart just
+                        # to arm the next stable capture sequence.
+                        calibrate_button.configure(state=tk.NORMAL)
                 else:
                     if calibration_status is not None:
                         calibrate_button = getattr(

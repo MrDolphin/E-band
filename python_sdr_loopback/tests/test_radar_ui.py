@@ -595,8 +595,12 @@ class RadarUiTests(unittest.TestCase):
         controller = SimpleNamespace(status=lambda: status, latest_frame=lambda: None)
         start_button = SimpleNamespace(state=None)
         stop_button = SimpleNamespace(state=None)
+        calibrate_button = SimpleNamespace(state=None)
         start_button.configure = lambda *, state: setattr(start_button, "state", state)
         stop_button.configure = lambda *, state: setattr(stop_button, "state", state)
+        calibrate_button.configure = lambda *, state: setattr(
+            calibrate_button, "state", state
+        )
         radar_status = SimpleNamespace(value="")
         radar_status.set = lambda value: setattr(radar_status, "value", value)
         gui = SimpleNamespace(
@@ -606,6 +610,7 @@ class RadarUiTests(unittest.TestCase):
             radar_status_var=radar_status,
             radar_start_button=start_button,
             radar_stop_button=stop_button,
+            radar_calibrate_button=calibrate_button,
             after=lambda _delay, _callback: None,
             poll_radar_controller=lambda: None,
         )
@@ -615,6 +620,7 @@ class RadarUiTests(unittest.TestCase):
         self.assertIs(gui.radar_controller, controller)
         self.assertEqual(start_button.state, "disabled")
         self.assertEqual(stop_button.state, "normal")
+        self.assertEqual(calibrate_button.state, "normal")
         self.assertIn("等待同步", radar_status.value)
         self.assertNotIn("清理失败", radar_status.value)
 
