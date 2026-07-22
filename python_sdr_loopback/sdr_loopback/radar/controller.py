@@ -1,9 +1,10 @@
 """Threaded latest-frame runtime controller for FMCW radar processing."""
 
 from dataclasses import dataclass
+import math
 import queue
 import threading
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Optional
 
 from .models import RadarFrame
@@ -29,6 +30,12 @@ class ControllerStatus:
     recovery_exhausted: bool
     sync_diagnostics: object | None
     source_diagnostics: object | None
+    alignment_duration_s: float
+    alignment_active: bool
+    alignment_remaining_s: float
+    ever_synchronized: bool
+    alignment_best_sync_score: float
+    last_success_age_s: float | None
 
 
 class RadarController:
@@ -50,6 +57,7 @@ class RadarController:
         recoverable_processing_errors: tuple[type[Exception], ...] = (),
         recover_after_processing_errors: int = 0,
         max_source_recoveries: int = 0,
+        alignment_duration_s: float = 0.0,
     ) -> None:
         if cpi_period_s <= 0.0:
             raise ValueError("cpi_period_s must be positive")
@@ -60,12 +68,20 @@ class RadarController:
             or max_source_recoveries < 0
         ):
             raise ValueError("source recovery limits must be nonnegative integers")
+        if (
+            isinstance(alignment_duration_s, bool)
+            or not isinstance(alignment_duration_s, (int, float))
+            or not math.isfinite(alignment_duration_s)
+            or alignment_duration_s < 0.0
+        ):
+            raise ValueError("alignment_duration_s must be a nonnegative number")
         self.source = source
         self.processor = processor
         self.cpi_period_s = float(cpi_period_s)
         self._recoverable_processing_errors = recoverable_processing_errors
         self._recover_after_processing_errors = recover_after_processing_errors
         self._max_source_recoveries = max_source_recoveries
+        self._alignment_duration_s = float(alignment_duration_s)
         self._frames: queue.Queue[RadarFrame] = queue.Queue(maxsize=1)
         self._frame_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -89,6 +105,10 @@ class RadarController:
         self._source_recoveries = 0
         self._recovery_exhausted = False
         self._sync_diagnostics = None
+        self._alignment_deadline: float | None = None
+        self._ever_synchronized = False
+        self._alignment_best_sync_score = 0.0
+        self._last_success_at: float | None = None
 
     def start(self) -> None:
         """Start the one-shot controller lifecycle."""
@@ -171,7 +191,12 @@ class RadarController:
         )
         with self._source_condition:
             cleanup_complete = self._source_state == self._CLOSED
+        now = monotonic()
         with self._state_lock:
+            alignment_remaining_s = max(
+                0.0,
+                (self._alignment_deadline or now) - now,
+            )
             return ControllerStatus(
                 running=self._running,
                 cleanup_complete=cleanup_complete,
@@ -188,6 +213,16 @@ class RadarController:
                 recovery_exhausted=self._recovery_exhausted,
                 sync_diagnostics=self._sync_diagnostics,
                 source_diagnostics=source_diagnostics,
+                alignment_duration_s=self._alignment_duration_s,
+                alignment_active=alignment_remaining_s > 0.0,
+                alignment_remaining_s=alignment_remaining_s,
+                ever_synchronized=self._ever_synchronized,
+                alignment_best_sync_score=self._alignment_best_sync_score,
+                last_success_age_s=(
+                    None
+                    if self._last_success_at is None
+                    else max(0.0, now - self._last_success_at)
+                ),
             )
 
     def drain_diagnostic_events(self) -> tuple[object, ...]:
@@ -199,6 +234,7 @@ class RadarController:
         open_attempted = False
         consecutive_processing_errors = 0
         source_recoveries = 0
+        ever_synchronized = False
         try:
             with self._source_condition:
                 if self._source_state == self._CLOSE_REQUESTED:
@@ -208,6 +244,13 @@ class RadarController:
             open_attempted = True
             try:
                 self.source.open()
+                alignment_deadline = (
+                    monotonic() + self._alignment_duration_s
+                    if self._alignment_duration_s > 0.0
+                    else None
+                )
+                with self._state_lock:
+                    self._alignment_deadline = alignment_deadline
             finally:
                 with self._source_condition:
                     self._open_in_progress = False
@@ -223,6 +266,12 @@ class RadarController:
                 try:
                     frame = self.processor.process(capture)
                 except self._recoverable_processing_errors as error:
+                    sync_diagnostics = getattr(error, "diagnostics", None)
+                    failed_sync_score = float(
+                        getattr(sync_diagnostics, "min_correlation", 0.0)
+                    )
+                    if not math.isfinite(failed_sync_score):
+                        failed_sync_score = 0.0
                     consecutive_processing_errors += 1
                     threshold_reached = (
                         self._recover_after_processing_errors > 0
@@ -233,6 +282,11 @@ class RadarController:
                         getattr(self.source, "recover", None) is not None
                         and threshold_reached
                         and source_recoveries < self._max_source_recoveries
+                        and not ever_synchronized
+                        and not (
+                            alignment_deadline is not None
+                            and monotonic() < alignment_deadline
+                        )
                     )
                     with self._state_lock:
                         self._processing_error = str(error)
@@ -245,8 +299,10 @@ class RadarController:
                             and source_recoveries >= self._max_source_recoveries
                             and self._max_source_recoveries > 0
                         )
-                        self._sync_diagnostics = getattr(
-                            error, "diagnostics", None
+                        self._sync_diagnostics = sync_diagnostics
+                        self._alignment_best_sync_score = max(
+                            self._alignment_best_sync_score,
+                            failed_sync_score,
                         )
                     recovery = getattr(self.source, "recover", None)
                     if can_recover:
@@ -263,15 +319,23 @@ class RadarController:
                 with self._state_lock:
                     self._processing_error = None
                     self._consecutive_processing_errors = 0
-                    self._source_recoveries = 0
                     self._recovery_exhausted = False
                     self._sync_diagnostics = None
+                    self._ever_synchronized = True
+                    sync_score = float(
+                        getattr(getattr(frame, "diagnostics", None), "sync_score", 0.0)
+                    )
+                    self._alignment_best_sync_score = max(
+                        self._alignment_best_sync_score,
+                        sync_score,
+                    )
+                    self._last_success_at = monotonic()
                     self._acquisition_time_ms = acquisition_s * 1000.0
                     self._processing_time_ms = processing_s * 1000.0
                     if acquisition_s + processing_s > self.cpi_period_s:
                         self._overruns += 1
                 consecutive_processing_errors = 0
-                source_recoveries = 0
+                ever_synchronized = True
                 self.publish(frame)
         except StopIteration:
             pass

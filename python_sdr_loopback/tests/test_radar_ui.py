@@ -14,7 +14,9 @@ from sdr_loopback.radar.config import RadarConfig
 from scripts.sdr_video_gui import (
     SdrVideoGui,
     create_radar_runtime,
+    expire_radar_frame,
     format_radar_runtime_diagnostics,
+    radar_frame_freshness,
 )
 from sdr_loopback.radar.models import RadarCapture, RadarDiagnostics, RadarFrame, RadarTarget
 from sdr_loopback.radar.sources import E310RadioConfig
@@ -632,6 +634,7 @@ class RadarUiTests(unittest.TestCase):
         )
         self.assertEqual(controller._recover_after_processing_errors, 16)
         self.assertEqual(controller._max_source_recoveries, 5)
+        self.assertEqual(controller._alignment_duration_s, 60.0)
         self.assertEqual(effective_config, config)
 
     def test_poll_reports_waiting_for_sync_while_controller_is_running(self):
@@ -703,18 +706,27 @@ class RadarUiTests(unittest.TestCase):
             recovery_exhausted=False,
             source_diagnostics=source,
             sync_diagnostics=sync,
+            alignment_duration_s=60.0,
+            alignment_active=True,
+            alignment_remaining_s=42.5,
+            ever_synchronized=True,
+            alignment_best_sync_score=0.716,
+            last_success_age_s=0.4,
         )
 
-        lines = format_radar_runtime_diagnostics(status)
+        lines = format_radar_runtime_diagnostics(status, total_sessions=8)
         rendered = "\n".join(lines)
 
-        self.assertIn("会话 3", rendered)
+        self.assertIn("总会话 8", rendered)
         self.assertIn("capturing", rendered)
         self.assertIn("TX循环已上传", rendered)
         self.assertIn("-49.92 dBFS", rendered)
         self.assertIn("0.0310 / 0.0500", rendered)
         self.assertIn("恢复 2/5", rendered)
         self.assertIn("连续同步失败 16", rendered)
+        self.assertIn("对准剩余 42.5 秒", rendered)
+        self.assertIn("已同步", rendered)
+        self.assertIn("最佳相关 0.716", rendered)
 
     def test_runtime_diagnostics_marks_exhausted_recovery_and_missing_signal(self):
         status = SimpleNamespace(
@@ -757,6 +769,26 @@ class RadarUiTests(unittest.TestCase):
         self.assertEqual(len(gui._radar_log_lines), 200)
         self.assertNotIn("line-0\n", gui.radar_log_text.value)
         self.assertIn("line-204", gui.radar_log_text.value)
+
+    def test_sync_loss_marks_then_expires_the_last_successful_frame(self):
+        historical = SimpleNamespace(
+            processing_error="sync failed",
+            last_success_age_s=0.8,
+        )
+        expired = SimpleNamespace(
+            processing_error="sync failed",
+            last_success_age_s=2.1,
+        )
+
+        self.assertEqual(radar_frame_freshness(historical), ("historical", 0.8))
+        self.assertEqual(radar_frame_freshness(expired), ("expired", 2.1))
+
+        cleared = expire_radar_frame(self.frame)
+        self.assertEqual(cleared.targets, ())
+        self.assertTrue(
+            np.all(cleared.range_doppler_db == np.min(self.frame.range_doppler_db))
+        )
+        self.assertIn("已过期", cleared.diagnostics.source)
 
     def test_poll_prioritizes_shutdown_timeout_over_sync_error(self):
         status = SimpleNamespace(

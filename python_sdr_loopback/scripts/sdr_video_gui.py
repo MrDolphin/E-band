@@ -12,7 +12,7 @@ import threading
 import time
 import io
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -26,6 +26,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageTk
+import numpy as np
 
 from sdr_loopback.radar.config import RadarConfig
 from sdr_loopback.radar.assessment import assess_frame, append_position_candidate
@@ -53,6 +54,7 @@ from sdr_loopback.radar.ui import (
 
 STREAM_SCRIPT = SCRIPT_DIR / "run_low_latency_ts_stream.py"
 RADAR_LOG_LINE_LIMIT = 200
+RADAR_FRAME_STALE_S = 2.0
 
 
 def _diagnostic_number(value: object, digits: int = 2) -> str:
@@ -65,15 +67,24 @@ def _diagnostic_number(value: object, digits: int = 2) -> str:
     return f"{number:.{digits}f}"
 
 
-def format_radar_runtime_diagnostics(status: object) -> tuple[str, ...]:
+def format_radar_runtime_diagnostics(
+    status: object,
+    *,
+    total_sessions: int | None = None,
+) -> tuple[str, ...]:
     """Format controller snapshots without reaching into the radio from Tk."""
     source = getattr(status, "source_diagnostics", None)
     if source is None:
         source_lines = ("E310：尚无RX采集统计",)
     else:
         tx_state = "TX循环已上传" if getattr(source, "tx_uploaded", False) else "TX尚未上传"
+        displayed_sessions = (
+            getattr(source, "session_attempt", 0)
+            if total_sessions is None
+            else total_sessions
+        )
         source_lines = (
-            f"E310：会话 {getattr(source, 'session_attempt', 0)} | "
+            f"E310：总会话 {displayed_sessions} | "
             f"阶段 {getattr(source, 'phase', '未知')} | {tx_state} | "
             f"已采集 {getattr(source, 'capture_count', 0)} CPI",
             f"RX：{getattr(source, 'rx_samples', 0)} 点 | "
@@ -108,9 +119,47 @@ def format_radar_runtime_diagnostics(status: object) -> tuple[str, ...]:
     consecutive = getattr(status, "consecutive_processing_errors", 0)
     recovery_state = "恢复已耗尽" if getattr(status, "recovery_exhausted", False) else "可继续恢复"
     recovery_line = (
-        f"恢复 {recoveries}/{maximum} | 连续同步失败 {consecutive} | {recovery_state}"
+        f"本次启动累计恢复 {recoveries}/{maximum} | 连续同步失败 {consecutive} | {recovery_state}"
     )
-    return (*source_lines, sync_line, recovery_line)
+    alignment_duration = float(getattr(status, "alignment_duration_s", 0.0))
+    alignment_lines: tuple[str, ...] = ()
+    if alignment_duration > 0.0:
+        remaining = float(getattr(status, "alignment_remaining_s", 0.0))
+        window = (
+            f"对准剩余 {remaining:.1f} 秒"
+            if getattr(status, "alignment_active", False)
+            else "对准窗口已结束"
+        )
+        synchronized = "已同步" if getattr(status, "ever_synchronized", False) else "尚未同步"
+        best = float(getattr(status, "alignment_best_sync_score", 0.0))
+        alignment_lines = (f"天线对准：{window} | {synchronized} | 最佳相关 {best:.3f}",)
+    return (*source_lines, sync_line, recovery_line, *alignment_lines)
+
+
+def radar_frame_freshness(
+    status: object,
+    stale_after_s: float = RADAR_FRAME_STALE_S,
+) -> tuple[str, float | None]:
+    """Classify the last valid frame while current CPIs are failing sync."""
+    age = getattr(status, "last_success_age_s", None)
+    if not getattr(status, "processing_error", None) or age is None:
+        return "live", age
+    age = max(0.0, float(age))
+    return ("expired" if age >= stale_after_s else "historical"), age
+
+
+def expire_radar_frame(frame: object) -> object:
+    """Return a display-only frame with stale detections and heatmap removed."""
+    heatmap = np.asarray(frame.range_doppler_db)
+    finite = heatmap[np.isfinite(heatmap)]
+    floor = float(np.min(finite)) if finite.size else -120.0
+    diagnostics = replace(frame.diagnostics, source="历史帧已过期")
+    return replace(
+        frame,
+        targets=(),
+        range_doppler_db=np.full_like(heatmap, floor),
+        diagnostics=diagnostics,
+    )
 
 
 @dataclass(frozen=True)
@@ -229,6 +278,7 @@ def create_radar_runtime(
         else (),
         recover_after_processing_errors=16 if source_mode == "E310" else 0,
         max_source_recoveries=5 if source_mode == "E310" else 0,
+        alignment_duration_s=60.0 if source_mode == "E310" else 0.0,
     )
     return controller, effective_config
 
@@ -393,6 +443,8 @@ class SdrVideoGui(tk.Tk):
         self._latest_radar_frame: object | None = None
         self._last_radar_frame_index: int | None = None
         self._radar_calibration_deadline: float | None = None
+        self._radar_lifetime_sessions = 0
+        self._radar_seen_source_sessions = 0
         self.radar_source_label = "仿真"
 
         self.input_var = tk.StringVar(value=str(PROJECT_DIR / "small.mp4"))
@@ -844,6 +896,7 @@ class SdrVideoGui(tk.Tk):
             messagebox.showerror("雷达参数错误", str(error))
             return
         self.radar_controller = controller
+        self._radar_seen_source_sessions = 0
         self.radar_source_label = source_mode
         self._latest_radar_frame = None
         self._last_radar_frame_index = None
@@ -966,6 +1019,8 @@ class SdrVideoGui(tk.Tk):
             getattr(status, "recovery_exhausted", None),
             getattr(sync, "failed_metric", None),
             getattr(status, "processing_error", None),
+            getattr(status, "alignment_active", None),
+            getattr(status, "ever_synchronized", None),
         )
 
     def _refresh_radar_runtime_log(self, controller: object, status: object) -> None:
@@ -973,7 +1028,18 @@ class SdrVideoGui(tk.Tk):
         log_widget = getattr(self, "radar_log_text", None)
         if summary_var is None and log_widget is None:
             return
-        lines = format_radar_runtime_diagnostics(status)
+        source = getattr(status, "source_diagnostics", None)
+        current_sessions = max(0, int(getattr(source, "session_attempt", 0)))
+        seen_sessions = getattr(self, "_radar_seen_source_sessions", 0)
+        if current_sessions > seen_sessions:
+            self._radar_lifetime_sessions = getattr(
+                self, "_radar_lifetime_sessions", 0
+            ) + (current_sessions - seen_sessions)
+            self._radar_seen_source_sessions = current_sessions
+        lines = format_radar_runtime_diagnostics(
+            status,
+            total_sessions=getattr(self, "_radar_lifetime_sessions", 0),
+        )
         if summary_var is not None:
             summary_var.set("\n".join(lines))
 
@@ -998,6 +1064,24 @@ class SdrVideoGui(tk.Tk):
             event_lines.extend(f"[{timestamp}] {line}" for line in lines)
         SdrVideoGui._append_radar_log(self, event_lines)
 
+    def _update_radar_frame_freshness(self, status: object) -> None:
+        frame = getattr(self, "_latest_radar_frame", None)
+        if frame is None:
+            return
+        state, age = radar_frame_freshness(status)
+        quality_var = getattr(self, "radar_candidate_quality_var", None)
+        if state == "historical":
+            if quality_var is not None:
+                quality_var.set(f"历史帧：已失步 {age:.1f} 秒，结果不是当前测量")
+            return
+        if state == "expired":
+            dashboard = getattr(self, "radar_dashboard", None)
+            if dashboard is not None:
+                dashboard.render(expire_radar_frame(frame))
+            self._latest_radar_frame = None
+            if quality_var is not None:
+                quality_var.set("历史帧已过期：目标与距离-速度图已清空")
+
     def poll_radar_controller(self) -> None:
         controller = self.radar_controller
         if controller is not None:
@@ -1008,6 +1092,7 @@ class SdrVideoGui(tk.Tk):
                 self.radar_source_label,
             )
             SdrVideoGui._refresh_radar_runtime_log(self, controller, status)
+            SdrVideoGui._update_radar_frame_freshness(self, status)
             if status.running:
                 processor = getattr(controller, "processor", None)
                 calibration_status_method = getattr(

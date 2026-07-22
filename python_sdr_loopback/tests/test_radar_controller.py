@@ -152,6 +152,17 @@ class RadarControllerTests(unittest.TestCase):
                             **{name: value},
                         )
 
+    def test_alignment_duration_must_be_finite_and_nonnegative(self):
+        for value in (True, -1.0, float("inf"), float("nan"), "60"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "alignment_duration_s"):
+                    RadarController(
+                        FakeSource(),
+                        FakeProcessor(),
+                        0.01,
+                        alignment_duration_s=value,
+                    )
+
     def test_e310_stop_timeout_eventually_cleans_after_blocking_rx_returns(self):
         from tests.test_radar_sources import FakeAd9361
 
@@ -282,6 +293,7 @@ class RadarControllerTests(unittest.TestCase):
         self.assertTrue(source.closed.wait(0.5))
         self.assertEqual(source.recover_calls, 1)
         self.assertIs(controller.latest_frame(), frame)
+        self.assertEqual(controller.status().source_recoveries, 1)
 
     def test_recovery_status_reports_exhaustion_and_sync_measurements(self):
         diagnostics = ChirpSyncDiagnostics(
@@ -320,6 +332,74 @@ class RadarControllerTests(unittest.TestCase):
         self.assertIs(status.sync_diagnostics, diagnostics)
         self.assertIs(status.source_diagnostics, source_diagnostics)
         self.assertEqual(controller.drain_diagnostic_events(), (event,))
+
+    def test_alignment_window_keeps_cyclic_session_during_sync_failures(self):
+        source = FakeSource([object() for _ in range(20)])
+        diagnostics = ChirpSyncDiagnostics(
+            failed_metric="min_correlation",
+            min_correlation=0.041,
+            mean_correlation=0.071,
+            periodic_coherence=0.006,
+            idle_to_active_db=-0.5,
+            min_correlation_threshold=0.05,
+            mean_correlation_threshold=0.08,
+            periodic_coherence_threshold=0.0075,
+        )
+        controller = RadarController(
+            source,
+            FakeProcessor(error=ChirpSyncError("sync failed", diagnostics)),
+            0.01,
+            recoverable_processing_errors=(ChirpSyncError,),
+            recover_after_processing_errors=3,
+            max_source_recoveries=5,
+            alignment_duration_s=60.0,
+        )
+
+        controller.start()
+
+        self.assertTrue(source.closed.wait(0.5))
+        status = controller.status()
+        self.assertEqual(source.recover_calls, 0)
+        self.assertTrue(status.alignment_active)
+        self.assertGreater(status.alignment_remaining_s, 0.0)
+        self.assertEqual(status.consecutive_processing_errors, 20)
+        self.assertAlmostEqual(status.alignment_best_sync_score, 0.041)
+
+    def test_first_synchronized_frame_disables_later_sync_recovery(self):
+        source = FakeSource([object() for _ in range(21)])
+        frame = SimpleNamespace(
+            frame_index=1,
+            diagnostics=SimpleNamespace(sync_score=0.72),
+        )
+
+        class OneSuccessProcessor:
+            def __init__(self):
+                self.calls = 0
+
+            def process(self, _capture):
+                self.calls += 1
+                if self.calls == 1:
+                    return frame
+                raise ChirpSyncError("sync failed")
+
+        controller = RadarController(
+            source,
+            OneSuccessProcessor(),
+            0.01,
+            recoverable_processing_errors=(ChirpSyncError,),
+            recover_after_processing_errors=3,
+            max_source_recoveries=5,
+            alignment_duration_s=0.0,
+        )
+
+        controller.start()
+
+        self.assertTrue(source.closed.wait(0.5))
+        status = controller.status()
+        self.assertEqual(source.recover_calls, 0)
+        self.assertTrue(status.ever_synchronized)
+        self.assertAlmostEqual(status.alignment_best_sync_score, 0.72)
+        self.assertGreaterEqual(status.last_success_age_s, 0.0)
 
     def test_cleanup_state_stays_incomplete_until_failed_close_is_retried(self):
         source = FailTwiceCloseSource()
