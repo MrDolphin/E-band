@@ -365,6 +365,30 @@ class RadarControllerTests(unittest.TestCase):
         self.assertEqual(status.consecutive_processing_errors, 20)
         self.assertAlmostEqual(status.alignment_best_sync_score, 0.041)
 
+    def test_sync_failures_notify_an_armed_background_calibration(self):
+        source = FakeSource([object() for _ in range(4)])
+
+        class CalibrationProcessor(FakeProcessor):
+            def __init__(self):
+                super().__init__(error=ChirpSyncError("sync failed"))
+                self.skipped = 0
+
+            def note_background_calibration_sync_failure(self):
+                self.skipped += 1
+
+        processor = CalibrationProcessor()
+        controller = RadarController(
+            source,
+            processor,
+            0.01,
+            recoverable_processing_errors=(ChirpSyncError,),
+        )
+
+        controller.start()
+
+        self.assertTrue(source.closed.wait(0.5))
+        self.assertEqual(processor.skipped, 4)
+
     def test_first_synchronized_frame_disables_later_sync_recovery(self):
         source = FakeSource([object() for _ in range(21)])
         frame = SimpleNamespace(

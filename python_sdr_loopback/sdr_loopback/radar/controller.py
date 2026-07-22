@@ -266,6 +266,13 @@ class RadarController:
                 try:
                     frame = self.processor.process(capture)
                 except self._recoverable_processing_errors as error:
+                    note_sync_failure = getattr(
+                        self.processor,
+                        "note_background_calibration_sync_failure",
+                        None,
+                    )
+                    if callable(note_sync_failure):
+                        note_sync_failure()
                     sync_diagnostics = getattr(error, "diagnostics", None)
                     failed_sync_score = float(
                         getattr(sync_diagnostics, "min_correlation", 0.0)

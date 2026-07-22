@@ -276,9 +276,9 @@ def create_radar_runtime(
         recoverable_processing_errors=(ChirpSyncError,)
         if source_mode == "E310"
         else (),
-        recover_after_processing_errors=16 if source_mode == "E310" else 0,
-        max_source_recoveries=5 if source_mode == "E310" else 0,
-        alignment_duration_s=60.0 if source_mode == "E310" else 0.0,
+        recover_after_processing_errors=0,
+        max_source_recoveries=0,
+        alignment_duration_s=0.0,
     )
     return controller, effective_config
 
@@ -442,7 +442,6 @@ class SdrVideoGui(tk.Tk):
         self.radar_controller: RadarController | None = None
         self._latest_radar_frame: object | None = None
         self._last_radar_frame_index: int | None = None
-        self._radar_calibration_deadline: float | None = None
         self._radar_lifetime_sessions = 0
         self._radar_seen_source_sessions = 0
         self.radar_source_label = "仿真"
@@ -947,9 +946,20 @@ class SdrVideoGui(tk.Tk):
         ):
             messagebox.showinfo("空场背景", "请先以 E310 数据源启动雷达")
             return
+        calibration_status = controller.processor.background_calibration_status()
+        if calibration_status.active:
+            controller.processor.cancel_background_calibration("用户取消空场标定")
+            self.radar_calibrate_button.configure(
+                state=tk.NORMAL,
+                text="采集空场背景",
+            )
+            self.radar_status_var.set("空场标定已取消")
+            return
         controller.processor.begin_background_calibration(cpi_count=16)
-        self._radar_calibration_deadline = time.monotonic() + 10.0
-        self.radar_calibrate_button.configure(state=tk.DISABLED)
+        self.radar_calibrate_button.configure(
+            state=tk.NORMAL,
+            text="取消空场标定",
+        )
         self.radar_status_var.set("空场标定中：0/16，请保持场景静止且不要放置角反")
 
     def render(self, frame: object) -> None:
@@ -1105,18 +1115,6 @@ class SdrVideoGui(tk.Tk):
                     if calibration_status_method is not None
                     else None
                 )
-                deadline = getattr(self, "_radar_calibration_deadline", None)
-                if (
-                    calibration_status is not None
-                    and calibration_status.active
-                    and deadline is not None
-                    and time.monotonic() >= deadline
-                ):
-                    processor.cancel_background_calibration(
-                        "10秒内未收满16个已同步空场CPI"
-                    )
-                    calibration_status = calibration_status_method()
-                    self._radar_calibration_deadline = None
                 if status.shutdown_error:
                     self.radar_status_var.set(
                         f"停止中：等待硬件清理（{status.shutdown_error}）"
@@ -1128,7 +1126,6 @@ class SdrVideoGui(tk.Tk):
                     if status.error:
                         detail += f"；当前等待同步：{status.error}"
                     self.radar_status_var.set(detail)
-                    self._radar_calibration_deadline = None
                     self.radar_start_button.configure(state=tk.DISABLED)
                     self.radar_stop_button.configure(state=tk.NORMAL)
                     calibrate_button = getattr(self, "radar_calibrate_button", None)
@@ -1139,7 +1136,9 @@ class SdrVideoGui(tk.Tk):
                         self.radar_status_var.set(
                             "空场标定等待同步："
                             f"{calibration_status.collected_cpis}/"
-                            f"{calibration_status.required_cpis}（{status.error}）"
+                            f"{calibration_status.required_cpis}，"
+                            f"跳过 {getattr(calibration_status, 'skipped_cpis', 0)} 个失败CPI"
+                            f"（{status.error}）"
                         )
                     else:
                         self.radar_status_var.set(f"等待同步：{status.error}")
@@ -1147,11 +1146,17 @@ class SdrVideoGui(tk.Tk):
                     self.radar_stop_button.configure(state=tk.NORMAL)
                     calibrate_button = getattr(self, "radar_calibrate_button", None)
                     if calibrate_button is not None:
-                        # A queued calibration only accepts successfully synchronized
-                        # CPIs in FmcwProcessor.  Keep the action available while the
-                        # radio is recovering, instead of forcing an E310 restart just
-                        # to arm the next stable capture sequence.
-                        calibrate_button.configure(state=tk.NORMAL)
+                        # Keep an armed calibration cancellable while invalid CPIs
+                        # are skipped and the same cyclic TX session stays alive.
+                        calibrate_button.configure(
+                            state=tk.NORMAL,
+                            text=(
+                                "取消空场标定"
+                                if calibration_status is not None
+                                and calibration_status.active
+                                else "采集空场背景"
+                            ),
+                        )
                 else:
                     if calibration_status is not None:
                         calibrate_button = getattr(
@@ -1161,15 +1166,22 @@ class SdrVideoGui(tk.Tk):
                             self.radar_status_var.set(
                                 "空场标定中："
                                 f"{calibration_status.collected_cpis}/"
-                                f"{calibration_status.required_cpis}，请保持场景静止"
+                                f"{calibration_status.required_cpis}，"
+                                f"跳过 {getattr(calibration_status, 'skipped_cpis', 0)} 个失败CPI，"
+                                "请保持场景静止"
                             )
                             if calibrate_button is not None:
-                                calibrate_button.configure(state=tk.DISABLED)
+                                calibrate_button.configure(
+                                    state=tk.NORMAL,
+                                    text="取消空场标定",
+                                )
                         elif calibration_status.ready:
                             self.radar_status_var.set("运行中：空场背景已应用")
-                            self._radar_calibration_deadline = None
                             if calibrate_button is not None:
-                                calibrate_button.configure(state=tk.NORMAL)
+                                calibrate_button.configure(
+                                    state=tk.NORMAL,
+                                    text="采集空场背景",
+                                )
             elif status.cleanup_complete:
                 detail = status.error or status.shutdown_error
                 self.radar_status_var.set(

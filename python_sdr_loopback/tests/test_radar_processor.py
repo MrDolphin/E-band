@@ -234,6 +234,18 @@ class FmcwProcessorTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "positive integer"):
                     processor.begin_background_calibration(cpi_count=count)
 
+    def test_background_calibration_counts_skipped_unsynchronized_cpis(self):
+        processor = FmcwProcessor(self.config)
+        processor.begin_background_calibration(cpi_count=3)
+
+        processor.note_background_calibration_sync_failure()
+        processor.note_background_calibration_sync_failure()
+
+        status = processor.background_calibration_status()
+        self.assertTrue(status.active)
+        self.assertEqual(status.collected_cpis, 0)
+        self.assertEqual(status.skipped_cpis, 2)
+
     def test_recalibration_keeps_previous_background_until_atomic_replacement(self):
         capture = simulate_capture(
             self.config,

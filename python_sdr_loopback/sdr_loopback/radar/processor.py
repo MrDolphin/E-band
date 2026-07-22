@@ -21,6 +21,7 @@ class BackgroundCalibrationStatus:
     active: bool
     collected_cpis: int
     required_cpis: int
+    skipped_cpis: int
     ready: bool
     error: str | None
 
@@ -47,6 +48,7 @@ class FmcwProcessor:
         self._calibration_matrices: list[np.ndarray] = []
         self._calibration_required_cpis = 0
         self._calibration_collected_cpis = 0
+        self._calibration_skipped_cpis = 0
         self._calibration_error: str | None = None
         self._velocity_trust_threshold = velocity_trust_threshold
         self._frame_index = 0
@@ -63,7 +65,14 @@ class FmcwProcessor:
             self._calibration_matrices = []
             self._calibration_required_cpis = int(cpi_count)
             self._calibration_collected_cpis = 0
+            self._calibration_skipped_cpis = 0
             self._calibration_error = None
+
+    def note_background_calibration_sync_failure(self) -> None:
+        """Count a rejected CPI only while an empty-room capture is armed."""
+        with self._calibration_lock:
+            if self._calibration_required_cpis > 0:
+                self._calibration_skipped_cpis += 1
 
     def background_calibration_status(self) -> BackgroundCalibrationStatus:
         with self._calibration_lock:
@@ -73,6 +82,7 @@ class FmcwProcessor:
                 active=required > 0,
                 collected_cpis=collected,
                 required_cpis=required if required > 0 else collected,
+                skipped_cpis=self._calibration_skipped_cpis,
                 ready=self._calibration is not None,
                 error=self._calibration_error,
             )

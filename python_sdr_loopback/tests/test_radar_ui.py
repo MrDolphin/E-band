@@ -487,18 +487,22 @@ class RadarUiTests(unittest.TestCase):
         self.assertIn("清理失败", radar_status.value)
 
     def test_empty_room_button_starts_in_session_e310_calibration(self):
+        calibration = SimpleNamespace(active=False)
         processor = SimpleNamespace(cpi_count=None)
         processor.begin_background_calibration = lambda *, cpi_count: setattr(
             processor, "cpi_count", cpi_count
         )
+        processor.background_calibration_status = lambda: calibration
         controller = SimpleNamespace(
             processor=processor,
             status=lambda: SimpleNamespace(running=True),
         )
         radar_status = SimpleNamespace(value="")
         radar_status.set = lambda value: setattr(radar_status, "value", value)
-        button = SimpleNamespace(state=None)
-        button.configure = lambda *, state: setattr(button, "state", state)
+        button = SimpleNamespace(state=None, text=None)
+        button.configure = lambda **values: [
+            setattr(button, key, value) for key, value in values.items()
+        ]
         gui = SimpleNamespace(
             radar_controller=controller,
             radar_source_label="E310",
@@ -509,8 +513,41 @@ class RadarUiTests(unittest.TestCase):
         SdrVideoGui.calibrate_radar_background(gui)
 
         self.assertEqual(processor.cpi_count, 16)
-        self.assertEqual(button.state, "disabled")
+        self.assertEqual(button.state, "normal")
+        self.assertEqual(button.text, "取消空场标定")
         self.assertIn("0/16", radar_status.value)
+
+    def test_empty_room_button_cancels_an_armed_calibration(self):
+        calibration = SimpleNamespace(active=True)
+        processor = SimpleNamespace(cancel_reason=None)
+        processor.background_calibration_status = lambda: calibration
+        processor.begin_background_calibration = lambda *, cpi_count: None
+        processor.cancel_background_calibration = lambda reason: setattr(
+            processor, "cancel_reason", reason
+        )
+        controller = SimpleNamespace(
+            processor=processor,
+            status=lambda: SimpleNamespace(running=True),
+        )
+        radar_status = SimpleNamespace(value="")
+        radar_status.set = lambda value: setattr(radar_status, "value", value)
+        button = SimpleNamespace(state=None, text=None)
+        button.configure = lambda **values: [
+            setattr(button, key, value) for key, value in values.items()
+        ]
+        gui = SimpleNamespace(
+            radar_controller=controller,
+            radar_source_label="E310",
+            radar_status_var=radar_status,
+            radar_calibrate_button=button,
+        )
+
+        SdrVideoGui.calibrate_radar_background(gui)
+
+        self.assertEqual(processor.cancel_reason, "用户取消空场标定")
+        self.assertEqual(button.state, "normal")
+        self.assertEqual(button.text, "采集空场背景")
+        self.assertIn("已取消", radar_status.value)
 
     def test_candidate_photo_is_copied_into_hardware_artifacts(self):
         with TemporaryDirectory() as directory:
@@ -632,9 +669,9 @@ class RadarUiTests(unittest.TestCase):
             controller._recoverable_processing_errors,
             (ChirpSyncError,),
         )
-        self.assertEqual(controller._recover_after_processing_errors, 16)
-        self.assertEqual(controller._max_source_recoveries, 5)
-        self.assertEqual(controller._alignment_duration_s, 60.0)
+        self.assertEqual(controller._recover_after_processing_errors, 0)
+        self.assertEqual(controller._max_source_recoveries, 0)
+        self.assertEqual(controller._alignment_duration_s, 0.0)
         self.assertEqual(effective_config, config)
 
     def test_poll_reports_waiting_for_sync_while_controller_is_running(self):
@@ -651,9 +688,9 @@ class RadarUiTests(unittest.TestCase):
         calibrate_button = SimpleNamespace(state=None)
         start_button.configure = lambda *, state: setattr(start_button, "state", state)
         stop_button.configure = lambda *, state: setattr(stop_button, "state", state)
-        calibrate_button.configure = lambda *, state: setattr(
-            calibrate_button, "state", state
-        )
+        calibrate_button.configure = lambda **values: [
+            setattr(calibrate_button, key, value) for key, value in values.items()
+        ]
         radar_status = SimpleNamespace(value="")
         radar_status.set = lambda value: setattr(radar_status, "value", value)
         gui = SimpleNamespace(
@@ -823,11 +860,12 @@ class RadarUiTests(unittest.TestCase):
         self.assertEqual(start_button.state, "disabled")
         self.assertEqual(stop_button.state, "disabled")
 
-    def test_calibration_timeout_remains_visible_during_sync_errors(self):
+    def test_calibration_waits_indefinitely_during_sync_errors(self):
         calibration = SimpleNamespace(
             active=True,
             collected_cpis=0,
             required_cpis=16,
+            skipped_cpis=23,
             ready=False,
             error=None,
         )
@@ -857,15 +895,14 @@ class RadarUiTests(unittest.TestCase):
         radar_status.set = lambda value: setattr(radar_status, "value", value)
         start_button = SimpleNamespace(state=None)
         stop_button = SimpleNamespace(state=None)
-        calibrate_button = SimpleNamespace(state=None)
+        calibrate_button = SimpleNamespace(state=None, text=None)
         for button in (start_button, stop_button, calibrate_button):
-            button.configure = lambda *, state, target=button: setattr(
-                target, "state", state
-            )
+            button.configure = lambda target=button, **values: [
+                setattr(target, key, value) for key, value in values.items()
+            ]
         gui = SimpleNamespace(
             radar_controller=controller,
             _last_radar_frame_index=None,
-            _radar_calibration_deadline=0.0,
             radar_source_label="E310",
             radar_status_var=radar_status,
             radar_start_button=start_button,
@@ -877,8 +914,10 @@ class RadarUiTests(unittest.TestCase):
 
         SdrVideoGui.poll_radar_controller(gui)
 
-        self.assertIn("空场标定未应用", radar_status.value)
+        self.assertTrue(calibration.active)
+        self.assertIsNone(calibration.error)
         self.assertIn("等待同步", radar_status.value)
+        self.assertIn("跳过 23", radar_status.value)
         self.assertEqual(calibrate_button.state, "normal")
 
     def test_gui_replay_start_ignores_invalid_display_and_synthetic_fields(self):
