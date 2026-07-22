@@ -19,7 +19,7 @@
 
 ---
 
-## Goal 3：实现 TX 生命周期诊断功能
+## Goal 3：已完成 — 实现 TX 生命周期诊断功能
 
 ### Task 1：为诊断脚本增加显式阶段和结构化日志
 
@@ -52,7 +52,7 @@
 - `fmcw-rx-configured`：在稳定 TX-only 后仅配置 RX 属性和缓冲参数，不读取 RX。
 - `fmcw-rx-read`：最后才执行一次 RX 读取并继续采样 TX 状态。
 
-- [ ] **步骤 1：提取统一状态快照**
+- [x] **步骤 1：提取统一状态快照**
 
 在脚本中增加只读辅助函数，所有缺失属性以 `null` 表示，不因日志采样终止发射：
 
@@ -70,7 +70,7 @@ def snapshot_tx_state(sdr, *, phase: str, started_at: float) -> dict[str, object
     }
 ```
 
-- [ ] **步骤 2：实现真正的 FMCW TX-only 打开路径**
+- [x] **步骤 2：实现真正的 FMCW TX-only 打开路径**
 
 不得复用会执行两次 `rx()` 的 `E310CpiSource.open()`；脚本内部直接完成 TX 配置和上传，波形仍复用生产代码：
 
@@ -101,7 +101,7 @@ sdr.tx(source._tx_iq)
 
 在 `fmcw-tx-only` 中到此为止，不得调用 `_discard_startup_rx_buffers()`。
 
-- [ ] **步骤 3：实现按阶段逐级引入 RX**
+- [x] **步骤 3：实现按阶段逐级引入 RX**
 
 仅在对应 phase 中执行额外动作：
 
@@ -119,7 +119,7 @@ if phase == "fmcw-rx-read":
 
 每个边界动作前后立即记录 `phase_boundary` 和 `tx_state`，以便示波器闪断时间与日志对应。
 
-- [ ] **步骤 4：按固定周期输出状态**
+- [x] **步骤 4：按固定周期输出状态**
 
 将单次长 `sleep(on_s)` 改为基于单调时钟的短等待循环；循环只观察状态，不重新配置设备：
 
@@ -130,7 +130,7 @@ while time.monotonic() < deadline:
     time.sleep(min(sample_state_s, max(0.0, deadline - time.monotonic())))
 ```
 
-- [ ] **步骤 5：更新脚本内人工测试说明**
+- [x] **步骤 5：更新脚本内人工测试说明**
 
 在 `--help` 中明确写出：关闭 GUI、停止自定义 E310 bridge、只保留 `iiod`，并按以下顺序运行：
 
@@ -141,7 +141,7 @@ python scripts\diagnose_e310_tx.py --phase fmcw-rx-configured --reuse-buffer --o
 python scripts\diagnose_e310_tx.py --phase fmcw-rx-read --reuse-buffer --on-s 10
 ```
 
-- [ ] **步骤 6：停止并报告改动**
+- [x] **步骤 6：停止并报告改动**
 
 Goal 3 不编写测试、不修改生产采集路径、不提交未经 Goal 4 验证的修复。报告新增参数、文件和待执行的四条命令，然后等待用户确认 Goal 4。
 

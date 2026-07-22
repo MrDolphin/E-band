@@ -8,6 +8,7 @@ from unittest.mock import patch
 from sdr_loopback.radar.controller import RadarController
 from sdr_loopback.radar.config import RadarConfig
 from sdr_loopback.radar.sources import E310CpiSource, E310RadioConfig
+from sdr_loopback.radar.synchronizer import ChirpSyncDiagnostics, ChirpSyncError
 
 
 class FakeSource:
@@ -16,6 +17,7 @@ class FakeSource:
         self.open_calls = 0
         self.close_calls = 0
         self.closed = threading.Event()
+        self.recover_calls = 0
 
     def open(self):
         self.open_calls += 1
@@ -26,6 +28,9 @@ class FakeSource:
     def close(self):
         self.close_calls += 1
         self.closed.set()
+
+    def recover(self):
+        self.recover_calls += 1
 
 
 class FakeProcessor:
@@ -135,6 +140,18 @@ class RadarControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cpi_period_s must be positive"):
             RadarController(source, processor, 0.0)
 
+    def test_source_recovery_limits_must_be_nonnegative_integers(self):
+        for name in ("recover_after_processing_errors", "max_source_recoveries"):
+            for value in (True, -1, 1.5):
+                with self.subTest(name=name, value=value):
+                    with self.assertRaisesRegex(ValueError, "nonnegative integers"):
+                        RadarController(
+                            FakeSource(),
+                            FakeProcessor(),
+                            0.01,
+                            **{name: value},
+                        )
+
     def test_e310_stop_timeout_eventually_cleans_after_blocking_rx_returns(self):
         from tests.test_radar_sources import FakeAd9361
 
@@ -236,6 +253,73 @@ class RadarControllerTests(unittest.TestCase):
         self.assertIs(controller.latest_frame(), frame)
         self.assertIsNone(controller.status().error)
         self.assertEqual(source.close_calls, 1)
+
+    def test_consecutive_processing_errors_trigger_one_bounded_source_recovery(self):
+        frame = SimpleNamespace(frame_index=3)
+        source = FakeSource([object() for _ in range(7)])
+
+        class Processor:
+            def __init__(self):
+                self.calls = 0
+
+            def process(self, _capture):
+                self.calls += 1
+                if self.calls <= 6:
+                    raise ValueError("temporary sync loss")
+                return frame
+
+        controller = RadarController(
+            source,
+            Processor(),
+            0.01,
+            recoverable_processing_errors=(ValueError,),
+            recover_after_processing_errors=3,
+            max_source_recoveries=1,
+        )
+
+        controller.start()
+
+        self.assertTrue(source.closed.wait(0.5))
+        self.assertEqual(source.recover_calls, 1)
+        self.assertIs(controller.latest_frame(), frame)
+
+    def test_recovery_status_reports_exhaustion_and_sync_measurements(self):
+        diagnostics = ChirpSyncDiagnostics(
+            failed_metric="min_correlation",
+            min_correlation=0.03,
+            mean_correlation=0.06,
+            periodic_coherence=0.004,
+            idle_to_active_db=-0.5,
+            min_correlation_threshold=0.05,
+            mean_correlation_threshold=0.08,
+            periodic_coherence_threshold=0.0075,
+        )
+        sync_error = ChirpSyncError("sync failed", diagnostics)
+        source = FakeSource([object() for _ in range(6)])
+        source_diagnostics = SimpleNamespace(session_attempt=2, phase="capturing")
+        source.diagnostic_status = lambda: source_diagnostics
+        event = SimpleNamespace(phase="tx_uploaded")
+        source.drain_diagnostic_events = lambda: (event,)
+        controller = RadarController(
+            source,
+            FakeProcessor(error=sync_error),
+            0.01,
+            recoverable_processing_errors=(ChirpSyncError,),
+            recover_after_processing_errors=3,
+            max_source_recoveries=1,
+        )
+
+        controller.start()
+
+        self.assertTrue(source.closed.wait(0.5))
+        status = controller.status()
+        self.assertEqual(status.consecutive_processing_errors, 3)
+        self.assertEqual(status.source_recoveries, 1)
+        self.assertEqual(status.max_source_recoveries, 1)
+        self.assertTrue(status.recovery_exhausted)
+        self.assertIs(status.sync_diagnostics, diagnostics)
+        self.assertIs(status.source_diagnostics, source_diagnostics)
+        self.assertEqual(controller.drain_diagnostic_events(), (event,))
 
     def test_cleanup_state_stays_incomplete_until_failed_close_is_retried(self):
         source = FailTwiceCloseSource()

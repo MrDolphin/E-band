@@ -1,7 +1,8 @@
 """Interchangeable finite-CPI data sources for the FMCW processor."""
 
+from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 from threading import Lock
@@ -99,6 +100,26 @@ class E310RadioConfig:
         return self.sync_margin_chirps * config.samples_per_chirp
 
 
+@dataclass(frozen=True)
+class E310SourceDiagnostics:
+    session_attempt: int = 0
+    phase: str = "closed"
+    tx_uploaded: bool = False
+    capture_count: int = 0
+    rx_samples: int = 0
+    rx_rms_dbfs: float = float("-inf")
+    rx_peak_dbfs: float = float("-inf")
+    clip_ratio: float = 0.0
+
+
+@dataclass(frozen=True)
+class E310DiagnosticEvent:
+    timestamp: float
+    session_attempt: int
+    phase: str
+    message: str
+
+
 class E310CpiSource:
     """Acquire finite FMCW CPIs from an AD9361-backed ANTSDR E310."""
 
@@ -117,6 +138,82 @@ class E310CpiSource:
         self._tx_iq = self._dac_samples(generate_cpi(config))
         self._tx_uploaded = False
         self._operation_lock = Lock()
+        self._diagnostic_lock = Lock()
+        self._diagnostics = E310SourceDiagnostics()
+        self._diagnostic_events: deque[E310DiagnosticEvent] = deque(maxlen=64)
+
+    def diagnostic_status(self) -> E310SourceDiagnostics:
+        with self._diagnostic_lock:
+            return self._diagnostics
+
+    def drain_diagnostic_events(self) -> tuple[E310DiagnosticEvent, ...]:
+        with self._diagnostic_lock:
+            events = tuple(self._diagnostic_events)
+            self._diagnostic_events.clear()
+            return events
+
+    def _begin_diagnostic_session(self) -> None:
+        with self._diagnostic_lock:
+            self._diagnostics = E310SourceDiagnostics(
+                session_attempt=self._diagnostics.session_attempt + 1,
+                phase="connecting",
+            )
+            self._diagnostic_events.append(
+                E310DiagnosticEvent(
+                    timestamp=time.time(),
+                    session_attempt=self._diagnostics.session_attempt,
+                    phase="connecting",
+                    message="creating E310 IIO session",
+                )
+            )
+
+    def _set_diagnostic_phase(
+        self,
+        phase: str,
+        message: str,
+        *,
+        tx_uploaded: bool | None = None,
+    ) -> None:
+        with self._diagnostic_lock:
+            self._diagnostics = replace(
+                self._diagnostics,
+                phase=phase,
+                tx_uploaded=(
+                    self._diagnostics.tx_uploaded
+                    if tx_uploaded is None
+                    else tx_uploaded
+                ),
+            )
+            self._diagnostic_events.append(
+                E310DiagnosticEvent(
+                    timestamp=time.time(),
+                    session_attempt=self._diagnostics.session_attempt,
+                    phase=phase,
+                    message=message,
+                )
+            )
+
+    @staticmethod
+    def _dbfs(value: float) -> float:
+        if value <= 0.0:
+            return float("-inf")
+        return float(20.0 * np.log10(value))
+
+    def _update_rx_diagnostics(self, rx_iq: np.ndarray) -> None:
+        magnitude = np.abs(rx_iq)
+        rms = float(np.sqrt(np.mean(np.square(magnitude))))
+        peak = float(np.max(magnitude))
+        clip_ratio = float(np.mean(magnitude >= 1.0))
+        with self._diagnostic_lock:
+            self._diagnostics = replace(
+                self._diagnostics,
+                phase="capturing",
+                capture_count=self._diagnostics.capture_count + 1,
+                rx_samples=int(rx_iq.size),
+                rx_rms_dbfs=self._dbfs(rms),
+                rx_peak_dbfs=self._dbfs(peak),
+                clip_ratio=clip_ratio,
+            )
 
     def _dac_samples(self, normalized: np.ndarray) -> np.ndarray:
         values = np.asarray(normalized, dtype=np.complex64)
@@ -179,17 +276,27 @@ class E310CpiSource:
         self._sdr.tx_cyclic_buffer = True
         self._sdr.tx(self._tx_iq)
         self._tx_uploaded = True
+        self._set_diagnostic_phase(
+            "tx_uploaded",
+            "cyclic FMCW buffer uploaded",
+            tx_uploaded=True,
+        )
         if self.radio_config.settle_s:
             time.sleep(self.radio_config.settle_s)
 
     def _discard_startup_rx_buffers(self) -> None:
         """Discard stale DMA buffers after the cyclic FMCW waveform is live."""
+        self._set_diagnostic_phase(
+            "discarding_startup_rx",
+            f"discarding {self.radio_config.startup_rx_discard_buffers} RX buffers",
+        )
         for _ in range(self.radio_config.startup_rx_discard_buffers):
             self._sdr.rx()
 
     def open(self) -> None:
         if self._sdr is not None:
             return
+        self._begin_diagnostic_session()
         adi_module = self._adi_module
         if adi_module is None:
             try:
@@ -199,7 +306,12 @@ class E310CpiSource:
         radio = self.radio_config
         sdr = adi_module.ad9361(uri=radio.uri)
         self._sdr = sdr
+        ensm_mode = None
         try:
+            ensm_mode = sdr._ctrl.attrs["ensm_mode"]
+            ensm_mode.value = "alert"
+            self._set_diagnostic_phase("alert", "ENSM entered ALERT")
+            self._set_diagnostic_phase("configuring", "applying AD9361 configuration")
             sdr.sample_rate = int(self.config.sample_rate_hz)
             sdr.rx_rf_bandwidth = int(self.config.bandwidth_hz)
             sdr.tx_rf_bandwidth = int(self.config.bandwidth_hz)
@@ -213,18 +325,47 @@ class E310CpiSource:
             sdr._set_iio_attr(f"voltage{radio.rx_channel}", "gain_control_mode", False, "manual")
             sdr._set_iio_attr_float(f"voltage{radio.rx_channel}", "hardwaregain", False, radio.rx_gain_db)
             sdr._set_iio_attr_float(f"voltage{radio.tx_channel}", "hardwaregain", True, radio.tx_gain_db)
+            ensm_mode.value = "fdd"
+            self._set_diagnostic_phase("fdd", "ENSM entered FDD")
             if radio.pre_tx_settle_s:
+                self._set_diagnostic_phase(
+                    "pre_tx_settle",
+                    f"waiting {radio.pre_tx_settle_s:.3f} s before TX upload",
+                )
                 time.sleep(radio.pre_tx_settle_s)
             self._upload_tx()
             self._discard_startup_rx_buffers()
+            self._set_diagnostic_phase("capturing", "E310 session ready")
         except BaseException as error:
-            cleanup_errors = self._cleanup_hardware(sdr)
+            cleanup_errors: list[tuple[str, Exception]] = []
+            if ensm_mode is not None:
+                try:
+                    ensm_mode.value = "fdd"
+                except Exception as restore_error:
+                    cleanup_errors.append(("ensm_mode_fdd", restore_error))
+            cleanup_errors.extend(self._cleanup_hardware(sdr))
             self._tx_uploaded = False
             if not cleanup_errors:
                 self._sdr = None
             elif hasattr(error, "add_note"):
                 error.add_note(str(self._cleanup_failure(cleanup_errors)))
+            self._set_diagnostic_phase(
+                "failed",
+                f"E310 session failed: {error}",
+                tx_uploaded=False,
+            )
             raise
+
+    def recover(self) -> None:
+        """Replace a failed hardware session without overlapping buffer access."""
+        if not self._operation_lock.acquire(blocking=False):
+            raise RuntimeError("E310 operation already in progress")
+        try:
+            self._set_diagnostic_phase("recovering", "rebuilding E310 session")
+            self._close_once()
+            self.open()
+        finally:
+            self._operation_lock.release()
 
     def capture(self) -> RadarCapture:
         if not self._operation_lock.acquire(blocking=False):
@@ -250,6 +391,7 @@ class E310CpiSource:
                 raise ValueError(f"E310 RX returned fewer than {minimum} samples")
             if not np.all(np.isfinite(rx_iq)):
                 raise ValueError("E310 RX returned non-finite IQ samples")
+            self._update_rx_diagnostics(rx_iq)
             return RadarCapture(
                 timestamp=time.time(),
                 config=self.config,
@@ -266,6 +408,11 @@ class E310CpiSource:
                 self._sdr = None
             elif hasattr(error, "add_note"):
                 error.add_note(str(self._cleanup_failure(cleanup_errors)))
+            self._set_diagnostic_phase(
+                "failed",
+                f"E310 capture failed: {error}",
+                tx_uploaded=False,
+            )
             raise
 
     def close(self) -> None:
@@ -275,12 +422,20 @@ class E310CpiSource:
     def _close_once(self) -> None:
         sdr = self._sdr
         if sdr is None:
+            self._set_diagnostic_phase("closed", "E310 session closed", tx_uploaded=False)
             return
+        self._set_diagnostic_phase("closing", "closing E310 session")
         cleanup_errors = self._cleanup_hardware(sdr)
         self._tx_uploaded = False
         if cleanup_errors:
+            self._set_diagnostic_phase(
+                "failed",
+                str(self._cleanup_failure(cleanup_errors)),
+                tx_uploaded=False,
+            )
             raise self._cleanup_failure(cleanup_errors) from cleanup_errors[0][1]
         self._sdr = None
+        self._set_diagnostic_phase("closed", "E310 session closed", tx_uploaded=False)
 
 
 class SyntheticTargetSource:

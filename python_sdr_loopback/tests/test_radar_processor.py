@@ -77,10 +77,18 @@ class ChirpSynchronizerTests(unittest.TestCase):
             + 1j * rng.normal(0.0, 0.5, self.tx_iq.size + 37)
         ).astype(np.complex64)
 
-        with self.assertRaisesRegex(ChirpSyncError, "correlation|coherence"):
+        with self.assertRaisesRegex(ChirpSyncError, "correlation|coherence") as caught:
             ChirpSynchronizer(self.config, mode="correlation").synchronize(
                 self.capture_with_rx(noise)
             )
+
+        diagnostics = caught.exception.diagnostics
+        self.assertEqual(diagnostics.failed_metric, "min_correlation")
+        self.assertLess(
+            diagnostics.min_correlation,
+            diagnostics.min_correlation_threshold,
+        )
+        self.assertIn("min_correlation=", str(caught.exception))
 
     def test_correlation_mode_rejects_incoherent_low_snr_chirps(self):
         rng = np.random.default_rng(20260715)

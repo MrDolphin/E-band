@@ -1,6 +1,6 @@
 """Chirp-boundary synchronization for time-domain FMCW captures."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -8,8 +8,28 @@ from .config import RadarConfig
 from .waveform import generate_active_chirp
 
 
+@dataclass(frozen=True)
+class ChirpSyncDiagnostics:
+    failed_metric: str
+    min_correlation: float
+    mean_correlation: float
+    periodic_coherence: float | None
+    idle_to_active_db: float
+    min_correlation_threshold: float
+    mean_correlation_threshold: float
+    periodic_coherence_threshold: float
+
+
 class ChirpSyncError(ValueError):
     """Raised when a capture cannot provide a validated coherent interval."""
+
+    def __init__(
+        self,
+        message: str,
+        diagnostics: ChirpSyncDiagnostics | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 @dataclass(frozen=True)
@@ -81,12 +101,37 @@ class ChirpSynchronizer:
             else None
         )
         if self.mode == "correlation":
+            diagnostics = ChirpSyncDiagnostics(
+                failed_metric="",
+                min_correlation=correlation,
+                mean_correlation=mean_correlation,
+                periodic_coherence=periodic_coherence,
+                idle_to_active_db=idle_to_active_db,
+                min_correlation_threshold=self._MIN_CHIRP_CORRELATION,
+                mean_correlation_threshold=self._MIN_MEAN_CORRELATION,
+                periodic_coherence_threshold=self._MIN_PERIODIC_COHERENCE,
+            )
             if correlation < self._MIN_CHIRP_CORRELATION:
-                raise ChirpSyncError("chirp correlation is below the sync threshold")
+                raise ChirpSyncError(
+                    "chirp correlation is below the sync threshold "
+                    f"(min_correlation={correlation:.4f} < "
+                    f"{self._MIN_CHIRP_CORRELATION:.4f})",
+                    replace(diagnostics, failed_metric="min_correlation"),
+                )
             if mean_correlation < self._MIN_MEAN_CORRELATION:
-                raise ChirpSyncError("mean chirp correlation is below the sync threshold")
+                raise ChirpSyncError(
+                    "mean chirp correlation is below the sync threshold "
+                    f"(mean_correlation={mean_correlation:.4f} < "
+                    f"{self._MIN_MEAN_CORRELATION:.4f})",
+                    replace(diagnostics, failed_metric="mean_correlation"),
+                )
             if periodic_coherence < self._MIN_PERIODIC_COHERENCE:
-                raise ChirpSyncError("chirp periodic coherence is below the sync threshold")
+                raise ChirpSyncError(
+                    "chirp periodic coherence is below the sync threshold "
+                    f"(periodic_coherence={periodic_coherence:.4f} < "
+                    f"{self._MIN_PERIODIC_COHERENCE:.4f})",
+                    replace(diagnostics, failed_metric="periodic_coherence"),
+                )
 
         chirp_starts.setflags(write=False)
         return ChirpSyncResult(

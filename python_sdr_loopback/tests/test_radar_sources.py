@@ -1,4 +1,6 @@
 import unittest
+from contextlib import redirect_stdout
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -14,7 +16,11 @@ from sdr_loopback.radar.config import RadarConfig
 from sdr_loopback.radar.models import RadarCapture
 from sdr_loopback.radar.sources import E310CpiSource, E310RadioConfig
 from sdr_loopback.radar.waveform import generate_cpi
-from scripts.diagnose_e310_tx import FmcwTransmitter
+from scripts.diagnose_e310_tx import (
+    DdsTransmitter,
+    FmcwLifecycleTransmitter,
+    FmcwTransmitter,
+)
 
 
 class FakeAd9361:
@@ -29,8 +35,33 @@ class FakeAd9361:
         self.tx_destroy_count = 0
         self.rx_destroy_count = 0
         self.dds_disable_count = 0
+        self.dds_enabled = [False, False, False, False]
+        self.dds_frequencies = [0, 0, 0, 0]
         self.tx_calls = 0
         self.fail_tx_call = None
+        self._txbuf = None
+        ensm_mode = SimpleNamespace(value="fdd")
+        events = self.events
+
+        class RecordingAttrs(dict):
+            def __getitem__(_self, key):
+                attr = super(RecordingAttrs, _self).__getitem__(key)
+
+                class RecordingAttr:
+                    @property
+                    def value(self):
+                        return attr.value
+
+                    @value.setter
+                    def value(self, value):
+                        attr.value = value
+                        events.append(("device_attr", key, value))
+
+                return RecordingAttr()
+
+        self._ctrl = SimpleNamespace(
+            attrs=RecordingAttrs(ensm_mode=ensm_mode),
+        )
 
     def _set_iio_attr(self, channel, name, output, value):
         self.attrs.append((channel, name, output, value))
@@ -44,6 +75,8 @@ class FakeAd9361:
         if self.tx_calls == self.fail_tx_call:
             raise OSError("iio transmit failed")
         self.tx_payloads.append(np.asarray(samples).copy())
+        self._txbuf = object()
+        self.events.append(("tx",))
 
     def rx(self):
         self.rx_calls += 1
@@ -61,7 +94,13 @@ class FakeAd9361:
 
     def disable_dds(self):
         self.dds_disable_count += 1
+        self.dds_enabled = [False, False, False, False]
         self.events.append(("disable_dds",))
+
+    def dds_single_tone(self, frequency, scale, *, channel):
+        self.dds_enabled[channel] = True
+        self.dds_frequencies[channel] = frequency
+        self.events.append(("dds_single_tone", frequency, scale, channel))
 
 
 class FakeAdi:
@@ -141,6 +180,32 @@ class E310CpiSourceTests(unittest.TestCase):
         self.assertLessEqual(float(np.max(np.abs(device.tx_payloads[0].real))), self.radio.dac_peak)
         self.assertLessEqual(float(np.max(np.abs(device.tx_payloads[0].imag))), self.radio.dac_peak)
 
+    def test_open_configures_radio_in_alert_before_returning_to_fdd_and_uploading(self):
+        adi = FakeAdi()
+        source = E310CpiSource(self.config, self.radio, adi_module=adi)
+
+        source.open()
+
+        events = adi.devices[0].events
+        alert = events.index(("device_attr", "ensm_mode", "alert"))
+        fdd = events.index(("device_attr", "ensm_mode", "fdd"))
+        upload = events.index(("tx",))
+        self.assertLess(alert, fdd)
+        self.assertLess(fdd, upload)
+
+    def test_open_cleans_context_when_firmware_has_no_ensm_attribute(self):
+        device = FakeAd9361("ip:192.168.1.10")
+        device._ctrl.attrs.clear()
+        adi = SimpleNamespace(ad9361=lambda uri: device)
+        source = E310CpiSource(self.config, self.radio, adi_module=adi)
+
+        with self.assertRaises(KeyError):
+            source.open()
+
+        self.assertIsNone(source._sdr)
+        self.assertGreaterEqual(device.tx_destroy_count, 1)
+        self.assertGreaterEqual(device.rx_destroy_count, 1)
+
     def test_open_waits_for_radio_before_first_tx_upload(self):
         radio = E310RadioConfig(pre_tx_settle_s=0.5, settle_s=0.0)
         source = E310CpiSource(self.config, radio, adi_module=FakeAdi())
@@ -183,6 +248,36 @@ class E310CpiSourceTests(unittest.TestCase):
                     )
                     self.assertLess(mute, device.events.index(("tx_destroy",)))
                 source.close()
+
+    def test_recover_replaces_failed_context_after_cleaning_old_buffers(self):
+        adi = FakeAdi()
+        source = E310CpiSource(self.config, self.radio, adi_module=adi)
+        source.open()
+        old_device = adi.devices[0]
+
+        source.recover()
+        capture = source.capture()
+
+        self.assertEqual(len(adi.devices), 2)
+        self.assertIs(source._sdr, adi.devices[1])
+        self.assertGreaterEqual(old_device.tx_destroy_count, 1)
+        self.assertGreaterEqual(old_device.rx_destroy_count, 1)
+        self.assertEqual(adi.devices[1].tx_calls, 1)
+        status = source.diagnostic_status()
+        self.assertEqual(status.session_attempt, 2)
+        self.assertEqual(status.phase, "capturing")
+        self.assertTrue(status.tx_uploaded)
+        self.assertEqual(status.capture_count, 1)
+        self.assertEqual(status.rx_samples, capture.rx_iq.size)
+        self.assertTrue(np.isfinite(status.rx_rms_dbfs))
+        self.assertTrue(np.isfinite(status.rx_peak_dbfs))
+        self.assertGreaterEqual(status.clip_ratio, 0.0)
+        phases = [event.phase for event in source.drain_diagnostic_events()]
+        self.assertEqual(phases.count("connecting"), 2)
+        self.assertIn("recovering", phases)
+        self.assertIn("closing", phases)
+        self.assertIn("closed", phases)
+        self.assertEqual(phases[-1], "capturing")
 
     def test_concurrent_buffer_operations_are_rejected_during_capture(self):
         adi = FakeAdi()
@@ -343,13 +438,55 @@ class E310CpiSourceTests(unittest.TestCase):
             ),
         )
 
-        transmitter.off()
+        with redirect_stdout(io.StringIO()):
+            transmitter.off()
 
         self.assertEqual(device.dds_disable_count, 0)
         self.assertEqual(
             device.float_attrs[-1],
             ("voltage0", "hardwaregain", True, -89.75),
         )
+
+    def test_lifecycle_fmcw_phases_introduce_rx_only_at_named_boundary(self):
+        expected_rx_calls = {
+            "fmcw-tx-only": 0,
+            "fmcw-rx-configured": 0,
+            "fmcw-rx-read": 1,
+        }
+        for phase, expected in expected_rx_calls.items():
+            with self.subTest(phase=phase):
+                adi = FakeAdi()
+                transmitter = FmcwLifecycleTransmitter(
+                    tx_channel=0,
+                    tx_port="B",
+                    phase=phase,
+                    reuse_buffer=True,
+                    pre_upload_s=0.0,
+                )
+                with patch(
+                    "scripts.diagnose_e310_tx._import_adi",
+                    return_value=adi,
+                ), redirect_stdout(io.StringIO()):
+                    transmitter.on()
+
+                device = adi.devices[0]
+                self.assertEqual(device.rx_calls, expected)
+                self.assertEqual(device.tx_calls, 1)
+                self.assertTrue(device.tx_cyclic_buffer)
+                self.assertIsNotNone(device._txbuf)
+                transmitter.close()
+
+    def test_lifecycle_dds_tx_only_never_reads_rx(self):
+        adi = FakeAdi()
+        with patch.dict(sys.modules, {"adi": adi}), redirect_stdout(io.StringIO()):
+            transmitter = DdsTransmitter(tx_channel=0, tx_port="B")
+            transmitter.on()
+
+        device = adi.devices[0]
+        self.assertEqual(device.rx_calls, 0)
+        self.assertTrue(device.dds_enabled[0])
+        self.assertIn(("dds_single_tone", 1_000_000, 0.4, 0), device.events)
+        transmitter.close()
 
 
 class BackgroundCalibrationTests(unittest.TestCase):
@@ -595,6 +732,35 @@ class E310CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("reuse_buffer=true", result.stdout.splitlines())
         self.assertIn("pre_upload_s=1.0", result.stdout.splitlines())
+
+    def test_tx_diagnostic_dry_run_exposes_each_lifecycle_phase(self):
+        root = Path(__file__).resolve().parents[1]
+        phases = (
+            "dds-tx-only",
+            "fmcw-tx-only",
+            "fmcw-rx-configured",
+            "fmcw-rx-read",
+        )
+        for phase in phases:
+            with self.subTest(phase=phase):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "scripts/diagnose_e310_tx.py",
+                        "--phase",
+                        phase,
+                        "--dry-run",
+                    ],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                lines = result.stdout.splitlines()
+                self.assertIn(f"phase={phase}", lines)
+                self.assertIn("hardware_access=false", lines)
 
 
 if __name__ == "__main__":

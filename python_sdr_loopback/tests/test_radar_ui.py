@@ -11,7 +11,11 @@ from unittest.mock import patch
 import numpy as np
 
 from sdr_loopback.radar.config import RadarConfig
-from scripts.sdr_video_gui import SdrVideoGui, create_radar_runtime
+from scripts.sdr_video_gui import (
+    SdrVideoGui,
+    create_radar_runtime,
+    format_radar_runtime_diagnostics,
+)
 from sdr_loopback.radar.models import RadarCapture, RadarDiagnostics, RadarFrame, RadarTarget
 from sdr_loopback.radar.sources import E310RadioConfig
 from sdr_loopback.radar.storage import save_capture
@@ -626,6 +630,8 @@ class RadarUiTests(unittest.TestCase):
             controller._recoverable_processing_errors,
             (ChirpSyncError,),
         )
+        self.assertEqual(controller._recover_after_processing_errors, 16)
+        self.assertEqual(controller._max_source_recoveries, 5)
         self.assertEqual(effective_config, config)
 
     def test_poll_reports_waiting_for_sync_while_controller_is_running(self):
@@ -667,6 +673,90 @@ class RadarUiTests(unittest.TestCase):
         self.assertEqual(calibrate_button.state, "normal")
         self.assertIn("等待同步", radar_status.value)
         self.assertNotIn("清理失败", radar_status.value)
+
+    def test_runtime_diagnostics_explain_signal_sync_and_recovery_state(self):
+        source = SimpleNamespace(
+            session_attempt=3,
+            phase="capturing",
+            tx_uploaded=True,
+            capture_count=12,
+            rx_samples=552960,
+            rx_rms_dbfs=-49.92,
+            rx_peak_dbfs=-38.62,
+            clip_ratio=0.0004,
+        )
+        sync = SimpleNamespace(
+            failed_metric="min_correlation",
+            min_correlation=0.031,
+            mean_correlation=0.067,
+            periodic_coherence=0.004,
+            idle_to_active_db=-1.8,
+            min_correlation_threshold=0.05,
+            mean_correlation_threshold=0.08,
+            periodic_coherence_threshold=0.0075,
+        )
+        status = SimpleNamespace(
+            processing_error="chirp correlation is below the sync threshold",
+            consecutive_processing_errors=16,
+            source_recoveries=2,
+            max_source_recoveries=5,
+            recovery_exhausted=False,
+            source_diagnostics=source,
+            sync_diagnostics=sync,
+        )
+
+        lines = format_radar_runtime_diagnostics(status)
+        rendered = "\n".join(lines)
+
+        self.assertIn("会话 3", rendered)
+        self.assertIn("capturing", rendered)
+        self.assertIn("TX循环已上传", rendered)
+        self.assertIn("-49.92 dBFS", rendered)
+        self.assertIn("0.0310 / 0.0500", rendered)
+        self.assertIn("恢复 2/5", rendered)
+        self.assertIn("连续同步失败 16", rendered)
+
+    def test_runtime_diagnostics_marks_exhausted_recovery_and_missing_signal(self):
+        status = SimpleNamespace(
+            processing_error="sync failed",
+            consecutive_processing_errors=48,
+            source_recoveries=5,
+            max_source_recoveries=5,
+            recovery_exhausted=True,
+            source_diagnostics=None,
+            sync_diagnostics=None,
+        )
+
+        rendered = "\n".join(format_radar_runtime_diagnostics(status))
+
+        self.assertIn("尚无RX采集统计", rendered)
+        self.assertIn("恢复已耗尽", rendered)
+        self.assertIn("sync failed", rendered)
+
+    def test_runtime_log_is_bounded_to_recent_two_hundred_lines(self):
+        class TextBuffer:
+            def __init__(self):
+                self.value = ""
+
+            def configure(self, **_kwargs):
+                pass
+
+            def delete(self, *_args):
+                self.value = ""
+
+            def insert(self, _where, value):
+                self.value += value
+
+            def see(self, _where):
+                pass
+
+        gui = SimpleNamespace(_radar_log_lines=[], radar_log_text=TextBuffer())
+
+        SdrVideoGui._append_radar_log(gui, [f"line-{index}" for index in range(205)])
+
+        self.assertEqual(len(gui._radar_log_lines), 200)
+        self.assertNotIn("line-0\n", gui.radar_log_text.value)
+        self.assertIn("line-204", gui.radar_log_text.value)
 
     def test_poll_prioritizes_shutdown_timeout_over_sync_error(self):
         status = SimpleNamespace(

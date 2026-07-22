@@ -17,11 +17,18 @@ class ControllerStatus:
     running: bool
     cleanup_complete: bool
     error: Optional[str]
+    processing_error: Optional[str]
     shutdown_error: Optional[str]
     acquisition_time_ms: float
     processing_time_ms: float
     overruns: int
     dropped_display_frames: int
+    consecutive_processing_errors: int
+    source_recoveries: int
+    max_source_recoveries: int
+    recovery_exhausted: bool
+    sync_diagnostics: object | None
+    source_diagnostics: object | None
 
 
 class RadarController:
@@ -41,13 +48,24 @@ class RadarController:
         cpi_period_s: float,
         *,
         recoverable_processing_errors: tuple[type[Exception], ...] = (),
+        recover_after_processing_errors: int = 0,
+        max_source_recoveries: int = 0,
     ) -> None:
         if cpi_period_s <= 0.0:
             raise ValueError("cpi_period_s must be positive")
+        if (
+            type(recover_after_processing_errors) is not int
+            or type(max_source_recoveries) is not int
+            or recover_after_processing_errors < 0
+            or max_source_recoveries < 0
+        ):
+            raise ValueError("source recovery limits must be nonnegative integers")
         self.source = source
         self.processor = processor
         self.cpi_period_s = float(cpi_period_s)
         self._recoverable_processing_errors = recoverable_processing_errors
+        self._recover_after_processing_errors = recover_after_processing_errors
+        self._max_source_recoveries = max_source_recoveries
         self._frames: queue.Queue[RadarFrame] = queue.Queue(maxsize=1)
         self._frame_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -67,6 +85,10 @@ class RadarController:
         self._processing_time_ms = 0.0
         self._overruns = 0
         self._dropped_display_frames = 0
+        self._consecutive_processing_errors = 0
+        self._source_recoveries = 0
+        self._recovery_exhausted = False
+        self._sync_diagnostics = None
 
     def start(self) -> None:
         """Start the one-shot controller lifecycle."""
@@ -143,6 +165,10 @@ class RadarController:
 
     def status(self) -> ControllerStatus:
         """Return an immutable, internally consistent status snapshot."""
+        diagnostic_status = getattr(self.source, "diagnostic_status", None)
+        source_diagnostics = (
+            diagnostic_status() if diagnostic_status is not None else None
+        )
         with self._source_condition:
             cleanup_complete = self._source_state == self._CLOSED
         with self._state_lock:
@@ -150,15 +176,29 @@ class RadarController:
                 running=self._running,
                 cleanup_complete=cleanup_complete,
                 error=self._error or self._processing_error,
+                processing_error=self._processing_error,
                 shutdown_error=self._shutdown_error,
                 acquisition_time_ms=self._acquisition_time_ms,
                 processing_time_ms=self._processing_time_ms,
                 overruns=self._overruns,
                 dropped_display_frames=self._dropped_display_frames,
+                consecutive_processing_errors=self._consecutive_processing_errors,
+                source_recoveries=self._source_recoveries,
+                max_source_recoveries=self._max_source_recoveries,
+                recovery_exhausted=self._recovery_exhausted,
+                sync_diagnostics=self._sync_diagnostics,
+                source_diagnostics=source_diagnostics,
             )
+
+    def drain_diagnostic_events(self) -> tuple[object, ...]:
+        """Consume optional hardware-source transition events for GUI logging."""
+        drain = getattr(self.source, "drain_diagnostic_events", None)
+        return tuple(drain()) if drain is not None else ()
 
     def _run(self) -> None:
         open_attempted = False
+        consecutive_processing_errors = 0
+        source_recoveries = 0
         try:
             with self._source_condition:
                 if self._source_state == self._CLOSE_REQUESTED:
@@ -183,17 +223,55 @@ class RadarController:
                 try:
                     frame = self.processor.process(capture)
                 except self._recoverable_processing_errors as error:
+                    consecutive_processing_errors += 1
+                    threshold_reached = (
+                        self._recover_after_processing_errors > 0
+                        and consecutive_processing_errors
+                        >= self._recover_after_processing_errors
+                    )
+                    can_recover = (
+                        getattr(self.source, "recover", None) is not None
+                        and threshold_reached
+                        and source_recoveries < self._max_source_recoveries
+                    )
                     with self._state_lock:
                         self._processing_error = str(error)
+                        self._consecutive_processing_errors = (
+                            consecutive_processing_errors
+                        )
+                        self._source_recoveries = source_recoveries
+                        self._recovery_exhausted = (
+                            threshold_reached
+                            and source_recoveries >= self._max_source_recoveries
+                            and self._max_source_recoveries > 0
+                        )
+                        self._sync_diagnostics = getattr(
+                            error, "diagnostics", None
+                        )
+                    recovery = getattr(self.source, "recover", None)
+                    if can_recover:
+                        recovery()
+                        source_recoveries += 1
+                        consecutive_processing_errors = 0
+                        with self._state_lock:
+                            self._consecutive_processing_errors = 0
+                            self._source_recoveries = source_recoveries
+                            self._recovery_exhausted = False
                     continue
                 processing_s = perf_counter() - processing_started
 
                 with self._state_lock:
                     self._processing_error = None
+                    self._consecutive_processing_errors = 0
+                    self._source_recoveries = 0
+                    self._recovery_exhausted = False
+                    self._sync_diagnostics = None
                     self._acquisition_time_ms = acquisition_s * 1000.0
                     self._processing_time_ms = processing_s * 1000.0
                     if acquisition_s + processing_s > self.cpi_period_s:
                         self._overruns += 1
+                consecutive_processing_errors = 0
+                source_recoveries = 0
                 self.publish(frame)
         except StopIteration:
             pass

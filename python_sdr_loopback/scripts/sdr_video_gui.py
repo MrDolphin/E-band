@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import io
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +52,65 @@ from sdr_loopback.radar.ui import (
 
 
 STREAM_SCRIPT = SCRIPT_DIR / "run_low_latency_ts_stream.py"
+RADAR_LOG_LINE_LIMIT = 200
+
+
+def _diagnostic_number(value: object, digits: int = 2) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "未采集"
+    if not math.isfinite(number):
+        return "未采集"
+    return f"{number:.{digits}f}"
+
+
+def format_radar_runtime_diagnostics(status: object) -> tuple[str, ...]:
+    """Format controller snapshots without reaching into the radio from Tk."""
+    source = getattr(status, "source_diagnostics", None)
+    if source is None:
+        source_lines = ("E310：尚无RX采集统计",)
+    else:
+        tx_state = "TX循环已上传" if getattr(source, "tx_uploaded", False) else "TX尚未上传"
+        source_lines = (
+            f"E310：会话 {getattr(source, 'session_attempt', 0)} | "
+            f"阶段 {getattr(source, 'phase', '未知')} | {tx_state} | "
+            f"已采集 {getattr(source, 'capture_count', 0)} CPI",
+            f"RX：{getattr(source, 'rx_samples', 0)} 点 | "
+            f"RMS {_diagnostic_number(getattr(source, 'rx_rms_dbfs', None))} dBFS | "
+            f"峰值 {_diagnostic_number(getattr(source, 'rx_peak_dbfs', None))} dBFS | "
+            f"削顶 {_diagnostic_number(100.0 * getattr(source, 'clip_ratio', 0.0), 4)}%",
+        )
+
+    sync = getattr(status, "sync_diagnostics", None)
+    if sync is None:
+        error = getattr(status, "processing_error", None)
+        sync_line = f"同步：{error}" if error else "同步：等待有效测量"
+    else:
+        periodic = getattr(sync, "periodic_coherence", None)
+        periodic_text = (
+            "未测量"
+            if periodic is None
+            else f"{_diagnostic_number(periodic, 4)} / "
+            f"{_diagnostic_number(getattr(sync, 'periodic_coherence_threshold', None), 4)}"
+        )
+        sync_line = (
+            f"同步：失败项 {getattr(sync, 'failed_metric', '未知')} | "
+            f"最小相关 {_diagnostic_number(getattr(sync, 'min_correlation', None), 4)} / "
+            f"{_diagnostic_number(getattr(sync, 'min_correlation_threshold', None), 4)} | "
+            f"平均相关 {_diagnostic_number(getattr(sync, 'mean_correlation', None), 4)} / "
+            f"{_diagnostic_number(getattr(sync, 'mean_correlation_threshold', None), 4)} | "
+            f"周期一致性 {periodic_text}"
+        )
+
+    recoveries = getattr(status, "source_recoveries", 0)
+    maximum = getattr(status, "max_source_recoveries", 0)
+    consecutive = getattr(status, "consecutive_processing_errors", 0)
+    recovery_state = "恢复已耗尽" if getattr(status, "recovery_exhausted", False) else "可继续恢复"
+    recovery_line = (
+        f"恢复 {recoveries}/{maximum} | 连续同步失败 {consecutive} | {recovery_state}"
+    )
+    return (*source_lines, sync_line, recovery_line)
 
 
 @dataclass(frozen=True)
@@ -167,6 +227,8 @@ def create_radar_runtime(
         recoverable_processing_errors=(ChirpSyncError,)
         if source_mode == "E310"
         else (),
+        recover_after_processing_errors=16 if source_mode == "E310" else 0,
+        max_source_recoveries=5 if source_mode == "E310" else 0,
     )
     return controller, effective_config
 
@@ -375,6 +437,9 @@ class SdrVideoGui(tk.Tk):
         self.radar_target_snr_var = tk.StringVar(value="20")
         self.radar_derived_var = tk.StringVar(value="")
         self.radar_status_var = tk.StringVar(value="就绪")
+        self.radar_diagnostic_summary_var = tk.StringVar(value="等待E310诊断数据")
+        self._radar_log_lines: list[str] = []
+        self._radar_last_runtime_signature: tuple[object, ...] | None = None
 
         self.radar_candidate_label_var = tk.StringVar(value="")
         self.radar_candidate_measured_range_var = tk.StringVar(value="")
@@ -408,7 +473,7 @@ class SdrVideoGui(tk.Tk):
         self.stream_tab.columnconfigure(0, weight=1)
         self.stream_tab.rowconfigure(2, weight=2)
         self.radar_tab.columnconfigure(0, weight=1)
-        self.radar_tab.rowconfigure(1, weight=1)
+        self.radar_tab.rowconfigure(2, weight=1)
 
         file_frame = ttk.LabelFrame(self.config_tab, text="输入")
         file_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -621,6 +686,38 @@ class SdrVideoGui(tk.Tk):
         self.radar_dashboard = RadarDashboard(self.radar_tab)
         self.radar_dashboard.grid(row=2, column=0, sticky="nsew")
 
+        diagnostic_frame = ttk.LabelFrame(
+            self.radar_tab, text="运行日志与同步诊断"
+        )
+        diagnostic_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        diagnostic_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            diagnostic_frame,
+            textvariable=self.radar_diagnostic_summary_var,
+            justify=tk.LEFT,
+            wraplength=1400,
+        ).grid(row=0, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 4))
+        self.radar_log_text = tk.Text(
+            diagnostic_frame,
+            height=6,
+            wrap="none",
+            state=tk.DISABLED,
+        )
+        self.radar_log_text.grid(row=1, column=0, sticky="ew", padx=(8, 0), pady=(0, 8))
+        radar_log_scroll = ttk.Scrollbar(
+            diagnostic_frame, orient=tk.VERTICAL, command=self.radar_log_text.yview
+        )
+        radar_log_scroll.grid(row=1, column=1, sticky="ns", pady=(0, 8))
+        self.radar_log_text.configure(yscrollcommand=radar_log_scroll.set)
+        radar_log_actions = ttk.Frame(diagnostic_frame)
+        radar_log_actions.grid(row=1, column=2, sticky="ns", padx=8, pady=(0, 8))
+        ttk.Button(
+            radar_log_actions, text="清空日志", command=self.clear_radar_log
+        ).pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(
+            radar_log_actions, text="保存日志", command=self.save_radar_log
+        ).pack(fill=tk.X)
+
     @staticmethod
     def _metric(parent: ttk.Frame, column: int, label: str, variable: tk.StringVar) -> None:
         cell = ttk.Frame(parent, padding=8)
@@ -815,6 +912,92 @@ class SdrVideoGui(tk.Tk):
             f"{self._best_radar_candidate_score:.1f}/100{marker}"
         )
 
+    def _append_radar_log(self, lines: list[str] | tuple[str, ...]) -> None:
+        if not lines:
+            return
+        history = getattr(self, "_radar_log_lines", None)
+        if history is None:
+            history = []
+            self._radar_log_lines = history
+        history.extend(str(line) for line in lines)
+        del history[:-RADAR_LOG_LINE_LIMIT]
+        widget = getattr(self, "radar_log_text", None)
+        if widget is None:
+            return
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        widget.insert(tk.END, "\n".join(history) + "\n")
+        widget.configure(state=tk.DISABLED)
+        widget.see(tk.END)
+
+    def clear_radar_log(self) -> None:
+        self._radar_log_lines = []
+        self._radar_last_runtime_signature = None
+        widget = getattr(self, "radar_log_text", None)
+        if widget is not None:
+            widget.configure(state=tk.NORMAL)
+            widget.delete("1.0", tk.END)
+            widget.configure(state=tk.DISABLED)
+
+    def save_radar_log(self) -> None:
+        if not self._radar_log_lines:
+            messagebox.showinfo("保存雷达日志", "当前没有可保存的诊断日志")
+            return
+        output = filedialog.asksaveasfilename(
+            initialdir=str(PROJECT_DIR / "artifacts"),
+            initialfile=time.strftime("fmcw-runtime-%Y%m%d-%H%M%S.log"),
+            defaultextension=".log",
+            filetypes=[("日志文件", "*.log"), ("文本文件", "*.txt")],
+        )
+        if not output:
+            return
+        Path(output).write_text("\n".join(self._radar_log_lines) + "\n", encoding="utf-8")
+        self.radar_status_var.set(f"诊断日志已保存：{output}")
+
+    @staticmethod
+    def _runtime_log_signature(status: object) -> tuple[object, ...]:
+        source = getattr(status, "source_diagnostics", None)
+        sync = getattr(status, "sync_diagnostics", None)
+        return (
+            getattr(source, "session_attempt", None),
+            getattr(source, "phase", None),
+            getattr(source, "tx_uploaded", None),
+            getattr(status, "source_recoveries", None),
+            getattr(status, "recovery_exhausted", None),
+            getattr(sync, "failed_metric", None),
+            getattr(status, "processing_error", None),
+        )
+
+    def _refresh_radar_runtime_log(self, controller: object, status: object) -> None:
+        summary_var = getattr(self, "radar_diagnostic_summary_var", None)
+        log_widget = getattr(self, "radar_log_text", None)
+        if summary_var is None and log_widget is None:
+            return
+        lines = format_radar_runtime_diagnostics(status)
+        if summary_var is not None:
+            summary_var.set("\n".join(lines))
+
+        event_lines: list[str] = []
+        drain_events = getattr(controller, "drain_diagnostic_events", None)
+        if callable(drain_events):
+            for event in drain_events():
+                timestamp = time.strftime(
+                    "%H:%M:%S", time.localtime(getattr(event, "timestamp", time.time()))
+                )
+                event_lines.append(
+                    f"[{timestamp}] 会话 {getattr(event, 'session_attempt', 0)} "
+                    f"{getattr(event, 'phase', 'unknown')}: "
+                    f"{getattr(event, 'message', '')}"
+                )
+
+        signature = SdrVideoGui._runtime_log_signature(status)
+        previous = getattr(self, "_radar_last_runtime_signature", None)
+        if signature != previous:
+            self._radar_last_runtime_signature = signature
+            timestamp = time.strftime("%H:%M:%S")
+            event_lines.extend(f"[{timestamp}] {line}" for line in lines)
+        SdrVideoGui._append_radar_log(self, event_lines)
+
     def poll_radar_controller(self) -> None:
         controller = self.radar_controller
         if controller is not None:
@@ -824,6 +1007,7 @@ class SdrVideoGui(tk.Tk):
                 self._last_radar_frame_index,
                 self.radar_source_label,
             )
+            SdrVideoGui._refresh_radar_runtime_log(self, controller, status)
             if status.running:
                 processor = getattr(controller, "processor", None)
                 calibration_status_method = getattr(
