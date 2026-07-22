@@ -2,6 +2,37 @@
 
 This workspace is for ANTSDR E310 / remotevideo development. Keep context small. Avoid scanning large binary/material folders unless the user explicitly asks.
 
+## Staged execution gate
+
+For every large task, split the work into the following stages and complete
+only one stage at a time:
+
+1. **Goal 1 — Research report only.** Investigate and report findings; do not
+   design a solution or change code.
+2. **Goal 2 — Solution plan only.** Produce a bounded implementation and
+   verification plan; do not implement it.
+3. **Goal 3 — One explicit feature only.** Implement only the single feature
+   approved for this stage; do not expand scope or begin general cleanup.
+4. **Goal 4 — Tests and fixes only.** Test the approved feature and fix defects
+   exposed by those tests; do not start another feature.
+
+At the end of each stage:
+
+- Write `Goal N：已完成` in the user-facing result and summarize the evidence.
+- Stop and wait for explicit user confirmation before starting the next goal.
+- Do not treat requests such as “continue developing”, “finish everything”, or
+  “keep going” from an earlier turn as permission to cross this gate. Only the
+  user's confirmation after the current stage is marked complete opens the
+  next stage.
+- If the current request already names one goal, perform only that goal. If it
+  does not name a goal, first select and announce the smallest applicable goal.
+
+This gate is intended to keep feedback timely and prevent long, token-heavy
+runs. It takes precedence over any automatic continuation, commit/push, PR
+update, or multi-task workflow elsewhere in this file. Normal verification,
+commit, push, and PR updates that belong to the current approved stage are
+still allowed before stopping.
+
 ## FMCW Radar Workflow
 
 For FMCW radar work, this section takes precedence over the legacy remotevideo
