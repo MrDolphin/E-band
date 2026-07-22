@@ -22,6 +22,8 @@ class BackgroundCalibrationStatus:
     collected_cpis: int
     required_cpis: int
     skipped_cpis: int
+    coherence_restarts: int
+    last_coherence: float | None
     ready: bool
     error: str | None
 
@@ -49,6 +51,8 @@ class FmcwProcessor:
         self._calibration_required_cpis = 0
         self._calibration_collected_cpis = 0
         self._calibration_skipped_cpis = 0
+        self._calibration_coherence_restarts = 0
+        self._calibration_last_coherence: float | None = None
         self._calibration_error: str | None = None
         self._velocity_trust_threshold = velocity_trust_threshold
         self._frame_index = 0
@@ -66,6 +70,8 @@ class FmcwProcessor:
             self._calibration_required_cpis = int(cpi_count)
             self._calibration_collected_cpis = 0
             self._calibration_skipped_cpis = 0
+            self._calibration_coherence_restarts = 0
+            self._calibration_last_coherence = None
             self._calibration_error = None
 
     def note_background_calibration_sync_failure(self) -> None:
@@ -83,6 +89,8 @@ class FmcwProcessor:
                 collected_cpis=collected,
                 required_cpis=required if required > 0 else collected,
                 skipped_cpis=self._calibration_skipped_cpis,
+                coherence_restarts=self._calibration_coherence_restarts,
+                last_coherence=self._calibration_last_coherence,
                 ready=self._calibration is not None,
                 error=self._calibration_error,
             )
@@ -122,10 +130,23 @@ class FmcwProcessor:
         uncalibrated_beat = beat
         with self._calibration_lock:
             if self._calibration_required_cpis > 0:
-                self._calibration_matrices.append(
-                    beat.astype(np.complex64, copy=True)
-                )
-                self._calibration_collected_cpis += 1
+                current = beat.astype(np.complex64, copy=True)
+                if self._calibration_matrices:
+                    _, coherence = BackgroundCalibration._phase_align(
+                        self._calibration_matrices[0],
+                        current,
+                    )
+                    self._calibration_last_coherence = coherence
+                    if coherence < 0.5:
+                        self._calibration_matrices = [current]
+                        self._calibration_collected_cpis = 1
+                        self._calibration_coherence_restarts += 1
+                    else:
+                        self._calibration_matrices.append(current)
+                        self._calibration_collected_cpis += 1
+                else:
+                    self._calibration_matrices.append(current)
+                    self._calibration_collected_cpis = 1
                 if (
                     self._calibration_collected_cpis
                     >= self._calibration_required_cpis

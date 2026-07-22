@@ -512,10 +512,10 @@ class RadarUiTests(unittest.TestCase):
 
         SdrVideoGui.calibrate_radar_background(gui)
 
-        self.assertEqual(processor.cpi_count, 16)
+        self.assertEqual(processor.cpi_count, 4)
         self.assertEqual(button.state, "normal")
         self.assertEqual(button.text, "取消空场标定")
-        self.assertIn("0/16", radar_status.value)
+        self.assertIn("0/4", radar_status.value)
 
     def test_empty_room_button_cancels_an_armed_calibration(self):
         calibration = SimpleNamespace(active=True)

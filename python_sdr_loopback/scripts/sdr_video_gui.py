@@ -955,12 +955,12 @@ class SdrVideoGui(tk.Tk):
             )
             self.radar_status_var.set("空场标定已取消")
             return
-        controller.processor.begin_background_calibration(cpi_count=16)
+        controller.processor.begin_background_calibration(cpi_count=4)
         self.radar_calibrate_button.configure(
             state=tk.NORMAL,
             text="取消空场标定",
         )
-        self.radar_status_var.set("空场标定中：0/16，请保持场景静止且不要放置角反")
+        self.radar_status_var.set("空场标定中：0/4，请保持场景静止且不要放置角反")
 
     def render(self, frame: object) -> None:
         self._latest_radar_frame = frame
@@ -1133,11 +1133,15 @@ class SdrVideoGui(tk.Tk):
                         calibrate_button.configure(state=tk.NORMAL)
                 elif status.error:
                     if calibration_status is not None and calibration_status.active:
+                        coherence = getattr(calibration_status, "last_coherence", None)
+                        coherence_text = "-" if coherence is None else f"{coherence:.3f}"
                         self.radar_status_var.set(
                             "空场标定等待同步："
                             f"{calibration_status.collected_cpis}/"
                             f"{calibration_status.required_cpis}，"
-                            f"跳过 {getattr(calibration_status, 'skipped_cpis', 0)} 个失败CPI"
+                            f"同步跳过 {getattr(calibration_status, 'skipped_cpis', 0)}，"
+                            f"相干重置 {getattr(calibration_status, 'coherence_restarts', 0)}，"
+                            f"最近相干度 {coherence_text}"
                             f"（{status.error}）"
                         )
                     else:
@@ -1163,11 +1167,15 @@ class SdrVideoGui(tk.Tk):
                             self, "radar_calibrate_button", None
                         )
                         if calibration_status.active:
+                            coherence = getattr(calibration_status, "last_coherence", None)
+                            coherence_text = "-" if coherence is None else f"{coherence:.3f}"
                             self.radar_status_var.set(
                                 "空场标定中："
                                 f"{calibration_status.collected_cpis}/"
                                 f"{calibration_status.required_cpis}，"
-                                f"跳过 {getattr(calibration_status, 'skipped_cpis', 0)} 个失败CPI，"
+                                f"同步跳过 {getattr(calibration_status, 'skipped_cpis', 0)}，"
+                                f"相干重置 {getattr(calibration_status, 'coherence_restarts', 0)}，"
+                                f"最近相干度 {coherence_text}，"
                                 "请保持场景静止"
                             )
                             if calibrate_button is not None:
