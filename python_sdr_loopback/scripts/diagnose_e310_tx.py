@@ -47,6 +47,13 @@ def nonnegative_wait(value: str) -> float:
     return number
 
 
+def nonnegative_refresh_wait(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or not 0.0 <= number <= 60.0:
+        raise argparse.ArgumentTypeError("refresh wait must be finite and in [0, 60]")
+    return number
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -82,6 +89,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=positive_float,
         default=1.0,
         help="Seconds between structured TX state snapshots.",
+    )
+    parser.add_argument(
+        "--refresh-tx-gain-s",
+        type=nonnegative_refresh_wait,
+        default=0.0,
+        help=(
+            "Reapply the requested TX gain at this interval (0 disables it). "
+            "Use only to test whether an RF gain reassertion restores TX output."
+        ),
     )
     buffer_mode = parser.add_mutually_exclusive_group()
     buffer_mode.add_argument(
@@ -241,6 +257,15 @@ def snapshot_tx_state(
             )
         )
     )
+    tx_rf_port = _read_or_none(
+        lambda: str(
+            sdr._get_iio_attr_str(
+                f"voltage{tx_channel}", "rf_port_select", True
+            )
+        )
+    )
+    ensm_mode = _read_or_none(lambda: str(sdr._ctrl.attrs["ensm_mode"].value))
+    calib_mode = _read_or_none(lambda: str(sdr._ctrl.attrs["calib_mode"].value))
     return {
         "event": "tx_state",
         "elapsed_s": round(time.monotonic() - started_at, 3),
@@ -250,6 +275,9 @@ def snapshot_tx_state(
         "tx_buffer_present": getattr(sdr, "_txbuf", None) is not None,
         "dds_enabled": dds_enabled,
         "hardware_gain_db": hardware_gain,
+        "tx_rf_port": tx_rf_port,
+        "ensm_mode": ensm_mode,
+        "calib_mode": calib_mode,
     }
 
 
@@ -439,9 +467,13 @@ def hold_with_state(
     duration_s: float,
     sample_state_s: float,
     tx_channel: int,
+    refresh_tx_gain_s: float,
 ) -> None:
     started_at = getattr(transmitter, "started_at", time.monotonic())
     deadline = time.monotonic() + duration_s
+    next_refresh = (
+        time.monotonic() + refresh_tx_gain_s if refresh_tx_gain_s else None
+    )
     while True:
         print(
             json.dumps(
@@ -455,6 +487,24 @@ def hold_with_state(
             ),
             flush=True,
         )
+        now = time.monotonic()
+        if next_refresh is not None and now >= next_refresh:
+            transmitter.sdr._set_iio_attr_float(
+                f"voltage{tx_channel}", "hardwaregain", True, TX_GAIN_DB
+            )
+            print(
+                json.dumps(
+                    {
+                        "event": "tx_gain_refreshed",
+                        "elapsed_s": round(now - started_at, 3),
+                        "phase": phase,
+                        "hardware_gain_db": TX_GAIN_DB,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            next_refresh = now + refresh_tx_gain_s
         remaining = deadline - time.monotonic()
         if remaining <= 0.0:
             break
@@ -479,6 +529,7 @@ def print_plan(args: argparse.Namespace) -> None:
     print(f"on_s={args.on_s}")
     print(f"off_s={args.off_s}")
     print(f"sample_state_s={args.sample_state_s}")
+    print(f"refresh_tx_gain_s={args.refresh_tx_gain_s}")
 
 
 def main() -> int:
@@ -535,6 +586,7 @@ def main() -> int:
                 duration_s=args.on_s,
                 sample_state_s=args.sample_state_s,
                 tx_channel=args.tx_channel,
+                refresh_tx_gain_s=args.refresh_tx_gain_s,
             )
             transmitter.off()
             print(f"cycle={cycle}/{args.cycles} tx=OFF", flush=True)
