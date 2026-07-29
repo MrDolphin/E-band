@@ -1,0 +1,163 @@
+"""Immutable FMCW radar configuration and derived physical dimensions."""
+
+from dataclasses import dataclass
+import math
+
+
+SPEED_OF_LIGHT_MPS = 299_792_458.0
+
+
+def recommended_range_fft_size(sample_rate_hz: float, active_time_s: float) -> int:
+    """Return the smallest supported power-of-two FFT covering active samples."""
+    active_samples = round(sample_rate_hz * active_time_s)
+    return 1 << max(12, (max(1, active_samples) - 1).bit_length())
+
+
+@dataclass(frozen=True)
+class RadarConfig:
+    carrier_hz: float = 76e9
+    sample_rate_hz: float = 30e6
+    bandwidth_hz: float = 20e6
+    active_time_s: float = 128e-6
+    idle_time_s: float = 16e-6
+    chirp_count: int = 64
+    range_fft_size: int = 4096
+    doppler_fft_size: int = 64
+    max_display_range_m: float = 50.0
+    cfar_threshold_db: float = 12.0
+    suppress_static_clutter: bool = False
+
+    def __post_init__(self) -> None:
+        positive_fields = (
+            ("carrier_hz", self.carrier_hz),
+            ("sample_rate_hz", self.sample_rate_hz),
+            ("bandwidth_hz", self.bandwidth_hz),
+            ("active_time_s", self.active_time_s),
+            ("max_display_range_m", self.max_display_range_m),
+        )
+        for name, value in positive_fields:
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be positive and finite")
+        if not math.isfinite(self.idle_time_s) or self.idle_time_s < 0.0:
+            raise ValueError("idle_time_s must be nonnegative and finite")
+        if (
+            not isinstance(self.chirp_count, int)
+            or isinstance(self.chirp_count, bool)
+            or self.chirp_count <= 0
+        ):
+            raise ValueError("chirp_count must be a positive integer")
+        if not math.isfinite(self.cfar_threshold_db):
+            raise ValueError("cfar_threshold_db must be finite")
+        active = self.sample_rate_hz * self.active_time_s
+        total = self.sample_rate_hz * self.chirp_period_s
+        if not math.isclose(active, round(active), abs_tol=1e-9):
+            raise ValueError("active_time_s must produce an integer sample count")
+        if not math.isclose(total, round(total), abs_tol=1e-9):
+            raise ValueError("chirp period must produce an integer sample count")
+        if not self._is_positive_power_of_two(self.range_fft_size):
+            raise ValueError("range_fft_size must be a positive power of two")
+        if not self._is_positive_power_of_two(self.doppler_fft_size):
+            raise ValueError("doppler_fft_size must be a positive power of two")
+        if self.range_fft_size < round(active):
+            raise ValueError("range_fft_size must cover all active samples")
+        if self.doppler_fft_size < self.chirp_count:
+            raise ValueError("doppler_fft_size must be at least chirp_count")
+
+    @staticmethod
+    def _is_positive_power_of_two(value: int) -> bool:
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+            and value & (value - 1) == 0
+        )
+
+    @property
+    def chirp_period_s(self) -> float:
+        return self.active_time_s + self.idle_time_s
+
+    @property
+    def active_samples(self) -> int:
+        return round(self.sample_rate_hz * self.active_time_s)
+
+    @property
+    def samples_per_chirp(self) -> int:
+        return round(self.sample_rate_hz * self.chirp_period_s)
+
+    @property
+    def cpi_samples(self) -> int:
+        return self.samples_per_chirp * self.chirp_count
+
+    @property
+    def cpi_duration_s(self) -> float:
+        return self.chirp_period_s * self.chirp_count
+
+    @property
+    def wavelength_m(self) -> float:
+        return SPEED_OF_LIGHT_MPS / self.carrier_hz
+
+    @property
+    def range_resolution_m(self) -> float:
+        return SPEED_OF_LIGHT_MPS / (2.0 * self.bandwidth_hz)
+
+    @property
+    def chirp_slope_hz_per_s(self) -> float:
+        return self.bandwidth_hz / self.active_time_s
+
+    @property
+    def max_unambiguous_velocity_mps(self) -> float:
+        return self.wavelength_m / (4.0 * self.chirp_period_s)
+
+    @property
+    def velocity_resolution_mps(self) -> float:
+        return (2.0 * self.max_unambiguous_velocity_mps) / self.doppler_fft_size
+
+
+_FMCW_PROFILE_VALUES: dict[str, dict[str, float | int]] = {
+    "stable-20": {
+        "carrier_hz": 76e9,
+        "sample_rate_hz": 30e6,
+        "bandwidth_hz": 20e6,
+        "active_time_s": 128e-6,
+        "idle_time_s": 16e-6,
+        "chirp_count": 64,
+        "doppler_fft_size": 64,
+        "max_display_range_m": 50.0,
+        "cfar_threshold_db": 12.0,
+    },
+    "validate-40": {
+        "carrier_hz": 76e9,
+        "sample_rate_hz": 61.44e6,
+        "bandwidth_hz": 40e6,
+        "active_time_s": 125e-6,
+        "idle_time_s": 15.625e-6,
+        "chirp_count": 64,
+        "doppler_fft_size": 64,
+        "max_display_range_m": 50.0,
+        "cfar_threshold_db": 12.0,
+    },
+    "limit-56": {
+        "carrier_hz": 76e9,
+        "sample_rate_hz": 61.44e6,
+        "bandwidth_hz": 56e6,
+        "active_time_s": 125e-6,
+        "idle_time_s": 15.625e-6,
+        "chirp_count": 64,
+        "doppler_fft_size": 64,
+        "max_display_range_m": 50.0,
+        "cfar_threshold_db": 12.0,
+    },
+}
+
+
+def fmcw_profile_names() -> tuple[str, ...]:
+    """Return deployment profile IDs in stable-to-limit order."""
+    return tuple(_FMCW_PROFILE_VALUES)
+
+
+def fmcw_profile_values(name: str) -> dict[str, float | int]:
+    """Return a copy of a named deployable FMCW configuration profile."""
+    try:
+        return dict(_FMCW_PROFILE_VALUES[name])
+    except KeyError as error:
+        raise ValueError(f"unknown FMCW profile: {name}") from error

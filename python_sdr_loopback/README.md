@@ -99,3 +99,66 @@ bounded batches and let the script concatenate verified parts:
 ```powershell
 python scripts/run_file_transfer_batches.py --input-file phone.mp4 --output-file artifacts\recovered_phone.mp4 --batch-bytes 200000 --artifact-prefix artifacts\phone_batched
 ```
+
+## FMCW radar MVP validation
+
+The FMCW radar path accepts synthetic, replayed, and E310 IQ CPIs.  The normal
+GUI configuration profiles deliberately separate the stable 20 MHz baseline
+from 40 MHz validation and 56 MHz limit experiments; selecting a profile only
+updates settings, and E310 is reconfigured on the next radar start.
+
+The same deployable profiles are available to the CLI, so offline checks and a
+later E310 session use identical waveform dimensions:
+
+```powershell
+python scripts\run_fmcw_radar.py --source synthetic --profile stable-20 --headless --metrics artifacts\fmcw_profiles\stable.jsonl
+python scripts\run_fmcw_radar.py --source synthetic --profile validate-40 --headless --metrics artifacts\fmcw_profiles\validate.jsonl
+python scripts\run_fmcw_radar.py --source e310 --profile limit-56 --dry-run
+```
+
+Explicit waveform arguments still override the selected profile for controlled
+experiments. `--dry-run` never opens the radio.
+
+Run the fully offline acceptance check before a hardware session. It injects
+one seeded synthetic target into each selected profile, verifies range and
+velocity recovery within one physical bin, and writes a machine-readable JSON
+report without opening E310:
+
+```powershell
+python scripts\validate_fmcw_profiles.py --output artifacts\fmcw_profile_acceptance.json
+python scripts\validate_fmcw_profiles.py --profile limit-56 --output artifacts\fmcw_limit56_acceptance.json
+```
+
+With configured sweep bandwidth `B`, the software range-bin spacing is
+`c / (2B)`: 7.49 m at 20 MHz and 2.68 m at 56 MHz.  Those are configured
+baseband values.  Verify the effective RF sweep of the external multiplier
+chain before claiming a different physical range resolution.
+
+Create and analyse a deterministic capture:
+
+```powershell
+python scripts/generate_fmcw_fixture.py --output artifacts\fmcw_acceptance.npz --target 22.5,1.2,18 --seed 7
+python scripts/analyze_fmcw_capture.py artifacts\fmcw_acceptance.npz --output-dir artifacts\fmcw_acceptance_result
+```
+
+Run a five-minute, headless synthetic soak.  It never opens E310 and writes
+one diagnostics JSON object per CPI plus `soak_summary.json`:
+
+```powershell
+python scripts/run_fmcw_radar.py --source synthetic --duration-sec 300 --headless --metrics artifacts\fmcw_soak\metrics.jsonl
+```
+
+Success requires `frames_failed=0`, `queue_max_depth=1`,
+`controller_stopped=true`, and `soak_ok=true`.  For a connected E310, inspect
+startup synchronisation without transmitting or capturing when hardware is not
+ready:
+
+```powershell
+python scripts/diagnose_fmcw_sync.py --dry-run --frames 10 --profile limit-56
+```
+
+On the current development PC, warmed synthetic 40 MHz and 56 MHz profiles
+process one CPI in about 43 ms after bounded-CFAR optimization, while a 64-chirp
+CPI lasts 9 ms.  The high-bandwidth profiles therefore validate configuration,
+range resolution, and detection behavior, but the live controller deliberately
+keeps only the newest frame rather than queueing every CPI indefinitely.

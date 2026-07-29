@@ -4,24 +4,162 @@ import functools
 import os
 import queue
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
 import io
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parent
+sys.path.insert(0, str(PROJECT_DIR))
+
+
 from tkinter import filedialog, messagebox
 import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageTk
+import numpy as np
+
+from sdr_loopback.radar.config import RadarConfig
+from sdr_loopback.radar.assessment import assess_frame, append_position_candidate
+from sdr_loopback.radar.controller import RadarController
+from sdr_loopback.radar.models import SyntheticTarget
+from sdr_loopback.radar.processor import FmcwProcessor
+from sdr_loopback.radar.sources import (
+    E310CpiSource,
+    E310RadioConfig,
+    IqReplaySource,
+    SyntheticTargetSource,
+)
+from sdr_loopback.radar.storage import load_capture_config, save_frame
+from sdr_loopback.radar.synchronizer import ChirpSyncError
+from sdr_loopback.radar.ui import (
+    RadarDashboard,
+    format_derived_config,
+    poll_radar,
+    radar_bandwidth_profile,
+    radar_bandwidth_profile_names,
+    radar_config_from_values,
+    validate_runtime_inputs,
+)
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SCRIPT_DIR.parent
 STREAM_SCRIPT = SCRIPT_DIR / "run_low_latency_ts_stream.py"
+RADAR_LOG_LINE_LIMIT = 200
+RADAR_FRAME_STALE_S = 2.0
+
+
+def _diagnostic_number(value: object, digits: int = 2) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "未采集"
+    if not math.isfinite(number):
+        return "未采集"
+    return f"{number:.{digits}f}"
+
+
+def format_radar_runtime_diagnostics(
+    status: object,
+    *,
+    total_sessions: int | None = None,
+) -> tuple[str, ...]:
+    """Format controller snapshots without reaching into the radio from Tk."""
+    source = getattr(status, "source_diagnostics", None)
+    if source is None:
+        source_lines = ("E310：尚无RX采集统计",)
+    else:
+        tx_state = "TX循环已上传" if getattr(source, "tx_uploaded", False) else "TX尚未上传"
+        displayed_sessions = (
+            getattr(source, "session_attempt", 0)
+            if total_sessions is None
+            else total_sessions
+        )
+        source_lines = (
+            f"E310：总会话 {displayed_sessions} | "
+            f"阶段 {getattr(source, 'phase', '未知')} | {tx_state} | "
+            f"已采集 {getattr(source, 'capture_count', 0)} CPI",
+            f"RX：{getattr(source, 'rx_samples', 0)} 点 | "
+            f"RMS {_diagnostic_number(getattr(source, 'rx_rms_dbfs', None))} dBFS | "
+            f"峰值 {_diagnostic_number(getattr(source, 'rx_peak_dbfs', None))} dBFS | "
+            f"削顶 {_diagnostic_number(100.0 * getattr(source, 'clip_ratio', 0.0), 4)}%",
+        )
+
+    sync = getattr(status, "sync_diagnostics", None)
+    if sync is None:
+        error = getattr(status, "processing_error", None)
+        sync_line = f"同步：{error}" if error else "同步：等待有效测量"
+    else:
+        periodic = getattr(sync, "periodic_coherence", None)
+        periodic_text = (
+            "未测量"
+            if periodic is None
+            else f"{_diagnostic_number(periodic, 4)} / "
+            f"{_diagnostic_number(getattr(sync, 'periodic_coherence_threshold', None), 4)}"
+        )
+        sync_line = (
+            f"同步：失败项 {getattr(sync, 'failed_metric', '未知')} | "
+            f"最小相关 {_diagnostic_number(getattr(sync, 'min_correlation', None), 4)} / "
+            f"{_diagnostic_number(getattr(sync, 'min_correlation_threshold', None), 4)} | "
+            f"平均相关 {_diagnostic_number(getattr(sync, 'mean_correlation', None), 4)} / "
+            f"{_diagnostic_number(getattr(sync, 'mean_correlation_threshold', None), 4)} | "
+            f"周期一致性 {periodic_text}"
+        )
+
+    recoveries = getattr(status, "source_recoveries", 0)
+    maximum = getattr(status, "max_source_recoveries", 0)
+    consecutive = getattr(status, "consecutive_processing_errors", 0)
+    recovery_state = "恢复已耗尽" if getattr(status, "recovery_exhausted", False) else "可继续恢复"
+    recovery_line = (
+        f"本次启动累计恢复 {recoveries}/{maximum} | 连续同步失败 {consecutive} | {recovery_state}"
+    )
+    alignment_duration = float(getattr(status, "alignment_duration_s", 0.0))
+    alignment_lines: tuple[str, ...] = ()
+    if alignment_duration > 0.0:
+        remaining = float(getattr(status, "alignment_remaining_s", 0.0))
+        window = (
+            f"对准剩余 {remaining:.1f} 秒"
+            if getattr(status, "alignment_active", False)
+            else "对准窗口已结束"
+        )
+        synchronized = "已同步" if getattr(status, "ever_synchronized", False) else "尚未同步"
+        best = float(getattr(status, "alignment_best_sync_score", 0.0))
+        alignment_lines = (f"天线对准：{window} | {synchronized} | 最佳相关 {best:.3f}",)
+    return (*source_lines, sync_line, recovery_line, *alignment_lines)
+
+
+def radar_frame_freshness(
+    status: object,
+    stale_after_s: float = RADAR_FRAME_STALE_S,
+) -> tuple[str, float | None]:
+    """Classify the last valid frame while current CPIs are failing sync."""
+    age = getattr(status, "last_success_age_s", None)
+    if not getattr(status, "processing_error", None) or age is None:
+        return "live", age
+    age = max(0.0, float(age))
+    return ("expired" if age >= stale_after_s else "historical"), age
+
+
+def expire_radar_frame(frame: object) -> object:
+    """Return a display-only frame with stale detections and heatmap removed."""
+    heatmap = np.asarray(frame.range_doppler_db)
+    finite = heatmap[np.isfinite(heatmap)]
+    floor = float(np.min(finite)) if finite.size else -120.0
+    diagnostics = replace(frame.diagnostics, source="历史帧已过期")
+    return replace(
+        frame,
+        targets=(),
+        range_doppler_db=np.full_like(heatmap, floor),
+        diagnostics=diagnostics,
+    )
 
 
 @dataclass(frozen=True)
@@ -103,6 +241,70 @@ PRESETS: tuple[Preset, ...] = (
     ),
     Preset("无播放调试", "不打开 ffplay，只跑 RF 流，20 个 chunk 后停止", ("--no-player", "--max-chunks", "20")),
 )
+
+
+def create_radar_runtime(
+    source_mode: str,
+    display_config: RadarConfig | None,
+    replay_path: Path | None,
+    synthetic_target: SyntheticTarget | None,
+    radio_config: E310RadioConfig | None = None,
+) -> tuple[RadarController, RadarConfig]:
+    """Build a controller with the source-owned effective configuration."""
+    if source_mode == "IQ回放":
+        if replay_path is None or not replay_path.is_file():
+            raise ValueError("请选择有效的IQ回放文件")
+        effective_config = load_capture_config(replay_path)
+        source = IqReplaySource((replay_path,), loop=True)
+        sync_mode = "known"
+    elif source_mode == "E310":
+        if display_config is None or radio_config is None:
+            raise ValueError("E310模式需要雷达和射频参数")
+        effective_config = display_config
+        source = E310CpiSource(effective_config, radio_config)
+        sync_mode = "correlation"
+    else:
+        if display_config is None or synthetic_target is None:
+            raise ValueError("仿真模式需要目标参数")
+        effective_config = display_config
+        source = SyntheticTargetSource(effective_config, (synthetic_target,))
+        sync_mode = "known"
+    controller = RadarController(
+        source,
+        FmcwProcessor(effective_config, sync_mode=sync_mode),
+        effective_config.cpi_duration_s,
+        recoverable_processing_errors=(ChirpSyncError,)
+        if source_mode == "E310"
+        else (),
+        recover_after_processing_errors=0,
+        max_source_recoveries=0,
+        alignment_duration_s=0.0,
+    )
+    return controller, effective_config
+
+
+def shutdown_video_process(process: subprocess.Popen | None, timeout_s: float = 1.0) -> None:
+    """Synchronously stop one video process within two bounded waits."""
+    if process is None or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            return
+    try:
+        process.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except Exception:
+            return
+        try:
+            process.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 class VideoPane(ttk.Frame):
@@ -237,6 +439,12 @@ class SdrVideoGui(tk.Tk):
         self.preview_thread: threading.Thread | None = None
         self.preview_after_id: str | None = None
         self.receiver_output_path: Path | None = None
+        self.radar_controller: RadarController | None = None
+        self._latest_radar_frame: object | None = None
+        self._last_radar_frame_index: int | None = None
+        self._radar_lifetime_sessions = 0
+        self._radar_seen_source_sessions = 0
+        self.radar_source_label = "仿真"
 
         self.input_var = tk.StringVar(value=str(PROJECT_DIR / "small.mp4"))
         self.work_dir_var = tk.StringVar(value=str(PROJECT_DIR / "artifacts" / "gui_stream_demo"))
@@ -259,9 +467,42 @@ class SdrVideoGui(tk.Tk):
         self.delay_status_var = tk.StringVar(value="-")
         self.profile_parts: dict[str, str] = {}
 
+        self.radar_source_var = tk.StringVar(value="仿真")
+        self.radar_profile_var = tk.StringVar(value="稳定 20 MHz")
+        self.radar_carrier_ghz_var = tk.StringVar(value="76")
+        self.radar_sample_rate_msps_var = tk.StringVar(value="30")
+        self.radar_bandwidth_mhz_var = tk.StringVar(value="20")
+        self.radar_active_us_var = tk.StringVar(value="128")
+        self.radar_idle_us_var = tk.StringVar(value="16")
+        self.radar_chirp_count_var = tk.StringVar(value="64")
+        self.radar_tx_gain_var = tk.StringVar(value="-20")
+        self.radar_rx_gain_var = tk.StringVar(value="20")
+        self.radar_tx_amplitude_var = tk.StringVar(value="0.40")
+        self.radar_tx_channel_var = tk.StringVar(value="0")
+        self.radar_rx_channel_var = tk.StringVar(value="0")
+        self.radar_cfar_db_var = tk.StringVar(value="12")
+        self.radar_display_range_var = tk.StringVar(value="50")
+        self.radar_replay_path_var = tk.StringVar(value="")
+        self.radar_target_range_var = tk.StringVar(value="25")
+        self.radar_target_velocity_var = tk.StringVar(value="1")
+        self.radar_target_snr_var = tk.StringVar(value="20")
+        self.radar_derived_var = tk.StringVar(value="")
+        self.radar_status_var = tk.StringVar(value="就绪")
+        self.radar_diagnostic_summary_var = tk.StringVar(value="等待E310诊断数据")
+        self._radar_log_lines: list[str] = []
+        self._radar_last_runtime_signature: tuple[object, ...] | None = None
+
+        self.radar_candidate_label_var = tk.StringVar(value="")
+        self.radar_candidate_measured_range_var = tk.StringVar(value="")
+        self.radar_candidate_notes_var = tk.StringVar(value="")
+        self.radar_candidate_photo_var = tk.StringVar(value="")
+        self.radar_candidate_quality_var = tk.StringVar(value="候选质量：等待雷达帧")
+        self._best_radar_candidate_score = 0.0
+
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self.drain_output)
+        self.after(33, self.poll_radar_controller)
 
     def _build_ui(self) -> None:
         root = ttk.Frame(self, padding=10)
@@ -274,12 +515,16 @@ class SdrVideoGui(tk.Tk):
 
         self.config_tab = ttk.Frame(self.notebook, padding=14)
         self.stream_tab = ttk.Frame(self.notebook, padding=14)
+        self.radar_tab = ttk.Frame(self.notebook, padding=14)
         self.notebook.add(self.config_tab, text="系统配置")
         self.notebook.add(self.stream_tab, text="视频传输")
+        self.notebook.add(self.radar_tab, text="FMCW雷达")
 
         self.config_tab.columnconfigure(0, weight=1)
         self.stream_tab.columnconfigure(0, weight=1)
         self.stream_tab.rowconfigure(2, weight=2)
+        self.radar_tab.columnconfigure(0, weight=1)
+        self.radar_tab.rowconfigure(2, weight=1)
 
         file_frame = ttk.LabelFrame(self.config_tab, text="输入")
         file_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -342,11 +587,81 @@ class SdrVideoGui(tk.Tk):
             variable=self.auto_player_size_var,
         ).grid(row=5, column=1, padx=8, pady=(0, 8), sticky="w")
 
+        radar_config = ttk.LabelFrame(self.config_tab, text="FMCW雷达配置")
+        radar_config.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        radar_config.columnconfigure(1, weight=1)
+        radar_config.columnconfigure(3, weight=1)
+        ttk.Label(radar_config, text="带宽预设").grid(
+            row=0, column=0, padx=8, pady=4, sticky="w"
+        )
+        profile_box = ttk.Combobox(
+            radar_config,
+            textvariable=self.radar_profile_var,
+            values=radar_bandwidth_profile_names(),
+            state="readonly",
+        )
+        profile_box.grid(row=0, column=1, padx=8, pady=4, sticky="ew")
+        profile_box.bind("<<ComboboxSelected>>", self.apply_radar_bandwidth_profile)
+        fields = (
+            ("数据源", self.radar_source_var, ("仿真", "IQ回放", "E310")),
+            ("载频 (GHz)", self.radar_carrier_ghz_var, None),
+            ("采样率 (MSPS)", self.radar_sample_rate_msps_var, None),
+            ("带宽 (MHz)", self.radar_bandwidth_mhz_var, None),
+            ("有效时间 (μs)", self.radar_active_us_var, None),
+            ("空闲时间 (μs)", self.radar_idle_us_var, None),
+            ("Chirp数", self.radar_chirp_count_var, None),
+            ("CFAR阈值 (dB)", self.radar_cfar_db_var, None),
+            ("显示距离 (m)", self.radar_display_range_var, None),
+            ("TX增益 (dB)", self.radar_tx_gain_var, None),
+            ("RX增益 (dB)", self.radar_rx_gain_var, None),
+            ("TX数字幅度", self.radar_tx_amplitude_var, None),
+            ("TX/RX通道", None, None),
+        )
+        for index, (label, variable, choices) in enumerate(fields):
+            row, pair = divmod(index, 2)
+            row += 1
+            column = pair * 2
+            ttk.Label(radar_config, text=label).grid(row=row, column=column, padx=8, pady=4, sticky="w")
+            if choices:
+                widget = ttk.Combobox(radar_config, textvariable=variable, values=choices, state="readonly")
+            elif variable is not None:
+                widget = ttk.Entry(radar_config, textvariable=variable)
+            else:
+                widget = ttk.Frame(radar_config)
+                ttk.Entry(widget, textvariable=self.radar_tx_channel_var, width=5).pack(side=tk.LEFT)
+                ttk.Label(widget, text=" / ").pack(side=tk.LEFT)
+                ttk.Entry(widget, textvariable=self.radar_rx_channel_var, width=5).pack(side=tk.LEFT)
+            widget.grid(row=row, column=column + 1, padx=8, pady=4, sticky="ew")
+            widget.bind("<FocusOut>", lambda _event: self.update_radar_derived())
+
+        replay_row = (len(fields) + 1) // 2 + 1
+        ttk.Label(radar_config, text="IQ回放文件").grid(row=replay_row, column=0, padx=8, pady=4, sticky="w")
+        ttk.Entry(radar_config, textvariable=self.radar_replay_path_var).grid(
+            row=replay_row, column=1, columnspan=2, padx=8, pady=4, sticky="ew"
+        )
+        ttk.Button(radar_config, text="浏览", command=self.browse_radar_replay).grid(
+            row=replay_row, column=3, padx=8, pady=4
+        )
+        target_row = ttk.Frame(radar_config)
+        target_row.grid(row=replay_row + 1, column=1, columnspan=3, padx=8, pady=4, sticky="w")
+        ttk.Label(radar_config, text="仿真目标").grid(row=replay_row + 1, column=0, padx=8, pady=4, sticky="w")
+        for label, variable in (
+            ("距离m", self.radar_target_range_var),
+            ("速度m/s", self.radar_target_velocity_var),
+            ("SNR dB", self.radar_target_snr_var),
+        ):
+            ttk.Label(target_row, text=label).pack(side=tk.LEFT, padx=(0, 3))
+            ttk.Entry(target_row, textvariable=variable, width=8).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(radar_config, textvariable=self.radar_derived_var).grid(
+            row=replay_row + 2, column=0, columnspan=4, padx=8, pady=(5, 8), sticky="w"
+        )
+        self.update_radar_derived()
+
         hint = ttk.Label(
             self.config_tab,
             text="配置完成后切换到“视频传输”页，点击开始即可运行 SDR RF 回环视频演示。",
         )
-        hint.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        hint.grid(row=3, column=0, sticky="w", pady=(4, 0))
 
         controls = ttk.Frame(self.stream_tab)
         controls.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -390,6 +705,70 @@ class SdrVideoGui(tk.Tk):
         yscroll.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=yscroll.set)
 
+        radar_controls = ttk.Frame(self.radar_tab)
+        radar_controls.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self.radar_start_button = ttk.Button(radar_controls, text="启动雷达", command=self.start_radar)
+        self.radar_start_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.radar_stop_button = ttk.Button(
+            radar_controls, text="停止雷达", command=self.stop_radar, state=tk.DISABLED
+        )
+        self.radar_stop_button.pack(side=tk.LEFT, padx=(0, 8))
+        self.radar_calibrate_button = ttk.Button(
+            radar_controls,
+            text="采集空场背景",
+            command=self.calibrate_radar_background,
+            state=tk.DISABLED,
+        )
+        self.radar_calibrate_button.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(radar_controls, text="保存当前帧", command=self.save_radar_frame).pack(side=tk.LEFT)
+        ttk.Label(radar_controls, text="单RX：方位角未测量", foreground="#a55d00").pack(side=tk.RIGHT)
+        ttk.Label(radar_controls, textvariable=self.radar_status_var).pack(side=tk.RIGHT, padx=12)
+        candidate_controls = ttk.Frame(self.radar_tab)
+        candidate_controls.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(candidate_controls, text="位置标签").pack(side=tk.LEFT)
+        ttk.Entry(candidate_controls, textvariable=self.radar_candidate_label_var, width=16).pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Label(candidate_controls, text="实测距离 m").pack(side=tk.LEFT)
+        ttk.Entry(candidate_controls, textvariable=self.radar_candidate_measured_range_var, width=8).pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Label(candidate_controls, text="角反朝向/备注").pack(side=tk.LEFT)
+        ttk.Entry(candidate_controls, textvariable=self.radar_candidate_notes_var, width=22).pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Button(candidate_controls, text="选择俯视照片", command=self.browse_radar_candidate_photo).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(candidate_controls, text="保存位置候选", command=self.save_position_candidate).pack(side=tk.LEFT)
+        ttk.Label(candidate_controls, textvariable=self.radar_candidate_quality_var).pack(side=tk.RIGHT)
+        self.radar_dashboard = RadarDashboard(self.radar_tab)
+        self.radar_dashboard.grid(row=2, column=0, sticky="nsew")
+
+        diagnostic_frame = ttk.LabelFrame(
+            self.radar_tab, text="运行日志与同步诊断"
+        )
+        diagnostic_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        diagnostic_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            diagnostic_frame,
+            textvariable=self.radar_diagnostic_summary_var,
+            justify=tk.LEFT,
+            wraplength=1400,
+        ).grid(row=0, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 4))
+        self.radar_log_text = tk.Text(
+            diagnostic_frame,
+            height=6,
+            wrap="none",
+            state=tk.DISABLED,
+        )
+        self.radar_log_text.grid(row=1, column=0, sticky="ew", padx=(8, 0), pady=(0, 8))
+        radar_log_scroll = ttk.Scrollbar(
+            diagnostic_frame, orient=tk.VERTICAL, command=self.radar_log_text.yview
+        )
+        radar_log_scroll.grid(row=1, column=1, sticky="ns", pady=(0, 8))
+        self.radar_log_text.configure(yscrollcommand=radar_log_scroll.set)
+        radar_log_actions = ttk.Frame(diagnostic_frame)
+        radar_log_actions.grid(row=1, column=2, sticky="ns", padx=8, pady=(0, 8))
+        ttk.Button(
+            radar_log_actions, text="清空日志", command=self.clear_radar_log
+        ).pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(
+            radar_log_actions, text="保存日志", command=self.save_radar_log
+        ).pack(fill=tk.X)
+
     @staticmethod
     def _metric(parent: ttk.Frame, column: int, label: str, variable: tk.StringVar) -> None:
         cell = ttk.Frame(parent, padding=8)
@@ -409,6 +788,492 @@ class SdrVideoGui(tk.Tk):
         path = filedialog.askdirectory(initialdir=str(PROJECT_DIR / "artifacts"))
         if path:
             self.work_dir_var.set(path)
+
+    def browse_radar_replay(self) -> None:
+        path = filedialog.askopenfilename(
+            initialdir=str(PROJECT_DIR / "artifacts"),
+            filetypes=[("雷达捕获", "*.npz"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.radar_replay_path_var.set(path)
+
+    def browse_radar_candidate_photo(self) -> None:
+        path = filedialog.askopenfilename(
+            initialdir=str(PROJECT_DIR),
+            filetypes=[("照片", "*.jpg *.jpeg *.png *.bmp"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.radar_candidate_photo_var.set(path)
+
+    def build_radar_config(self) -> RadarConfig:
+        for label, variable in (
+            ("TX通道", self.radar_tx_channel_var),
+            ("RX通道", self.radar_rx_channel_var),
+        ):
+            channel = int(variable.get())
+            if channel not in (0, 1):
+                raise ValueError(f"{label}必须是0或1")
+        return radar_config_from_values(
+            dict(
+                carrier_ghz=self.radar_carrier_ghz_var.get(),
+                sample_rate_msps=self.radar_sample_rate_msps_var.get(),
+                bandwidth_mhz=self.radar_bandwidth_mhz_var.get(),
+                active_us=self.radar_active_us_var.get(),
+                idle_us=self.radar_idle_us_var.get(),
+                chirp_count=self.radar_chirp_count_var.get(),
+                cfar_threshold_db=self.radar_cfar_db_var.get(),
+                max_display_range_m=self.radar_display_range_var.get(),
+            )
+        )
+
+    def update_radar_derived(self) -> None:
+        try:
+            self.radar_derived_var.set(format_derived_config(self.build_radar_config()))
+        except (TypeError, ValueError):
+            self.radar_derived_var.set("参数待修正")
+
+    def apply_radar_bandwidth_profile(self, _event: object | None = None) -> None:
+        values = radar_bandwidth_profile(self.radar_profile_var.get())
+        fields = (
+            (self.radar_carrier_ghz_var, "carrier_ghz"),
+            (self.radar_sample_rate_msps_var, "sample_rate_msps"),
+            (self.radar_bandwidth_mhz_var, "bandwidth_mhz"),
+            (self.radar_active_us_var, "active_us"),
+            (self.radar_idle_us_var, "idle_us"),
+            (self.radar_chirp_count_var, "chirp_count"),
+            (self.radar_cfar_db_var, "cfar_threshold_db"),
+            (self.radar_display_range_var, "max_display_range_m"),
+        )
+        for variable, key in fields:
+            variable.set(values[key])
+        self.update_radar_derived()
+        if self.radar_controller is not None:
+            self.radar_status_var.set("带宽预设将在停止并重新启动雷达后生效")
+
+    def start_radar(self) -> None:
+        if self.radar_controller is not None:
+            return
+        try:
+            source_mode = self.radar_source_var.get()
+            if source_mode == "IQ回放":
+                replay_path = Path(self.radar_replay_path_var.get())
+                controller, effective_config = create_radar_runtime(
+                    source_mode, None, replay_path, None
+                )
+            elif source_mode == "E310":
+                config = self.build_radar_config()
+                radio_config = E310RadioConfig(
+                    tx_channel=int(self.radar_tx_channel_var.get()),
+                    rx_channel=int(self.radar_rx_channel_var.get()),
+                    tx_gain_db=float(self.radar_tx_gain_var.get()),
+                    rx_gain_db=float(self.radar_rx_gain_var.get()),
+                    tx_amplitude=float(self.radar_tx_amplitude_var.get()),
+                )
+                controller, effective_config = create_radar_runtime(
+                    source_mode, config, None, None, radio_config
+                )
+            else:
+                config = self.build_radar_config()
+                _, _, target_range, target_velocity, target_snr = validate_runtime_inputs(
+                    self.radar_tx_gain_var.get(),
+                    self.radar_rx_gain_var.get(),
+                    self.radar_target_range_var.get(),
+                    self.radar_target_velocity_var.get(),
+                    self.radar_target_snr_var.get(),
+                )
+                target = SyntheticTarget(
+                    target_id="T1",
+                    range_m=target_range,
+                    radial_velocity_mps=target_velocity,
+                    snr_db=target_snr,
+                )
+                controller, effective_config = create_radar_runtime(
+                    source_mode, config, None, target
+                )
+            controller.start()
+        except (OSError, TypeError, ValueError, RuntimeError) as error:
+            messagebox.showerror("雷达参数错误", str(error))
+            return
+        self.radar_controller = controller
+        self._radar_seen_source_sessions = 0
+        self.radar_source_label = source_mode
+        self._latest_radar_frame = None
+        self._last_radar_frame_index = None
+        self.radar_status_var.set("运行中")
+        self.radar_start_button.configure(state=tk.DISABLED)
+        self.radar_stop_button.configure(state=tk.NORMAL)
+        calibrate_button = getattr(self, "radar_calibrate_button", None)
+        if calibrate_button is not None:
+            calibrate_button.configure(
+                state=tk.NORMAL if source_mode == "E310" else tk.DISABLED
+            )
+        self.notebook.select(self.radar_tab)
+        prefix = "回放配置 | " if source_mode == "IQ回放" else ""
+        self.radar_derived_var.set(prefix + format_derived_config(effective_config))
+
+    def stop_radar(self) -> None:
+        controller = self.radar_controller
+        if controller is None:
+            return
+        controller.stop()
+        status = controller.status()
+        self.radar_stop_button.configure(state=tk.DISABLED)
+        calibrate_button = getattr(self, "radar_calibrate_button", None)
+        if calibrate_button is not None:
+            calibrate_button.configure(state=tk.DISABLED)
+        if status.running or not status.cleanup_complete:
+            self.radar_status_var.set(
+                "停止中：等待当前E310采集结束并完成射频清理"
+                if status.running
+                else f"清理失败：{status.error or status.shutdown_error or '请重试停止'}"
+            )
+            self.radar_start_button.configure(state=tk.DISABLED)
+            self.radar_stop_button.configure(
+                state=tk.DISABLED if status.running else tk.NORMAL
+            )
+            return
+        self.radar_controller = None
+        self.radar_status_var.set("已停止")
+        self.radar_start_button.configure(state=tk.NORMAL)
+
+    def calibrate_radar_background(self) -> None:
+        """Collect and apply an in-session empty-room background on the worker."""
+        controller = self.radar_controller
+        if (
+            controller is None
+            or self.radar_source_label != "E310"
+            or not controller.status().running
+        ):
+            messagebox.showinfo("空场背景", "请先以 E310 数据源启动雷达")
+            return
+        calibration_status = controller.processor.background_calibration_status()
+        if calibration_status.active:
+            controller.processor.cancel_background_calibration("用户取消空场标定")
+            self.radar_calibrate_button.configure(
+                state=tk.NORMAL,
+                text="采集空场背景",
+            )
+            self.radar_status_var.set("空场标定已取消")
+            return
+        controller.processor.begin_background_calibration(cpi_count=4)
+        self.radar_calibrate_button.configure(
+            state=tk.NORMAL,
+            text="取消空场标定",
+        )
+        self.radar_status_var.set("空场标定中：0/4，请保持场景静止且不要放置角反")
+
+    def render(self, frame: object) -> None:
+        self._latest_radar_frame = frame
+        self.radar_dashboard.render(frame)
+        candidate = assess_frame(frame)
+        best = candidate.quality_score > self._best_radar_candidate_score
+        if best:
+            self._best_radar_candidate_score = candidate.quality_score
+        marker = "；本次最佳" if best and candidate.quality_score > 0.0 else ""
+        self.radar_candidate_quality_var.set(
+            f"候选质量：{candidate.quality_score:.1f}/100；当前最佳："
+            f"{self._best_radar_candidate_score:.1f}/100{marker}"
+        )
+
+    def _append_radar_log(self, lines: list[str] | tuple[str, ...]) -> None:
+        if not lines:
+            return
+        history = getattr(self, "_radar_log_lines", None)
+        if history is None:
+            history = []
+            self._radar_log_lines = history
+        history.extend(str(line) for line in lines)
+        del history[:-RADAR_LOG_LINE_LIMIT]
+        widget = getattr(self, "radar_log_text", None)
+        if widget is None:
+            return
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        widget.insert(tk.END, "\n".join(history) + "\n")
+        widget.configure(state=tk.DISABLED)
+        widget.see(tk.END)
+
+    def clear_radar_log(self) -> None:
+        self._radar_log_lines = []
+        self._radar_last_runtime_signature = None
+        widget = getattr(self, "radar_log_text", None)
+        if widget is not None:
+            widget.configure(state=tk.NORMAL)
+            widget.delete("1.0", tk.END)
+            widget.configure(state=tk.DISABLED)
+
+    def save_radar_log(self) -> None:
+        if not self._radar_log_lines:
+            messagebox.showinfo("保存雷达日志", "当前没有可保存的诊断日志")
+            return
+        output = filedialog.asksaveasfilename(
+            initialdir=str(PROJECT_DIR / "artifacts"),
+            initialfile=time.strftime("fmcw-runtime-%Y%m%d-%H%M%S.log"),
+            defaultextension=".log",
+            filetypes=[("日志文件", "*.log"), ("文本文件", "*.txt")],
+        )
+        if not output:
+            return
+        Path(output).write_text("\n".join(self._radar_log_lines) + "\n", encoding="utf-8")
+        self.radar_status_var.set(f"诊断日志已保存：{output}")
+
+    @staticmethod
+    def _runtime_log_signature(status: object) -> tuple[object, ...]:
+        source = getattr(status, "source_diagnostics", None)
+        sync = getattr(status, "sync_diagnostics", None)
+        return (
+            getattr(source, "session_attempt", None),
+            getattr(source, "phase", None),
+            getattr(source, "tx_uploaded", None),
+            getattr(status, "source_recoveries", None),
+            getattr(status, "recovery_exhausted", None),
+            getattr(sync, "failed_metric", None),
+            getattr(status, "processing_error", None),
+            getattr(status, "alignment_active", None),
+            getattr(status, "ever_synchronized", None),
+        )
+
+    def _refresh_radar_runtime_log(self, controller: object, status: object) -> None:
+        summary_var = getattr(self, "radar_diagnostic_summary_var", None)
+        log_widget = getattr(self, "radar_log_text", None)
+        if summary_var is None and log_widget is None:
+            return
+        source = getattr(status, "source_diagnostics", None)
+        current_sessions = max(0, int(getattr(source, "session_attempt", 0)))
+        seen_sessions = getattr(self, "_radar_seen_source_sessions", 0)
+        if current_sessions > seen_sessions:
+            self._radar_lifetime_sessions = getattr(
+                self, "_radar_lifetime_sessions", 0
+            ) + (current_sessions - seen_sessions)
+            self._radar_seen_source_sessions = current_sessions
+        lines = format_radar_runtime_diagnostics(
+            status,
+            total_sessions=getattr(self, "_radar_lifetime_sessions", 0),
+        )
+        if summary_var is not None:
+            summary_var.set("\n".join(lines))
+
+        event_lines: list[str] = []
+        drain_events = getattr(controller, "drain_diagnostic_events", None)
+        if callable(drain_events):
+            for event in drain_events():
+                timestamp = time.strftime(
+                    "%H:%M:%S", time.localtime(getattr(event, "timestamp", time.time()))
+                )
+                event_lines.append(
+                    f"[{timestamp}] 会话 {getattr(event, 'session_attempt', 0)} "
+                    f"{getattr(event, 'phase', 'unknown')}: "
+                    f"{getattr(event, 'message', '')}"
+                )
+
+        signature = SdrVideoGui._runtime_log_signature(status)
+        previous = getattr(self, "_radar_last_runtime_signature", None)
+        if signature != previous:
+            self._radar_last_runtime_signature = signature
+            timestamp = time.strftime("%H:%M:%S")
+            event_lines.extend(f"[{timestamp}] {line}" for line in lines)
+        SdrVideoGui._append_radar_log(self, event_lines)
+
+    def _update_radar_frame_freshness(self, status: object) -> None:
+        frame = getattr(self, "_latest_radar_frame", None)
+        if frame is None:
+            return
+        state, age = radar_frame_freshness(status)
+        quality_var = getattr(self, "radar_candidate_quality_var", None)
+        if state == "historical":
+            if quality_var is not None:
+                quality_var.set(f"历史帧：已失步 {age:.1f} 秒，结果不是当前测量")
+            return
+        if state == "expired":
+            dashboard = getattr(self, "radar_dashboard", None)
+            if dashboard is not None:
+                dashboard.render(expire_radar_frame(frame))
+            self._latest_radar_frame = None
+            if quality_var is not None:
+                quality_var.set("历史帧已过期：目标与距离-速度图已清空")
+
+    def poll_radar_controller(self) -> None:
+        controller = self.radar_controller
+        if controller is not None:
+            self._last_radar_frame_index, status = poll_radar(
+                controller,
+                self,
+                self._last_radar_frame_index,
+                self.radar_source_label,
+            )
+            SdrVideoGui._refresh_radar_runtime_log(self, controller, status)
+            SdrVideoGui._update_radar_frame_freshness(self, status)
+            if status.running:
+                processor = getattr(controller, "processor", None)
+                calibration_status_method = getattr(
+                    processor,
+                    "background_calibration_status",
+                    None,
+                )
+                calibration_status = (
+                    calibration_status_method()
+                    if calibration_status_method is not None
+                    else None
+                )
+                if status.shutdown_error:
+                    self.radar_status_var.set(
+                        f"停止中：等待硬件清理（{status.shutdown_error}）"
+                    )
+                    self.radar_start_button.configure(state=tk.DISABLED)
+                    self.radar_stop_button.configure(state=tk.DISABLED)
+                elif calibration_status is not None and calibration_status.error:
+                    detail = f"空场标定未应用：{calibration_status.error}"
+                    if status.error:
+                        detail += f"；当前等待同步：{status.error}"
+                    self.radar_status_var.set(detail)
+                    self.radar_start_button.configure(state=tk.DISABLED)
+                    self.radar_stop_button.configure(state=tk.NORMAL)
+                    calibrate_button = getattr(self, "radar_calibrate_button", None)
+                    if calibrate_button is not None:
+                        calibrate_button.configure(state=tk.NORMAL)
+                elif status.error:
+                    if calibration_status is not None and calibration_status.active:
+                        coherence = getattr(calibration_status, "last_coherence", None)
+                        coherence_text = "-" if coherence is None else f"{coherence:.3f}"
+                        self.radar_status_var.set(
+                            "空场标定等待同步："
+                            f"{calibration_status.collected_cpis}/"
+                            f"{calibration_status.required_cpis}，"
+                            f"同步跳过 {getattr(calibration_status, 'skipped_cpis', 0)}，"
+                            f"相干重置 {getattr(calibration_status, 'coherence_restarts', 0)}，"
+                            f"最近相干度 {coherence_text}"
+                            f"（{status.error}）"
+                        )
+                    else:
+                        self.radar_status_var.set(f"等待同步：{status.error}")
+                    self.radar_start_button.configure(state=tk.DISABLED)
+                    self.radar_stop_button.configure(state=tk.NORMAL)
+                    calibrate_button = getattr(self, "radar_calibrate_button", None)
+                    if calibrate_button is not None:
+                        # Keep an armed calibration cancellable while invalid CPIs
+                        # are skipped and the same cyclic TX session stays alive.
+                        calibrate_button.configure(
+                            state=tk.NORMAL,
+                            text=(
+                                "取消空场标定"
+                                if calibration_status is not None
+                                and calibration_status.active
+                                else "采集空场背景"
+                            ),
+                        )
+                else:
+                    if calibration_status is not None:
+                        calibrate_button = getattr(
+                            self, "radar_calibrate_button", None
+                        )
+                        if calibration_status.active:
+                            coherence = getattr(calibration_status, "last_coherence", None)
+                            coherence_text = "-" if coherence is None else f"{coherence:.3f}"
+                            self.radar_status_var.set(
+                                "空场标定中："
+                                f"{calibration_status.collected_cpis}/"
+                                f"{calibration_status.required_cpis}，"
+                                f"同步跳过 {getattr(calibration_status, 'skipped_cpis', 0)}，"
+                                f"相干重置 {getattr(calibration_status, 'coherence_restarts', 0)}，"
+                                f"最近相干度 {coherence_text}，"
+                                "请保持场景静止"
+                            )
+                            if calibrate_button is not None:
+                                calibrate_button.configure(
+                                    state=tk.NORMAL,
+                                    text="取消空场标定",
+                                )
+                        elif calibration_status.ready:
+                            self.radar_status_var.set("运行中：空场背景已应用")
+                            if calibrate_button is not None:
+                                calibrate_button.configure(
+                                    state=tk.NORMAL,
+                                    text="采集空场背景",
+                                )
+            elif status.cleanup_complete:
+                detail = status.error or status.shutdown_error
+                self.radar_status_var.set(
+                    f"已停止：{detail}" if detail else "已完成"
+                )
+                self.radar_controller = None
+                self.radar_start_button.configure(state=tk.NORMAL)
+                self.radar_stop_button.configure(state=tk.DISABLED)
+                calibrate_button = getattr(self, "radar_calibrate_button", None)
+                if calibrate_button is not None:
+                    calibrate_button.configure(state=tk.DISABLED)
+            else:
+                self.radar_status_var.set(
+                    f"清理失败：{status.error or status.shutdown_error or '请点击停止重试'}"
+                )
+                self.radar_start_button.configure(state=tk.DISABLED)
+                self.radar_stop_button.configure(state=tk.NORMAL)
+                calibrate_button = getattr(self, "radar_calibrate_button", None)
+                if calibrate_button is not None:
+                    calibrate_button.configure(state=tk.DISABLED)
+        self.after(33, self.poll_radar_controller)
+
+    def save_radar_frame(self) -> None:
+        frame = self._latest_radar_frame
+        if frame is None:
+            messagebox.showinfo("保存雷达帧", "当前没有可保存的雷达帧")
+            return
+        directory = filedialog.askdirectory(initialdir=str(PROJECT_DIR / "artifacts"))
+        if not directory:
+            return
+        output = Path(directory) / f"radar_frame_{frame.frame_index:06d}"
+        try:
+            save_frame(output, frame)
+        except (OSError, TypeError, ValueError) as error:
+            messagebox.showerror("保存失败", str(error))
+            return
+        self.radar_status_var.set(f"已保存: {output}")
+
+    def save_position_candidate(self) -> None:
+        frame = self._latest_radar_frame
+        if frame is None:
+            messagebox.showinfo("位置候选", "当前没有可保存的雷达帧")
+            return
+        range_text = self.radar_candidate_measured_range_var.get().strip()
+        try:
+            measured_range = float(range_text) if range_text else None
+            candidate = assess_frame(
+                frame,
+                label=self.radar_candidate_label_var.get(),
+                measured_range_m=measured_range,
+                notes=self.radar_candidate_notes_var.get(),
+                photo_path=self._copy_radar_candidate_photo(frame),
+            )
+            output = PROJECT_DIR / "artifacts" / "hardware" / "position_candidates.jsonl"
+            append_position_candidate(output, candidate)
+            save_frame(
+                PROJECT_DIR / "artifacts" / "hardware" / "position_candidates"
+                / f"candidate_{frame.frame_index:06d}",
+                frame,
+            )
+        except (OSError, TypeError, ValueError) as error:
+            messagebox.showerror("保存位置候选失败", str(error))
+            return
+        self.radar_status_var.set(
+            f"已保存位置候选：质量 {candidate.quality_score:.1f}/100，{output}"
+        )
+
+    def _copy_radar_candidate_photo(self, frame: object) -> str | None:
+        source = self.radar_candidate_photo_var.get().strip()
+        if not source:
+            return None
+        source_path = Path(source)
+        if not source_path.is_file():
+            raise ValueError("俯视照片文件不存在")
+        suffix = source_path.suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".bmp"}:
+            raise ValueError("俯视照片必须是 JPG、PNG 或 BMP 文件")
+        photo_dir = PROJECT_DIR / "artifacts" / "hardware" / "position_candidates" / "photos"
+        destination = photo_dir / f"candidate_{frame.frame_index:06d}{suffix}"
+        photo_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination)
+        return destination.relative_to(
+            PROJECT_DIR / "artifacts" / "hardware"
+        ).as_posix()
 
     def selected_preset(self) -> Preset:
         label = self.preset_var.get()
@@ -924,9 +1789,50 @@ class SdrVideoGui(tk.Tk):
     def on_close(self) -> None:
         self.cancel_source_preview_schedule()
         self.stop_source_preview()
-        if self.process is not None:
-            self.stop_stream()
+        process = self.process
+        self.process = None
+        controller = self.radar_controller
+        shutdown_video_process(process)
+        if controller is not None:
+            status = controller.status()
+            if status.cleanup_complete:
+                self.radar_controller = None
+                self.destroy()
+                return
+            worker = getattr(self, "_radar_shutdown_worker", None)
+            if worker is None or not worker.is_alive():
+                worker = threading.Thread(
+                    target=controller.stop,
+                    name="fmcw-gui-shutdown",
+                    daemon=True,
+                )
+                self._radar_shutdown_worker = worker
+                worker.start()
+            self.radar_status_var.set(
+                "正在退出：等待E310采集结束并完成射频清理"
+            )
+            self.after(100, lambda: self._poll_radar_shutdown())
+            return
         self.destroy()
+
+    def _poll_radar_shutdown(self) -> None:
+        controller = self.radar_controller
+        if controller is None:
+            self.destroy()
+            return
+        status = controller.status()
+        if status.cleanup_complete:
+            self.radar_controller = None
+            self.destroy()
+            return
+        worker = getattr(self, "_radar_shutdown_worker", None)
+        if status.running or (worker is not None and worker.is_alive()):
+            self.after(100, self._poll_radar_shutdown)
+            return
+        self._radar_shutdown_worker = None
+        self.radar_status_var.set(
+            f"E310清理失败，窗口保持打开；请再次关闭重试：{status.error or status.shutdown_error or '未知错误'}"
+        )
 
 
 def main() -> int:
@@ -936,4 +1842,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if os.environ.get("FMCW_GUI_IMPORT_ONLY") == "1":
+        raise SystemExit(0)
     raise SystemExit(main())

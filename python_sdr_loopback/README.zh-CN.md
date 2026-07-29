@@ -89,3 +89,49 @@ python scripts/e310_rf_loopback.py --uri ip:192.168.1.10 --sample-rate 30000000 
 ```powershell
 python scripts/run_file_transfer_batches.py --input-file phone.mp4 --output-file artifacts\recovered_phone.mp4 --batch-bytes 200000 --artifact-prefix artifacts\phone_batched
 ```
+
+## FMCW 雷达 MVP 验证
+
+FMCW 雷达链路支持仿真、IQ 回放和 E310 采集。上位机的配置档位将稳定的 20 MHz、验证用 40 MHz 与 56 MHz 极限实验分开；选择档位只更新界面参数，下一次启动雷达时才会重新配置 E310。
+
+命令行也提供同一组可部署档位，因此离线验证与后续 E310 联调使用完全一致的波形尺寸：
+
+```powershell
+python scripts\run_fmcw_radar.py --source synthetic --profile stable-20 --headless --metrics artifacts\fmcw_profiles\stable.jsonl
+python scripts\run_fmcw_radar.py --source synthetic --profile validate-40 --headless --metrics artifacts\fmcw_profiles\validate.jsonl
+python scripts\run_fmcw_radar.py --source e310 --profile limit-56 --dry-run
+```
+
+为受控实验提供的显式波形参数仍会覆盖所选档位；`--dry-run` 不会打开无线电设备。
+
+硬件联调前可运行完全离线的档位验收。脚本会向每个选定档位注入一个固定种子的合成目标，验证距离和速度恢复误差不超过一个物理单元，并写入机器可读 JSON；整个过程不会打开 E310：
+
+```powershell
+python scripts\validate_fmcw_profiles.py --output artifacts\fmcw_profile_acceptance.json
+python scripts\validate_fmcw_profiles.py --profile limit-56 --output artifacts\fmcw_limit56_acceptance.json
+```
+
+硬件恢复后的安全检查、20 → 40 → 56 MHz 分档命令、空场/角反 A-B-A 与记录要求见 [E310 FMCW 硬件恢复与分档联调手册](../docs/superpowers/fmcw-e310-hardware-bringup.zh-CN.md)。
+
+配置扫频带宽为 `B` 时，软件距离单元间隔为 `c / (2B)`：20 MHz 时约为 7.49 m，56 MHz 时约为 2.68 m。这里是配置的基带带宽；在将其解释为实际物理距离分辨率前，必须用仪器确认外部倍频链的有效 RF 扫频带宽。
+
+生成并分析可复现的测试数据：
+
+```powershell
+python scripts/generate_fmcw_fixture.py --output artifacts\fmcw_acceptance.npz --target 22.5,1.2,18 --seed 7
+python scripts/analyze_fmcw_capture.py artifacts\fmcw_acceptance.npz --output-dir artifacts\fmcw_acceptance_result
+```
+
+执行 5 分钟无界面合成源稳定性测试。该命令不会连接 E310；每个 CPI 写入一条诊断 JSON，汇总写入 `soak_summary.json`：
+
+```powershell
+python scripts/run_fmcw_radar.py --source synthetic --duration-sec 300 --headless --metrics artifacts\fmcw_soak\metrics.jsonl
+```
+
+通过条件为：`frames_failed=0`、`queue_max_depth=1`、`controller_stopped=true`、`soak_ok=true`。E310 已重新接线后，可先用下列命令确认配置而不访问硬件：
+
+```powershell
+python scripts/diagnose_fmcw_sync.py --dry-run --frames 10 --profile limit-56
+```
+
+在当前开发电脑上，经过预热和有界 CFAR 优化后，40 MHz 与 56 MHz 合成数据各处理一个 CPI 约需 43 ms，而 64 Chirp CPI 时长为 9 ms。因此高带宽档可用于验证配置、距离分辨率和检测行为；实时控制器会始终保留最新帧，而不会无限排队等待逐个 CPI 全部处理完成。

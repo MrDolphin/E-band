@@ -1,124 +1,95 @@
 # AGENTS.md
 
-This workspace is for ANTSDR E310 / remotevideo development. Keep context small. Avoid scanning large binary/material folders unless the user explicitly asks.
+This workspace contains ANTSDR E310 FMCW radar and remotevideo development.
+Keep context small and make evidence-driven, narrowly scoped changes.
 
-## Start Here
+## Staged execution gate
 
-Read only the smallest useful set first:
+Large work must be split into stages. Complete only one stage per user approval:
 
-1. `ANTSDR_E310_REMOTEVIDEO_HANDOFF.md`
-2. `Material/videotool_decompiled/remotevideo_usepdb/remotevideo.csproj`
-3. The exact source files related to the user's request
+1. **Goal 1 — 调研报告：** only investigate and report; do not design or edit.
+2. **Goal 2 — 方案规划：** only produce a bounded plan; do not implement.
+3. **Goal 3 — 单一功能：** implement one explicitly approved feature only.
+4. **Goal 4 — 测试修复：** test that feature and fix only exposed defects.
 
-Common source files:
+At the end of a stage:
 
-- PC app: `Material/videotool_decompiled/remotevideo_usepdb/remotevideo/MainWindow.cs`
-- Frame split/reassembly: `Material/videotool_decompiled/remotevideo_usepdb/remotevideo/WirelessVideoFrame.cs`
-- QPSK modem: `Material/videotool_decompiled/remotevideo_usepdb/remotevideo/QpskModem.cs`
-- Stream decoder: `Material/videotool_decompiled/remotevideo_usepdb/remotevideo/QpskStreamDecoder.cs`
-- Signal analysis: `Material/videotool_decompiled/remotevideo_usepdb/remotevideo/RxSignalAnalyzer.cs`
-- Self-test: `Material/videotool_decompiled/remotevideo_usepdb/video_modem_selftest`
-- E310 bridge: `Material/videotool_decompiled/remotevideo_usepdb/e310_udp_receiver/video_modem_bridge.c`
-- E310 build script: `Material/videotool_decompiled/remotevideo_usepdb/e310_udp_receiver/build_video_modem_bridge.sh`
+- Report `Goal N：已完成` with concise evidence.
+- Stop and wait for explicit confirmation before opening the next goal.
+- Earlier requests to “continue”, “finish everything”, or “keep going” do not
+  override this gate.
+- Verification, one coherent commit/push, and one evidence-based PR comment
+  belonging to the approved stage are allowed before stopping.
 
-## Avoid by Default
+## Scope selection
 
-Do not recursively read or summarize:
+- Identify the subsystem first: FMCW radar, PC remotevideo UI, modem/framing,
+  self-test, or E310 bridge.
+- Read only the smallest relevant source and test set.
+- FMCW starting references:
+  1. `docs/superpowers/plans/2026-07-14-fmcw-synthetic-radar-mvp.md`
+  2. `docs/superpowers/specs/2026-07-14-e310-eband-fmcw-radar-design.md`
+  3. `docs/superpowers/2026-07-15-fmcw-radar-mvp-overall-report.zh-CN.md`
+- For remotevideo work, read `docs/agents/remotevideo-workflow.md` only when
+  that subsystem is in scope.
+- Do not recursively scan large binary/material folders unless explicitly
+  requested.
 
-- `Ubuntu2204.appx`
-- `target-sysroot/`
-- `tools/`
-- `picture/`
-- `Material/ANTSDR_E200_R1.0/`
-- `**/bin/`
-- `**/obj/`
-- generated executables and stage output folders
-- copied/decompiled duplicate trees unless comparing copies is requested
+## Hardware gate
 
-Use targeted search:
+- Default to **hardware disconnected**.
+- Do not access E310, transmit, capture, or change device state unless the user
+  confirms in the current turn that the physical chain is connected and
+  authorizes the test.
+- Without hardware, limit work to synthetic/replay tests, offline diagnostics,
+  documentation, and evidence-backed code defects.
+- Do not make speculative radar-algorithm changes without a failing test,
+  profiler/replay result, or concrete hardware observation.
+- Hardware-facing changes must state the remaining device-side verification.
 
-```powershell
-rg -n "keyword" Material/videotool_decompiled/remotevideo_usepdb/remotevideo
-rg -n "keyword" Material/videotool_decompiled/remotevideo_usepdb/e310_udp_receiver
-```
+## Lean development loop
 
-For broad search, exclude heavy paths:
+1. Run `git status --short`; preserve unrelated changes and all untracked
+   captures, `artifacts/`, caches, board-control material, and generated files.
+2. For code discovery, prefer codebase-memory project
+   `D-hp-laptop-E-band-fmcw`: `search_graph`, `trace_path`, then
+   `get_code_snippet`. Use targeted `rg` for literals, non-code files, or when
+   graph results are insufficient.
+3. State the smallest falsifiable hypothesis. Add or run the smallest focused
+   test; run the full suite only before a phase commit or after cross-module
+   changes.
+4. Make narrow edits in the file that owns the behavior. Preserve existing
+   WPF/decompiled-code style and do not rewrite large Chinese documents merely
+   because PowerShell displays mojibake.
+5. If no safe, evidence-backed offline action remains, stop without code churn
+   and record the required hardware observation.
 
-```powershell
-rg -n "keyword" -g "!Ubuntu2204.appx" -g "!target-sysroot/**" -g "!tools/**" -g "!**/bin/**" -g "!**/obj/**"
-```
+## Git checkpoints
 
-## Build and Test
+- Commit automatically after a coherent code phase only when relevant
+  verification passes; then push when `origin` is configured and reachable.
+- Do not commit captures, `artifacts/`, caches, `bin/`, `obj/`, generated
+  binaries, archives, copied stage folders, or toolchain/sysroot folders.
+- Keep unrelated user changes out of the phase commit.
+- If verification fails or cannot run, do not commit; report changed files and
+  the failed or missing verification.
+- Add at most one PR comment per phase and include evidence rather than raw
+  exploratory logs.
+- Tag a hardware-known-good version only when the user explicitly confirms it
+  works on E310 hardware.
 
-PC app:
+## Token-efficient reporting
 
-```powershell
-dotnet build Material/videotool_decompiled/remotevideo_usepdb/remotevideo.csproj
-```
+- Keep raw IQ, screenshots, long logs, and generated outputs in untracked
+  `artifacts/` and report only configuration, measured result, and artifact
+  path.
+- Do not paste large source files or repeat prior logs; link durable reports or
+  PR comments.
+- Final responses should contain only: outcome, changed files, verification,
+  remaining hardware/manual checks, and current Goal status.
 
-Self-test:
+## Project references
 
-```powershell
-dotnet run --project Material/videotool_decompiled/remotevideo_usepdb/video_modem_selftest/video_modem_selftest.csproj
-```
-
-E310 bridge from WSL/Ubuntu:
-
-```bash
-cd /mnt/d/hp-laptop/E-band/Material/videotool_decompiled/remotevideo_usepdb/e310_udp_receiver
-./build_video_modem_bridge.sh
-```
-
-The E310 firmware normally does not have native `gcc`; build ARM binaries with the configured cross compiler and `target-sysroot`.
-
-## Current Facts
-
-- E310 IP: `192.168.1.10`
-- PC IP: `192.168.1.200`
-- E310 UDP listen port: `8080`
-- PC RX IQ port: `8098`
-- Link focus: PC `remotevideo` -> E310 TX1 -> external RF/link -> E310 RX1 -> UDP IQ back to PC
-- QPSK defaults: LO around `900 MHz`, sample rate `3.84 MSPS`, symbol rate `960 ksym/s`, `4 samples/symbol`
-
-Treat hardware/network values as working assumptions. Confirm before risky hardware changes.
-
-## Agent skills
-
-### Issue tracker
-
-Issues are tracked in GitHub Issues for `MrDolphin/E-band`; external PRs are not treated as a triage request surface. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Use the default Matt Pocock skills triage labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Use a single-context domain docs layout: root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
-
-## Editing Rules
-
-- Make narrow edits in the file that owns the behavior.
-- Preserve the existing WPF/decompiled-code style.
-- Do not delete generated binaries or copied folders unless explicitly asked.
-- Some Chinese Markdown may display with mojibake in PowerShell; do not rewrite large documents only to fix display encoding.
-- For hardware-facing changes, report required device-side verification.
-
-## Git Checkpoints
-
-- If this workspace is a Git repository, create a commit automatically after each completed code change when build/self-test verification passes.
-- After a successful local commit, push to `origin` automatically when a remote is configured and reachable.
-- Before editing, run `git status --short` and preserve unrelated user changes.
-- Do not commit generated build output, copied stage folders, `bin/`, `obj/`, large archives, or hardware sysroot/toolchain folders.
-- Use concise commit messages that name the feature or fix, for example `Improve FMCW sweep-lock diagnostics`.
-- If verification fails or cannot be run, do not commit; report the changed files and the failed/missing verification.
-- Tag hardware-known-good versions only when the user explicitly says the version works on E310 hardware.
-
-## Token-Saving Workflow
-
-1. Identify the subsystem: PC UI/app, modem/framing, self-test, or E310 bridge.
-2. Use `rg --files` or `rg -n` to locate exact files.
-3. Read only relevant sections around matches.
-4. Summarize long logs instead of dumping them.
-5. Run the smallest useful verification command.
-6. Final responses should report changed files, verification, and remaining hardware/manual checks.
+- Issue workflow: `docs/agents/issue-tracker.md`
+- Triage labels: `docs/agents/triage-labels.md`
+- Domain documentation workflow: `docs/agents/domain.md`
